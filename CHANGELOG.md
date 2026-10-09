@@ -28,6 +28,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   request is still live is now retried as a transport failure is, on every
   surface; the request's own deadline, an open circuit and a full concurrency
   queue still end the target's attempts.
+- A mid-stream error from Hugging Face, xAI or any OpenAI-compatible upstream
+  that writes its error envelope as a plain string (`data: {"error":"…"}`) now
+  fails the stream. The shared stream decoder read `error` only as an object,
+  so the string form failed to decode, was skipped like a malformed keep-alive
+  frame, and the stream ended cleanly at EOF: the truncated answer reached the
+  caller as a complete one and was recorded as a success. A frame
+  that carried content beside `"error": ""` was dropped the same way. Both
+  shapes are now read, as they already are on a non-success status, and only a
+  non-empty message counts as a failure.
+- A provider that returns neither a response nor an error is now a failed
+  attempt instead of a crash. On chat, embeddings, image generation, rerank,
+  moderation, transcription and speech, the nil response was recorded as a
+  success by the circuit breaker and then dereferenced, panicking the request;
+  a pool mode never offered it to a sibling. The call now fails with
+  `provider returned a nil response`, counts against the breaker, and fails
+  over as any other target failure does — the treatment a nil stream already
+  had.
 
 ## [1.5.9] — 2026-09-18
 

@@ -150,6 +150,46 @@ func TestStreamSSE_MidStreamError(t *testing.T) {
 		}
 	})
 
+	// Hugging Face and xAI write their error envelope with a plain-string
+	// "error" (providers/hugging_face/testdata/error.401.json,
+	// providers/xai/testdata/error.401.json), and both stream through
+	// PostStream. Decoded as an object only, that frame failed to unmarshal, was
+	// skipped as a malformed keep-alive, and the stream ended cleanly at EOF —
+	// the truncated answer delivered as a complete one.
+	t.Run("a plain-string envelope is a failure too", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = io.WriteString(w, strings.Join([]string{
+				`data: {"id":"a","choices":[{"index":0,"delta":{"content":"Hel"}}]}`,
+				`data: {"error":"Model is overloaded"}`,
+			}, "\n\n")+"\n\n")
+		}))
+		defer srv.Close()
+
+		ch, err := PostStream(context.Background(), ChatParams{
+			HTTPClient: srv.Client(),
+			URL:        srv.URL,
+			Headers:    map[string]string{"Content-Type": "application/json"},
+			Provider:   "test",
+			Label:      "test",
+		}, core.Request{Model: "m", Messages: []core.Message{{Role: core.RoleUser, Content: "hi"}}})
+		if err != nil {
+			t.Fatalf("PostStream: %v", err)
+		}
+
+		chunks := collect(ch)
+		if len(chunks) != 2 {
+			t.Fatalf("got %d chunks, want 2 (content, then the error)", len(chunks))
+		}
+		last := chunks[1]
+		if last.Error == nil {
+			t.Fatal("plain-string error frame was dropped — the truncated answer reads as complete")
+		}
+		if !strings.Contains(last.Error.Error(), "Model is overloaded") {
+			t.Errorf("error = %v, want the upstream message", last.Error)
+		}
+	})
+
 	t.Run("only a populated message is a failure", func(t *testing.T) {
 		tests := []struct {
 			name    string
@@ -165,6 +205,15 @@ func TestStreamSSE_MidStreamError(t *testing.T) {
 				name:    "message without type",
 				frame:   `{"error":{"message":"boom"}}`,
 				wantErr: "stream error: boom",
+			},
+			{
+				name:    "plain-string message",
+				frame:   `{"error":"boom"}`,
+				wantErr: "stream error: boom",
+			},
+			{
+				name:  "empty string alongside content",
+				frame: `{"id":"a","error":"","choices":[{"index":0,"delta":{"content":"lo"}}]}`,
 			},
 			{
 				name:  "null error alongside content",

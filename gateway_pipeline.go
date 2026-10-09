@@ -681,7 +681,23 @@ func advancesPastFailure(mode config.StrategyMode) bool {
 
 func completeChat(ctx context.Context, p providers.Provider, req providers.Request, upstreamModel string) (*providers.Response, error) {
 	req.Model = upstreamModel
-	return p.Complete(ctx, req)
+	return nonNilResponse(p.Complete(ctx, req))
+}
+
+// errNilProviderResponse is a provider answering with neither a response nor
+// an error. The unary counterpart of startStreamOn's nil-stream refusal.
+var errNilProviderResponse = errors.New("provider returned a nil response")
+
+// nonNilResponse turns a provider's (nil, nil) into a failure. Every unary leaf
+// call routes its answer through it, inside the breaker and the retry walk, so
+// the call is recorded as the failure it is and a pool mode carries the request
+// to a sibling. Passed through, the nil response was recorded as a success and
+// then dereferenced by the surface that served it, panicking the request.
+func nonNilResponse[T any](resp *T, err error) (*T, error) {
+	if err == nil && resp == nil {
+		return nil, errNilProviderResponse
+	}
+	return resp, err
 }
 
 // routeChat runs a non-streaming chat request through the pipeline and returns

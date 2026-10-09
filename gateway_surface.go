@@ -882,37 +882,37 @@ func surfaceGate(surface string) capabilityGate {
 func embed(ctx context.Context, p providers.Provider, req providers.EmbeddingRequest, upstreamModel string) (*providers.EmbeddingResponse, error) {
 	req.Model = upstreamModel
 	provider, _ := providers.As[providers.EmbeddingProvider](p)
-	return provider.Embed(ctx, req) // embeddingCapable gated candidacy
+	return nonNilResponse(provider.Embed(ctx, req)) // embeddingCapable gated candidacy
 }
 
 func generateImage(ctx context.Context, p providers.Provider, req providers.ImageRequest, upstreamModel string) (*providers.ImageResponse, error) {
 	req.Model = upstreamModel
 	provider, _ := providers.As[providers.ImageProvider](p)
-	return provider.GenerateImage(ctx, req) // imageCapable gated candidacy
+	return nonNilResponse(provider.GenerateImage(ctx, req)) // imageCapable gated candidacy
 }
 
 func rerank(ctx context.Context, p providers.Provider, req providers.RerankRequest, upstreamModel string) (*providers.RerankResponse, error) {
 	req.Model = upstreamModel
 	provider, _ := providers.As[providers.RerankProvider](p)
-	return provider.Rerank(ctx, req) // rerankCapable gated candidacy
+	return nonNilResponse(provider.Rerank(ctx, req)) // rerankCapable gated candidacy
 }
 
 func moderate(ctx context.Context, p providers.Provider, req providers.ModerationRequest, upstreamModel string) (*providers.ModerationResponse, error) {
 	req.Model = upstreamModel
 	provider, _ := providers.As[providers.ModerationProvider](p)
-	return provider.Moderate(ctx, req) // moderationCapable gated candidacy
+	return nonNilResponse(provider.Moderate(ctx, req)) // moderationCapable gated candidacy
 }
 
 func transcribe(ctx context.Context, p providers.Provider, req providers.TranscriptionRequest, upstreamModel string) (*providers.TranscriptionResponse, error) {
 	req.Model = upstreamModel
 	provider, _ := providers.As[providers.TranscriptionProvider](p)
-	return provider.Transcribe(ctx, req) // transcriptionCapable gated candidacy
+	return nonNilResponse(provider.Transcribe(ctx, req)) // transcriptionCapable gated candidacy
 }
 
 func speak(ctx context.Context, p providers.Provider, req providers.SpeechRequest, upstreamModel string) (*providers.SpeechResponse, error) {
 	req.Model = upstreamModel
 	provider, _ := providers.As[providers.SpeechProvider](p)
-	return provider.Speech(ctx, req) // speechCapable gated candidacy
+	return nonNilResponse(provider.Speech(ctx, req)) // speechCapable gated candidacy
 }
 
 // routeEmbedding runs an embedding request through the shared request pipeline

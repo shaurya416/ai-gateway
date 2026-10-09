@@ -863,6 +863,109 @@ func TestPipeline_PanicDoesNotStrandTheHalfOpenProbe(t *testing.T) {
 	}
 }
 
+// A provider that answers with neither a response nor an error has failed: it
+// produced nothing to serve. The streaming start already refuses a nil channel;
+// the unary leaf calls dereferenced the nil response instead, so the request
+// panicked after the breaker had recorded the call as a success, and the
+// sibling a pool mode exists to reach was never tried.
+func TestPipeline_ANilResponseIsATargetFailure(t *testing.T) {
+	breaker := &config.CircuitBreakerConfig{FailureThreshold: 1, SuccessThreshold: 1, MaxHalfThreshold: 1, Timeout: "1h"}
+	surfaces := []struct {
+		name     string
+		register func(*Gateway)
+		call     func(*Gateway) error
+	}{
+		{name: "chat", register: func(g *Gateway) {
+			g.RegisterProvider(newCountingProvider("first", func() (*providers.Response, error) { return nil, nil }))
+			g.RegisterProvider(newCountingProvider("second", func() (*providers.Response, error) {
+				return &providers.Response{ID: "r1", Model: pipelineModel}, nil
+			}))
+		}, call: func(g *Gateway) error {
+			_, err := g.Route(context.Background(), pipelineRequest())
+			return err
+		}},
+		{name: "embeddings", register: func(g *Gateway) {
+			g.RegisterProvider(&mockEmbeddingProvider{
+				mockProvider: mockProvider{name: "first", models: []string{pipelineModel}},
+				embedFn: func(context.Context, providers.EmbeddingRequest) (*providers.EmbeddingResponse, error) {
+					return nil, nil
+				},
+			})
+			g.RegisterProvider(&mockEmbeddingProvider{mockProvider: mockProvider{name: "second", models: []string{pipelineModel}}})
+		}, call: func(g *Gateway) error {
+			_, err := g.Embed(context.Background(), providers.EmbeddingRequest{Model: pipelineModel, Input: "hi"})
+			return err
+		}},
+		{name: "images", register: func(g *Gateway) {
+			g.RegisterProvider(&mockImageProvider{
+				mockProvider: mockProvider{name: "first", models: []string{pipelineModel}},
+				imageFn: func(context.Context, providers.ImageRequest) (*providers.ImageResponse, error) {
+					return nil, nil
+				},
+			})
+			g.RegisterProvider(&mockImageProvider{mockProvider: mockProvider{name: "second", models: []string{pipelineModel}}})
+		}, call: func(g *Gateway) error {
+			_, err := g.GenerateImage(context.Background(), providers.ImageRequest{Model: pipelineModel, Prompt: "a cat"})
+			return err
+		}},
+	}
+	for _, surface := range surfaces {
+		t.Run(surface.name, func(t *testing.T) {
+			gw, err := newTestGateway(t, config.Config{
+				Strategy: config.StrategyConfig{Mode: config.ModeFallback},
+				Targets:  []config.Target{{VirtualKey: "first", CircuitBreaker: breaker}, {VirtualKey: "second"}},
+			})
+			if err != nil {
+				t.Fatalf("new gateway: %v", err)
+			}
+			surface.register(gw)
+
+			var callErr error
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						t.Fatalf("a nil provider response panicked the request: %v", r)
+					}
+				}()
+				callErr = surface.call(gw)
+			}()
+			if callErr != nil {
+				t.Fatalf("error = %v, want the request served by the sibling target", callErr)
+			}
+			cb, _ := resilienceFor(t, gw, "first")
+			if cb == nil {
+				t.Fatal("expected a circuit breaker for the first target")
+			}
+			if cb.State() != circuitbreaker.StateOpen {
+				t.Errorf("first target breaker = %v, want open: a nil response is a failure, not a success", cb.State())
+			}
+		})
+	}
+
+	t.Run("a single target reports the failure", func(t *testing.T) {
+		gw, err := newTestGateway(t, config.Config{
+			Strategy: config.StrategyConfig{Mode: config.ModeSingle},
+			Targets:  []config.Target{{VirtualKey: "first"}},
+		})
+		if err != nil {
+			t.Fatalf("new gateway: %v", err)
+		}
+		gw.RegisterProvider(newCountingProvider("first", func() (*providers.Response, error) { return nil, nil }))
+		var routeErr error
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Fatalf("a nil provider response panicked the request: %v", r)
+				}
+			}()
+			_, routeErr = gw.Route(context.Background(), pipelineRequest())
+		}()
+		if !errors.Is(routeErr, errNilProviderResponse) {
+			t.Errorf("error = %v, want errNilProviderResponse", routeErr)
+		}
+	})
+}
+
 // durationSampleCount reads gateway_request_duration_seconds' observation count
 // for one provider/model pair.
 func durationSampleCount(t *testing.T, labels map[string]string) uint64 {

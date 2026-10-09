@@ -14,9 +14,16 @@ import (
 // chunk — an error envelope in place of choices — so both are decoded in one
 // pass. Decoding only the chunk part would turn the failure into a content-free
 // delta and deliver the truncated answer as a success.
+//
+// Err is raw because the envelope is not one shape: OpenAI nests the text in an
+// object ({"error":{"message":…}}), while Hugging Face and xAI send a plain
+// string ({"error":"…"}), the same split core.APIError reads on a status error.
+// Decoding it into a struct failed the whole frame on the string form, and a
+// frame that fails to decode is skipped — so the failure vanished and the
+// stream ended as a success. See streamErrorFrom.
 type streamFrame struct {
 	core.StreamChunk
-	Err *streamErrorEnvelope `json:"error"`
+	Err json.RawMessage `json:"error"`
 }
 
 type streamErrorEnvelope struct {
@@ -40,12 +47,31 @@ func DecodeStreamChunk(data []byte) (core.StreamChunk, error) {
 	for i := range chunk.Choices {
 		chunk.Choices[i].FinishReason = core.NormalizeFinishReason(chunk.Choices[i].FinishReason)
 	}
-	// Only a populated message counts: providers that always emit the field send
-	// "error": null on healthy frames, and a frame can carry content alongside it.
-	if frame.Err != nil && frame.Err.Message != "" {
-		chunk.Error = streamError(frame.Err.Type, frame.Err.Message)
-	}
+	chunk.Error = streamErrorFrom(frame.Err)
 	return chunk, nil
+}
+
+// streamErrorFrom renders a frame's "error" field, or returns nil when the
+// frame carries no failure. Only a populated message counts: providers that
+// always emit the field send "error": null (or an empty value) on healthy
+// frames, and a frame can carry content alongside it. A shape that is neither
+// a string nor an object with a message contributes nothing.
+func streamErrorFrom(raw json.RawMessage) error {
+	if len(raw) == 0 {
+		return nil
+	}
+	var msg string
+	if json.Unmarshal(raw, &msg) == nil {
+		if msg == "" {
+			return nil
+		}
+		return streamError("", msg)
+	}
+	var env streamErrorEnvelope
+	if json.Unmarshal(raw, &env) != nil || env.Message == "" {
+		return nil
+	}
+	return streamError(env.Type, env.Message)
 }
 
 // streamError formats a mid-stream error envelope. The type is optional — some
