@@ -634,6 +634,48 @@ func TestPipeline_RetryAfterControlsRetryBeforeAdvancement(t *testing.T) {
 	}
 }
 
+// A Retry-After inside the cap but beyond what is left of request_timeout
+// cannot be honoured: the retry it waits for would start after the request is
+// over. The target is abandoned at once, so a sibling still serves the request
+// instead of the walk sleeping out the budget and answering 504 having asked
+// nobody else.
+func TestPipeline_RetryWaitPastTheRequestDeadlineAdvancesInstead(t *testing.T) {
+	throttled := newCountingProvider("throttled", func() (*providers.Response, error) {
+		return nil, &core.HTTPStatusError{StatusCode: http.StatusTooManyRequests, Message: "limited", RetryAfter: 2 * time.Second}
+	})
+	alive := newCountingProvider("alive", func() (*providers.Response, error) {
+		return &providers.Response{ID: "served-by-alive", Model: pipelineModel}, nil
+	})
+	gw, err := newTestGateway(t, config.Config{
+		RequestTimeout: "500ms",
+		Strategy:       config.StrategyConfig{Mode: config.ModeFallback},
+		Targets: []config.Target{
+			{VirtualKey: "throttled", Retry: &config.RetryConfig{Attempts: 2}},
+			{VirtualKey: "alive"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("new gateway: %v", err)
+	}
+	gw.RegisterProvider(throttled)
+	gw.RegisterProvider(alive)
+
+	started := time.Now()
+	resp, err := gw.Route(context.Background(), pipelineRequest())
+	if err != nil {
+		t.Fatalf("Route: %v; the sibling should have served once the retry wait could not fit the deadline", err)
+	}
+	if resp.ID != "served-by-alive" {
+		t.Fatalf("served %q, want the sibling", resp.ID)
+	}
+	if throttled.calls.Load() != 1 || alive.calls.Load() != 1 {
+		t.Errorf("calls = (%d, %d), want (1, 1)", throttled.calls.Load(), alive.calls.Load())
+	}
+	if elapsed := time.Since(started); elapsed >= 400*time.Millisecond {
+		t.Errorf("took %v; the walk slept toward a deadline its retry could not beat", elapsed)
+	}
+}
+
 func TestPipeline_ExhaustedPoolReportsAggregateFailure(t *testing.T) {
 	firstErr := errors.New("first failed")
 	secondErr := errors.New("second failed")
@@ -1068,6 +1110,72 @@ func TestPipeline_TargetTimeoutAdvancesPastAHungPrimary(t *testing.T) {
 	}
 	if elapsed := time.Since(started); elapsed > 2*time.Second {
 		t.Fatalf("took %v; the attempt timeout must have bounded the hung primary", elapsed)
+	}
+}
+
+// targets[].timeout bounds ONE attempt, and targets[].retry says how many a
+// target gets. An attempt that times out while the request is still live is
+// retried on the same target like any transport failure — under `single`, the
+// only recourse a hung first attempt has — on the unary and streaming surfaces
+// alike.
+func TestPipeline_TargetTimeoutIsRetriedOnTheSameTarget(t *testing.T) {
+	for _, stream := range []bool{false, true} {
+		t.Run(fmt.Sprintf("stream=%v", stream), func(t *testing.T) {
+			var calls atomic.Int64
+			release := make(chan struct{})
+			defer close(release)
+			// The first attempt hangs past the attempt timeout; the second answers.
+			hangFirst := func(ctx context.Context) bool {
+				if calls.Add(1) > 1 {
+					return false
+				}
+				select {
+				case <-ctx.Done():
+				case <-release:
+				}
+				return true
+			}
+			gw, err := newTestGateway(t, config.Config{
+				Strategy: config.StrategyConfig{Mode: config.ModeSingle},
+				Targets: []config.Target{{
+					VirtualKey: "flaky",
+					Timeout:    "30ms",
+					Retry:      &config.RetryConfig{Attempts: 2, InitialBackoffMs: 1},
+				}},
+			})
+			if err != nil {
+				t.Fatalf("new gateway: %v", err)
+			}
+			gw.RegisterProvider(&mockStreamProvider{
+				mockProvider: mockProvider{name: "flaky", models: []string{pipelineModel}, completeFn: func(ctx context.Context, _ providers.Request) (*providers.Response, error) {
+					if hangFirst(ctx) {
+						return nil, ctx.Err()
+					}
+					return &providers.Response{ID: "second-attempt", Model: pipelineModel}, nil
+				}},
+				streamFn: func(ctx context.Context, _ providers.Request) (<-chan providers.StreamChunk, error) {
+					if hangFirst(ctx) {
+						return nil, ctx.Err()
+					}
+					return chunkStream(pipelineModel), nil
+				},
+			})
+
+			req := pipelineRequest()
+			if stream {
+				req.Stream = true
+				ch, err := gw.RouteStream(context.Background(), req)
+				if err != nil {
+					t.Fatalf("RouteStream: %v; a timed-out attempt must be retried, not end the request", err)
+				}
+				drainStream(t, ch)
+			} else if _, err := gw.Route(context.Background(), req); err != nil {
+				t.Fatalf("Route: %v; a timed-out attempt must be retried, not end the request", err)
+			}
+			if got := calls.Load(); got != 2 {
+				t.Errorf("upstream attempts = %d, want 2", got)
+			}
+		})
 	}
 }
 

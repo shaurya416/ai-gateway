@@ -5,6 +5,30 @@ All notable changes to Ferro Labs AI Gateway are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- A retry wait that cannot end before the request's deadline is no longer
+  slept. With `request_timeout` set, a target answering `429` with a
+  `Retry-After` inside the 30-second cap but beyond the time left held the
+  request until the deadline and answered `504` — the retry it waited for could
+  never start, and a pool never offered the request to a healthy sibling,
+  because by then the deadline had passed. The wait was bounded only by the
+  cap, never by the deadline. The target is now abandoned at once, as it is
+  past the cap: a pool mode moves on, and a target with no sibling returns its
+  own `429` instead of a timeout. A jittered backoff that would outlast the
+  deadline is treated the same way.
+- `targets[].timeout` no longer silently disables `targets[].retry` for the
+  failure it exists to bound. An attempt that ran out its own timeout was never
+  retried on the same target, so `retry.attempts: 3` meant one attempt for a
+  hung upstream — under `single`, the request's only recourse. The retry
+  classifier sees only the error, and an attempt deadline reads exactly like
+  the request's own, which is never retried. An attempt timeout while the
+  request is still live is now retried as a transport failure is, on every
+  surface; the request's own deadline, an open circuit and a full concurrency
+  queue still end the target's attempts.
+
 ## [1.5.9] — 2026-09-18
 
 ### Added

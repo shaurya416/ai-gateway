@@ -126,12 +126,24 @@ func retryDelay(attempt, initialBackoffMs int, prevErr error) time.Duration {
 // WaitBeforeRetry blocks for the configured retry delay ahead of attempt
 // (attempt >= 1), normalising initialBackoffMs through NormalizeBackoffMs so
 // callers never have to re-derive the <=0 default themselves. The returned
-// bool is false when an upstream Retry-After hint exceeds maxRetryAfter and
-// the caller should abandon this target rather than wait; ctx cancellation is
-// returned as an error.
+// bool is false when the caller should abandon this target rather than wait:
+// an upstream Retry-After hint exceeds maxRetryAfter, or the wait would not end
+// before ctx's deadline. ctx cancellation is returned as an error.
+//
+// A wait the deadline cuts short can never be followed by the retry it waits
+// for, so sleeping through it only spends the rest of the request on nothing:
+// the caller is answered a timeout instead of the upstream's own failure, and a
+// pool never offers the request to a sibling, because by then the deadline has
+// passed. Abandoning up front leaves both the failure and the budget intact.
 func WaitBeforeRetry(ctx context.Context, attempt, initialBackoffMs int, prevErr error) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
 	delay := retryDelay(attempt, NormalizeBackoffMs(initialBackoffMs), prevErr)
 	if delay < 0 {
+		return false, nil
+	}
+	if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) <= delay {
 		return false, nil
 	}
 	select {

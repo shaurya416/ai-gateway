@@ -56,12 +56,13 @@ func attemptTarget[Req, Resp any](
 				return zero, err
 			}
 			// Both outcomes are logged: a retry that happened and a target
-			// abandoned because its Retry-After was longer than the gateway is
-			// willing to hold a request open are each invisible otherwise, and
-			// "did my retry config do anything" is the first question asked of
-			// this block.
+			// abandoned because its wait was longer than the gateway is willing
+			// to hold a request open — past the Retry-After cap, or past the
+			// request's own deadline — are each invisible otherwise, and "did my
+			// retry config do anything" is the first question asked of this
+			// block.
 			if !proceed {
-				g.log.Ctx(ctx).Info("abandoning target: Retry-After exceeds the cap",
+				g.log.Ctx(ctx).Info("abandoning target: retry wait exceeds the Retry-After cap or the request deadline",
 					"target", target.key, "retry_after", providers.RetryAfterFrom(lastErr))
 				break
 			}
@@ -123,11 +124,34 @@ func attemptTarget[Req, Resp any](
 			return resp, nil
 		}
 		lastErr = err
-		if !strategies.ShouldRetry(err, policy.onStatusCodes) {
+		if !retryableAttemptFailure(ctx, err, policy.onStatusCodes) {
 			break
 		}
 	}
 	return zero, lastErr
+}
+
+// retryableAttemptFailure reports whether a failed attempt may be retried
+// against the same target.
+//
+// strategies.ShouldRetry classifies from the error alone, and never retries a
+// deadline: from the error alone the request's own deadline cannot be told from
+// an attempt's, and retrying the request's would be retrying for nobody. The
+// request context tells them apart. An attempt that ran out its own
+// targets[].timeout while the request is still live failed the way a transport
+// error fails — no status, nothing the request did wrong — so it is retried as
+// one is, whatever on_status_codes lists. Bounding each attempt so the next one
+// can start is what a per-attempt timeout is for; without this, retry.attempts
+// was silently one for exactly the hung upstream it exists to ride out. An open
+// circuit and a full queue stay final either way.
+func retryableAttemptFailure(ctx context.Context, err error, onStatusCodes []int) bool {
+	if ctx.Err() == nil && errors.Is(err, errAttemptTimeout) &&
+		providers.ParseStatusCode(err) == 0 &&
+		!errors.Is(err, circuitbreaker.ErrCircuitOpen) &&
+		!errors.Is(err, providers.ErrProviderSaturated) {
+		return true
+	}
+	return strategies.ShouldRetry(err, onStatusCodes)
 }
 
 // endAttemptSpan closes one attempt's span with its outcome. The error goes

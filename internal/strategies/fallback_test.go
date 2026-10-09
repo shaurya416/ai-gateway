@@ -79,6 +79,28 @@ func TestWaitBeforeRetry_ContextCancelled(t *testing.T) {
 	}
 }
 
+// A wait the request deadline would cut short is abandoned up front: the retry
+// it waits for can never happen, so sleeping until the deadline only turns the
+// upstream's own failure into a timeout and leaves no time to try anyone else.
+func TestWaitBeforeRetry_AbandonsWhenWaitOutlastsDeadline(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	prev := &core.HTTPStatusError{StatusCode: 429, Message: "slow down", RetryAfter: 2 * time.Second}
+
+	start := time.Now()
+	proceed, err := WaitBeforeRetry(ctx, 1, 0, prev)
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("WaitBeforeRetry error = %v, want nil: the target is abandoned, the request is not over", err)
+	}
+	if proceed {
+		t.Fatal("WaitBeforeRetry proceed = true, want false when the wait outlasts the deadline")
+	}
+	if elapsed >= 100*time.Millisecond {
+		t.Fatalf("WaitBeforeRetry slept %v toward a deadline it could not beat", elapsed)
+	}
+}
+
 // upstream builds the typed provider error a real provider returns for an
 // upstream status. Every retry decision reads the status through errors.As, so a
 // test that hand-formats "provider error (503)" into a plain error is testing
