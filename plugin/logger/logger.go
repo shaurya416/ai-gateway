@@ -127,27 +127,33 @@ func (l *RequestLogger) persist(ctx context.Context, log *logger.Logger, entry r
 	return true
 }
 
-// metaTerminalRow is the Metadata slot marking that this request already has a
-// terminal row in the store.
+// metaTerminalRow is the Metadata slot holding the CreatedAt of the terminal
+// row this request already has in the store.
 //
 // It lives in the per-request Metadata rather than on the plugin, because one
 // RequestLogger instance serves every stage of every concurrent request: a
 // field on the receiver would be one request's answer given to another's. The
 // key is namespaced for the same reason the map is documented as shared.
+//
+// It carries the timestamp rather than a flag because the trace id does not
+// name the row: requests propagating one traceparent share a trace id, and the
+// timestamp is what tells this request's row from its siblings'.
 const metaTerminalRow = "request-logger.terminal_row"
 
-// markTerminalRow records that this request's terminal row is now in the store.
-func markTerminalRow(pctx *plugin.Context) {
+// markTerminalRow records that this request's terminal row, written at
+// createdAt, is now in the store.
+func markTerminalRow(pctx *plugin.Context, createdAt time.Time) {
 	if pctx.Metadata == nil {
 		return
 	}
-	pctx.Metadata[metaTerminalRow] = true
+	pctx.Metadata[metaTerminalRow] = createdAt
 }
 
-// hasTerminalRow reports whether this request already wrote a terminal row.
-func hasTerminalRow(pctx *plugin.Context) bool {
-	written, _ := pctx.Metadata[metaTerminalRow].(bool)
-	return written
+// terminalRow reports when this request's terminal row was written, and
+// whether it wrote one at all.
+func terminalRow(pctx *plugin.Context) (time.Time, bool) {
+	createdAt, ok := pctx.Metadata[metaTerminalRow].(time.Time)
+	return createdAt, ok
 }
 
 // recordLateFailure attaches a failure to the terminal row this request already
@@ -164,12 +170,12 @@ func hasTerminalRow(pctx *plugin.Context) bool {
 // It returns false when there is nothing to annotate — a store that cannot, or
 // a row that has gone since — and the caller writes the on_error row as before.
 // A lost failure would be the worse outcome of the two.
-func (l *RequestLogger) recordLateFailure(ctx context.Context, log *logger.Logger, traceID, message string) bool {
+func (l *RequestLogger) recordLateFailure(ctx context.Context, log *logger.Logger, traceID string, createdAt time.Time, message string) bool {
 	annotator, ok := l.writer.(requestlog.ErrorAnnotator)
 	if !ok {
 		return false
 	}
-	annotated, err := annotator.AnnotateError(ctx, traceID, string(plugin.StageAfterRequest), message)
+	annotated, err := annotator.AnnotateError(ctx, traceID, string(plugin.StageAfterRequest), createdAt, message)
 	if err != nil {
 		log.Warn("request log annotation failed; the recorded request does not name its failure",
 			"error", err,
@@ -242,7 +248,7 @@ func (l *RequestLogger) Execute(ctx context.Context, pctx *plugin.Context) error
 			CostUSD:          measured(pctx.Measurements.CostUSD, pctx.Measurements.HasCost),
 		})
 		if wrote {
-			markTerminalRow(pctx)
+			markTerminalRow(pctx, now)
 		}
 	}
 
@@ -263,7 +269,7 @@ func (l *RequestLogger) Execute(ctx context.Context, pctx *plugin.Context) error
 		)
 		// A request that already has a terminal row gets its failure recorded on
 		// that row instead of a second one. See recordLateFailure.
-		if hasTerminalRow(pctx) && l.recordLateFailure(ctx, log, logger.TraceIDFromContext(ctx), errMsg) {
+		if createdAt, ok := terminalRow(pctx); ok && l.recordLateFailure(ctx, log, logger.TraceIDFromContext(ctx), createdAt, errMsg) {
 			return nil
 		}
 		l.persist(ctx, log, requestlog.Entry{

@@ -170,6 +170,80 @@ func TestRealIP_TrustedPeer_XFFChainDirection(t *testing.T) {
 	}
 }
 
+// TestRealIP_TrustedPeer_XFFAcrossHeaderLines verifies that an
+// X-Forwarded-For chain split over several header lines is read as the one
+// list RFC 9110 §5.3 says it is. A proxy that appends its own line rather than
+// extending the caller's (HAProxy's `option forwardfor` does) puts the address
+// it observed in the LAST line, so reading only the first line handed the
+// caller's own header back as the client address.
+func TestRealIP_TrustedPeer_XFFAcrossHeaderLines(t *testing.T) {
+	tests := []struct {
+		name  string
+		lines []string
+		want  string
+	}{
+		{
+			name:  "forged first line, proxy line appended",
+			lines: []string{"9.9.9.9", "203.0.113.7"},
+			want:  "203.0.113.7",
+		},
+		{
+			name:  "forged chain in first line",
+			lines: []string{"9.9.9.9, 8.8.8.8", "203.0.113.7"},
+			want:  "203.0.113.7",
+		},
+		{
+			name:  "trusted hop in last line is stepped over into the earlier line",
+			lines: []string{"203.0.113.7", "127.0.0.2"},
+			want:  "203.0.113.7",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil)
+			req.RemoteAddr = "127.0.0.1:56789" // trusted loopback peer
+			for _, line := range tt.lines {
+				req.Header.Add("X-Forwarded-For", line)
+			}
+
+			resolved := applyRealIP(t, "", req)
+
+			if resolved != tt.want {
+				t.Errorf("XFF lines %q: expected %q, got %q", tt.lines, tt.want, resolved)
+			}
+		})
+	}
+}
+
+// TestRateLimit_ForgedXFFLineSharesTheClientBucket verifies the consequence
+// that matters: a caller behind a line-appending proxy cannot take a fresh
+// rate-limit bucket per request by changing the X-Forwarded-For line it sends.
+func TestRateLimit_ForgedXFFLineSharesTheClientBucket(t *testing.T) {
+	nets, err := httpserver.ParseTrustedProxyCIDRs("")
+	if err != nil {
+		t.Fatalf("ParseTrustedProxyCIDRs: %v", err)
+	}
+	store := ratelimit.NewStore(1, 1) // burst=1: the first request spends the only token
+	ok := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+	handler := httpserver.RealIPMiddleware(nets)(middleware.RateLimit(store)(ok))
+
+	codes := make([]int, 0, 2)
+	for _, forged := range []string{"198.51.100.1", "198.51.100.2"} {
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/admin/session", nil)
+		req.RemoteAddr = "127.0.0.1:56789"
+		req.Header.Add("X-Forwarded-For", forged)        // written by the caller
+		req.Header.Add("X-Forwarded-For", "203.0.113.7") // appended by the proxy
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		codes = append(codes, rec.Code)
+	}
+
+	if codes[0] != http.StatusOK || codes[1] != http.StatusTooManyRequests {
+		t.Fatalf("status codes = %v, want [200 429]: a forged X-Forwarded-For line bought a fresh bucket", codes)
+	}
+}
+
 func TestRealIP_TrustedPeer_MalformedXFF_FallsBackToPeer(t *testing.T) {
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil)
 	req.RemoteAddr = "127.0.0.1:9999"

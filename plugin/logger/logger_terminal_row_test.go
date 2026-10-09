@@ -5,6 +5,7 @@ import (
 	"errors"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/ferro-labs/ai-gateway/internal/requestlog"
 	"github.com/ferro-labs/ai-gateway/pkg/logger"
@@ -142,7 +143,7 @@ func TestSQLWriter_AnnotateErrorIgnoresABlankTraceID(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	annotated, err := store.AnnotateError(ctx, "", "after_request", "boom")
+	annotated, err := store.AnnotateError(ctx, "", "after_request", time.Now(), "boom")
 	if err != nil {
 		t.Fatalf("annotate: %v", err)
 	}
@@ -156,5 +157,78 @@ func TestSQLWriter_AnnotateErrorIgnoresABlankTraceID(t *testing.T) {
 	}
 	if listed.Data[0].ErrorMessage != "" {
 		t.Errorf("an unrelated row was annotated: %q", listed.Data[0].ErrorMessage)
+	}
+}
+
+// A trace id names a distributed trace, not one request: every request that
+// arrives with a traceparent from the same trace — an agent's several calls
+// under one span, say — is logged under the same trace_id. A late failure must
+// therefore land on the row its own request wrote, never on a sibling's.
+// Annotating by trace id alone rewrote every clean row of the trace as failed.
+func TestRequestLogger_LateFailureAnnotatesOnlyItsOwnRow(t *testing.T) {
+	store, err := requestlog.NewSQLiteWriter(t.Context(), filepath.Join(t.TempDir(), "requests.db"))
+	if err != nil {
+		t.Fatalf("new request log store: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Errorf("close request log store: %v", err)
+		}
+	})
+
+	l := &RequestLogger{}
+	l.SetRequestLogWriter(store)
+	if err := l.Init(map[string]any{"persist": true}); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	// Both requests carry the same trace, as they do when a caller propagates
+	// one traceparent across several calls.
+	ctx := logger.WithTraceID(context.Background(), "4bf92f3577b34da6a3ce929d0e0e4736")
+
+	completed := func(model string, tokens int) *plugin.Context {
+		pctx := plugin.NewContext(&providers.Request{Model: model})
+		t.Cleanup(func() { plugin.PutContext(pctx) })
+		pctx.Metadata = map[string]any{}
+		pctx.Response = &providers.Response{
+			Model:    model,
+			Provider: "openai",
+			Usage:    providers.Usage{TotalTokens: tokens},
+		}
+		pctx.Target = "openai"
+		pctx.Stage = plugin.StageAfterRequest
+		if err := l.Execute(ctx, pctx); err != nil {
+			t.Fatalf("after_request: %v", err)
+		}
+		return pctx
+	}
+
+	completed("gpt-4", 15) // the first call succeeds outright
+	failing := completed("gpt-4o-mini", 30)
+	failing.Stage = plugin.StageOnError
+	failing.Error = errors.New("schema-guard rejected the response")
+	if err := l.Execute(ctx, failing); err != nil {
+		t.Fatalf("on_error: %v", err)
+	}
+
+	listed, err := store.List(ctx, requestlog.Query{Stages: requestlog.TerminalStages()})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if listed.Total != 2 {
+		t.Fatalf("two requests produced %d terminal rows, want 2", listed.Total)
+	}
+	for _, row := range listed.Data {
+		switch row.Model {
+		case "gpt-4":
+			if row.ErrorMessage != "" {
+				t.Errorf("the request that succeeded was recorded as failed: %q", row.ErrorMessage)
+			}
+		case "gpt-4o-mini":
+			if row.ErrorMessage == "" {
+				t.Error("the request that failed does not name its failure")
+			}
+		default:
+			t.Errorf("unexpected row %+v", row)
+		}
 	}
 }

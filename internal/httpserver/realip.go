@@ -87,7 +87,13 @@ func resolveClientIP(r *http.Request, trusted []*net.IPNet) string {
 
 	// Direct peer is trusted; honor X-Forwarded-For, reading the chain from
 	// the right so the caller cannot pick the answer by prepending entries.
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+	//
+	// Every header line is part of the chain (RFC 9110 §5.3), not only the
+	// first. A proxy that appends its own line instead of extending the
+	// caller's — HAProxy's `option forwardfor` does — puts the address it
+	// observed in the last line, so Header.Get, which returns the first, would
+	// hand back the line the caller wrote.
+	if xff := strings.Join(r.Header.Values("X-Forwarded-For"), ","); xff != "" {
 		hops := strings.Split(xff, ",")
 		for i := len(hops) - 1; i >= 0; i-- {
 			hop := strings.TrimSpace(hops[i])

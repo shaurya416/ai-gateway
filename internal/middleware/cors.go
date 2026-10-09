@@ -8,6 +8,15 @@ import (
 	"github.com/ferro-labs/ai-gateway/pkg/logger"
 )
 
+// allowedRequestHeaders is the Access-Control-Allow-Headers value: the request
+// headers an allowed origin may send. It is the set the gateway reads —
+// credentials and content type, X-Provider for the pass-through, the request
+// identity headers, conditional routing's X-Gateway-Metadata, the W3C trace
+// context (traceparent, tracestate, baggage), and X-Request-ID, which is
+// adopted as the trace id.
+const allowedRequestHeaders = "Content-Type, Authorization, X-Provider, X-User-ID, X-Session-ID, Baggage, " +
+	"X-Gateway-Metadata, Traceparent, Tracestate, X-Request-ID"
+
 // CORS returns middleware that sets CORS headers for the given allowed origins.
 //
 // A cross-origin request is denied by withholding Access-Control-Allow-Origin,
@@ -68,7 +77,13 @@ func CORS(allowedOrigins ...string) func(http.Handler) http.Handler {
 			if _, ok := allowed[requestOrigin]; ok {
 				w.Header().Set("Access-Control-Allow-Origin", requestOrigin)
 				w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-				w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Provider, X-User-ID, X-Session-ID, Baggage")
+				// Every request header the gateway reads belongs here. A header
+				// the browser is not allowed to send does not get dropped: the
+				// whole request is blocked, so an omission disables the feature
+				// that header carries for every browser caller — or, for
+				// traceparent, which OpenTelemetry's fetch instrumentation adds to
+				// every request it propagates trace context on, the gateway itself.
+				w.Header().Set("Access-Control-Allow-Headers", allowedRequestHeaders)
 				w.Header().Set("Access-Control-Max-Age", "86400")
 			}
 

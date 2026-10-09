@@ -45,6 +45,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `provider returned a nil response`, counts against the breaker, and fails
   over as any other target failure does — the treatment a nil stream already
   had.
+- Behind a trusted proxy that adds its own `X-Forwarded-For` line rather than
+  extending the caller's (HAProxy's `option forwardfor` does), a caller could
+  again choose its own client address: only the first header line was read,
+  and that is the line the caller wrote. Each forged value bought a fresh
+  per-IP rate-limit bucket and a fresh `/admin/session` sign-in throttle, and
+  wrote a forged address into the audit trail. Every `X-Forwarded-For` line is
+  now read as one chain, as RFC 9110 defines repeated header lines, and walked
+  from the right as before.
+- A request that completed and then failed no longer marks its sibling
+  requests as failed in the request log. When an `after_request` plugin
+  ordered behind the request logger broke, the failure was written onto the
+  request's `after_request` row by trace id alone — and requests share that id
+  whenever they reuse one `X-Request-ID` or, with tracing on, carry a
+  `traceparent` from the same trace, so each clean row of the trace was
+  rewritten with the failure, and `/admin/logs/stats` counted the successes as
+  errors. The failure is now recorded on the one row the failing request
+  wrote.
+- A browser application on `CORS_ORIGINS` can send the request headers the
+  gateway reads. The preflight allowed the identity headers and `baggage` but
+  not `X-Gateway-Metadata`, `traceparent`, `tracestate` or `X-Request-ID`, and a
+  header the preflight does not allow blocks the whole request: conditional
+  routing on metadata was unusable from a browser, and an application
+  propagating OpenTelemetry trace context to the gateway — which adds
+  `traceparent` to every fetch it sends there — could not reach it at all.
+  `Access-Control-Allow-Headers` now lists all four.
 
 ## [1.5.9] — 2026-09-18
 

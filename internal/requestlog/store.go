@@ -260,10 +260,16 @@ type Writer interface {
 // meaningless for a sink that keeps no rows to revisit, and a caller that finds
 // a Writer without it simply writes as before.
 type ErrorAnnotator interface {
-	// AnnotateError records message on the row this trace already wrote at
-	// stage. It reports whether a row was found: false means there is nothing
-	// to annotate and the caller still owns recording the failure.
-	AnnotateError(ctx context.Context, traceID, stage, message string) (bool, error)
+	// AnnotateError records message on the row this request already wrote at
+	// stage, named by its trace id and the CreatedAt it was written with. It
+	// reports whether a row was found: false means there is nothing to
+	// annotate and the caller still owns recording the failure.
+	//
+	// The trace id alone does not name a request. It names a distributed
+	// trace, and every request arriving with a traceparent from the same trace
+	// is logged under it — so annotating by trace id rewrote a failure onto
+	// every sibling request of that trace that had succeeded.
+	AnnotateError(ctx context.Context, traceID, stage string, createdAt time.Time, message string) (bool, error)
 }
 
 // WriterReceiver is implemented by components — request-logging plugins — that
@@ -378,14 +384,19 @@ func (w *SQLWriter) Write(ctx context.Context, entry Entry) error {
 }
 
 // AnnotateError implements ErrorAnnotator: it records message on the row this
-// trace already wrote at stage.
+// request already wrote at stage.
 //
 // A blank traceID matches nothing rather than every unattributed row, which is
 // what an unguarded equality against ” would update. Only a row that carries
 // no message yet is touched, so the first failure recorded against a request
 // stands and a retry of this path cannot rewrite it.
-func (w *SQLWriter) AnnotateError(ctx context.Context, traceID, stage, message string) (bool, error) {
-	if traceID == "" {
+//
+// created_at is what separates this request's row from its siblings in the
+// same trace. It is compared in the form Write stored it — normalised to UTC
+// exactly as Write normalises it — and a zero value matches nothing, for the
+// same reason a blank traceID does.
+func (w *SQLWriter) AnnotateError(ctx context.Context, traceID, stage string, createdAt time.Time, message string) (bool, error) {
+	if traceID == "" || createdAt.IsZero() {
 		return false, nil
 	}
 
@@ -393,9 +404,9 @@ func (w *SQLWriter) AnnotateError(ctx context.Context, traceID, stage, message s
 	// the longest reach, and a caller that hands over a raw upstream error must
 	// not be able to durably store a credential.
 	query := sqldb.Bind(w.dialect, `UPDATE request_logs SET error_message = ?
-	WHERE trace_id = ? AND stage = ? AND (error_message IS NULL OR error_message = '')`)
+	WHERE trace_id = ? AND stage = ? AND created_at = ? AND (error_message IS NULL OR error_message = '')`)
 
-	result, err := w.db.ExecContext(ctx, query, redact.String(message), traceID, stage)
+	result, err := w.db.ExecContext(ctx, query, redact.String(message), traceID, stage, createdAt.UTC())
 	if err != nil {
 		return false, fmt.Errorf("annotate request log error: %w", err)
 	}

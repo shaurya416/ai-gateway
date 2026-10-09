@@ -5,6 +5,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/ferro-labs/ai-gateway/internal/handler"
+	"github.com/ferro-labs/ai-gateway/pkg/logger"
 )
 
 var dummyHandler = http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -255,7 +258,7 @@ func TestCORS_StandardHeaders_AlwaysSet(t *testing.T) {
 	if got := w.Header().Get("Access-Control-Allow-Methods"); got != "GET, POST, PUT, DELETE, OPTIONS" {
 		t.Fatalf("unexpected Allow-Methods: %q", got)
 	}
-	if got := w.Header().Get("Access-Control-Allow-Headers"); got != "Content-Type, Authorization, X-Provider, X-User-ID, X-Session-ID, Baggage" {
+	if got := w.Header().Get("Access-Control-Allow-Headers"); got != "Content-Type, Authorization, X-Provider, X-User-ID, X-Session-ID, Baggage, X-Gateway-Metadata, Traceparent, Tracestate, X-Request-ID" {
 		t.Fatalf("unexpected Allow-Headers: %q", got)
 	}
 	if got := w.Header().Get("Access-Control-Max-Age"); got != "86400" {
@@ -292,6 +295,40 @@ func TestCORS_IdentityHeadersPreflight(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestCORS_PreflightAllowsEveryRequestHeaderTheGatewayReads verifies that an
+// allowed origin may send each request header the gateway itself reads. A
+// header missing from Access-Control-Allow-Headers is not ignored by the
+// browser: it blocks the whole request, so a browser application on the
+// allowlist could not use conditional routing's X-Gateway-Metadata, and one
+// propagating OpenTelemetry trace context to the gateway — which adds
+// traceparent to every fetch it sends there — could not reach it at all.
+func TestCORS_PreflightAllowsEveryRequestHeaderTheGatewayReads(t *testing.T) {
+	read := []string{
+		handler.HeaderRoutingMetadata, // conditional routing's `key: metadata`
+		"traceparent",                 // W3C trace context, extracted by internal/otel
+		"tracestate",
+		logger.RequestIDHeader, // adopted as the trace id when it is one
+	}
+
+	h := CORS("https://app.example")(dummyHandler)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodOptions, "/v1/chat/completions", nil)
+	req.Header.Set("Origin", "https://app.example")
+	req.Header.Set("Access-Control-Request-Method", "POST")
+	req.Header.Set("Access-Control-Request-Headers", strings.ToLower(strings.Join(read, ",")))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	allowed := make(map[string]bool)
+	for _, header := range strings.Split(rec.Header().Get("Access-Control-Allow-Headers"), ",") {
+		allowed[strings.ToLower(strings.TrimSpace(header))] = true
+	}
+	for _, header := range read {
+		if !allowed[strings.ToLower(header)] {
+			t.Errorf("preflight does not allow %s, so the browser blocks the request", header)
+		}
 	}
 }
 
