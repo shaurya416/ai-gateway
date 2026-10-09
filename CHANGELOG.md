@@ -90,6 +90,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   response, so the caller received fewer vectors than it sent texts and the
   target was recorded as healthy; it now counts against the breaker and fails
   over like any other target failure.
+- A call that outlives a circuit-breaker state change no longer decides the
+  new state. A request admitted while the circuit was closed that answered
+  only after the circuit had opened and aged into half-open — routinely a long
+  stream, whose outcome is recorded when it ends — was scored as the half-open
+  probe: its success closed the circuit while the real probe was still in
+  flight, and its completion freed a probe slot it never took, admitting one
+  probe more than `max_half_threshold`. The breaker applied every outcome to
+  whatever state was current, with no record of which state had admitted the
+  call. Each admission now carries the generation it was admitted in, and an
+  outcome from an earlier generation is ignored. `pkg/circuitbreaker` gains
+  `Admit` and `Admission` for callers whose calls can outlive a transition;
+  `Allow` and the `Record*` methods are unchanged.
+- A streaming upstream that accepts the connection and never answers now opens
+  its circuit. A stream start abandoned when `request_timeout` or
+  `targets[].timeout` elapsed was never counted against the target's breaker:
+  the breaker was resolved only when the abandoned call itself returned, which
+  for a hung upstream was never or after the caller had gone, so the target
+  stayed in rotation and `/readyz` kept reporting it routable while every
+  stream request waited out the deadline. The unary surfaces already counted
+  the same timeout. The start now resolves its breaker admission when the wait
+  is abandoned, exactly once: the gateway's own deadline counts, the caller
+  hanging up or its own deadline does not, and the abandoned call's late answer
+  resolves nothing again. Behind `targets[].concurrency` the in-flight slot is
+  now taken within the start deadline, before the provider is asked, so a
+  stream whose deadline passes while queued is shed with `429` as a unary
+  request is — not blamed on the provider, and no longer started later for
+  nobody — and the slot is released once, when the abandoned stream drains. A
+  provider answering a stream start with neither a channel nor an error now
+  counts as a failed start as well: it had left its half-open probe held,
+  rejecting the target until restart, and behind a concurrency limit was served
+  as a stream that never ended.
+- An attempt that ran out `targets[].timeout` names its target once in the
+  error instead of twice (`target a: target a: attempt timed out …`). The
+  attempt and the target walk both prefixed it; only the walk does now.
 
 ## [1.5.9] — 2026-09-18
 

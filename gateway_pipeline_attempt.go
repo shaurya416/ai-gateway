@@ -104,11 +104,13 @@ func attemptTarget[Req, Resp any](
 					panic(r)
 				}
 			}()
-			return callUnderResilience(callCtx, target.key, p, cb, lim, req, upstreamModel, call)
+			return callUnderResilience(callCtx, p, cb, lim, req, upstreamModel, call)
 		}()
 		cancelAttempt()
+		// Not prefixed with the target: routeTargets names the target on every
+		// error the walk returns, and naming it here too printed it twice.
 		if err != nil && ctx.Err() == nil && errors.Is(context.Cause(attemptCtx), errAttemptTimeout) {
-			err = fmt.Errorf("target %s: attempt timed out after %s: %w: %w", target.key, policy.attemptTimeout, errAttemptTimeout, err)
+			err = fmt.Errorf("attempt timed out after %s: %w: %w", policy.attemptTimeout, errAttemptTimeout, err)
 		}
 		if attemptSpan != nil {
 			endAttemptSpan(attemptSpan, err)
@@ -181,14 +183,13 @@ func endAttemptSpan(span observability.Span, err error) {
 // semantics are identical to the wrapper pair (cbProvider, limitedProvider) it
 // replaces on this path.
 //
-// The deferred recover is load-bearing: Allow() may have admitted a half-open
+// The deferred recover is load-bearing: Admit() may have admitted a half-open
 // probe, and a panicking probe that never resolves wedges the target for good —
 // resolveState only repairs Open→HalfOpen on a timer, never a HalfOpen circuit
 // stuck at its probe cap. The panic is recorded as a failure and re-raised, not
 // swallowed.
 func callUnderResilience[Req, Resp any](
 	ctx context.Context,
-	key string,
 	p providers.Provider,
 	cb *circuitbreaker.CircuitBreaker,
 	lim *providerLimiter,
@@ -201,16 +202,17 @@ func callUnderResilience[Req, Resp any](
 	}
 
 	if cb != nil {
-		if !cb.Allow() {
+		adm, ok := cb.Admit()
+		if !ok {
 			var zero Resp
 			return zero, circuitbreaker.ErrCircuitOpen
 		}
 		defer func() {
 			if r := recover(); r != nil {
-				cb.RecordFailure()
+				adm.Failure()
 				panic(r)
 			}
-			recordCircuitBreakerOutcome(ctx, cb, key, err)
+			recordCircuitBreakerOutcome(ctx, adm, err)
 		}()
 	}
 

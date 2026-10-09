@@ -304,8 +304,8 @@ func TestRouteStream_SpanCarriesResponseModel(t *testing.T) {
 //
 // A start that overruns the gateway's own start deadline is abandoned, but the
 // call keeps running and may still SUCCEED. Nothing downstream will ever see
-// that channel, so the half-open probe cbProvider admitted is resolved by the
-// abandoning goroutine instead. Left held, it is never repaired: resolveState
+// that channel, so the half-open probe the start took is resolved when the
+// wait is abandoned instead. Left held, it is never repaired: resolveState
 // only moves Open to HalfOpen on a timer, never a HalfOpen circuit stuck at its
 // probe cap, so the target rejects every later request until the process
 // restarts.

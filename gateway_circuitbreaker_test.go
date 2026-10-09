@@ -538,13 +538,14 @@ func TestRecordCircuitBreakerOutcome_ReleasesHalfOpenProbeForClientCancel(t *tes
 	cb.RecordFailure()
 	fakeNow = fakeNow.Add(5 * time.Millisecond)
 	_ = cb.State()
-	if !cb.Allow() {
+	adm, ok := cb.Admit()
+	if !ok {
 		t.Fatal("expected first half-open stream probe allowed")
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	recordCircuitBreakerOutcome(ctx, cb, mockProviderName, context.Canceled)
+	recordCircuitBreakerOutcome(ctx, adm, context.Canceled)
 
 	if cb.State() != circuitbreaker.StateHalfOpen {
 		t.Fatalf("expected ignored client cancel to keep half-open state, got %s", cb.State())

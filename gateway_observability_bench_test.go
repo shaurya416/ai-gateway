@@ -80,7 +80,7 @@ func TestAttemptTargetDisabledRecordingAllocatesNothing(t *testing.T) {
 	sequence := 0
 
 	callAllocs := testing.AllocsPerRun(1000, func() {
-		_, _ = callUnderResilience(ctx, "mock", p, nil, nil, req, "gpt-4o", call)
+		_, _ = callUnderResilience(ctx, p, nil, nil, req, "gpt-4o", call)
 	})
 	attemptAllocs := testing.AllocsPerRun(1000, func() {
 		sequence = 0

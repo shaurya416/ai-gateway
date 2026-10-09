@@ -3,7 +3,6 @@ package aigateway
 import (
 	"context"
 	"errors"
-	"fmt"
 	"time"
 
 	"github.com/ferro-labs/ai-gateway/pkg/circuitbreaker"
@@ -15,10 +14,15 @@ import (
 // breaker for the gateway's routing paths.
 
 // cbProvider wraps a Provider with a circuit breaker.
+//
+// It carries no CompleteStream. A stream's breaker outcome is known only when
+// the stream ends, long after CompleteStream has returned, and that signature
+// has no room to hand the admission to whoever ends it. The streaming pipeline
+// takes the breaker off this wrapper instead and resolves it itself — see
+// startStreamAttempt.
 type cbProvider struct {
 	providers.Provider
-	cb   *circuitbreaker.CircuitBreaker
-	name string
+	cb *circuitbreaker.CircuitBreaker
 }
 
 // UnwrapIdentity exposes the provider beneath the breaker. A circuit breaker
@@ -29,58 +33,26 @@ type cbProvider struct {
 func (p *cbProvider) UnwrapIdentity() providers.Provider { return p.Provider }
 
 func (p *cbProvider) Complete(ctx context.Context, req providers.Request) (resp *providers.Response, err error) {
-	if !p.cb.Allow() {
+	adm, ok := p.cb.Admit()
+	if !ok {
 		return nil, circuitbreaker.ErrCircuitOpen
 	}
 	// Deferred so a panic from p.Provider.Complete still releases the
-	// half-open probe Allow() just admitted. Without this, a panicking probe
+	// half-open probe Admit() just admitted. Without this, a panicking probe
 	// leaks halfOpenProbes forever: resolveState() only turns Open into
 	// HalfOpen on a timeout, it never repairs a HalfOpen circuit stuck at its
-	// probe cap, so Allow() would reject every request for this provider
+	// probe cap, so Admit() would reject every request for this provider
 	// until the process restarts. A panic is treated as a failure, then
 	// re-raised so it still propagates to the caller.
 	defer func() {
 		if r := recover(); r != nil {
-			p.cb.RecordFailure()
+			adm.Failure()
 			panic(r)
 		}
-		recordCircuitBreakerOutcome(ctx, p.cb, p.name, err)
+		recordCircuitBreakerOutcome(ctx, adm, err)
 	}()
 	resp, err = p.Provider.Complete(ctx, req)
 	return resp, err
-}
-
-func (p *cbProvider) CompleteStream(ctx context.Context, req providers.Request) (<-chan providers.StreamChunk, error) {
-	if !p.cb.Allow() {
-		return nil, circuitbreaker.ErrCircuitOpen
-	}
-	// Deferred for the same reason as Complete: a panic out of CompleteStream
-	// would otherwise strand the half-open probe Allow() just admitted and
-	// reject every later request for this provider until restart. Only the
-	// panic path is handled here — a stream that starts is not yet a success,
-	// so the probe stays held and the outcome is reported at stream completion
-	// via MeterMeta.CircuitBreakerOutcome.
-	defer func() {
-		if r := recover(); r != nil {
-			p.cb.RecordFailure()
-			panic(r)
-		}
-	}()
-	sp, ok := providers.As[providers.StreamProvider](p.Provider)
-	if !ok {
-		p.cb.ReleaseProbe()
-		return nil, fmt.Errorf("provider %s does not support streaming", p.name)
-	}
-	ch, err := sp.CompleteStream(ctx, req)
-	if err != nil {
-		if shouldRecordCircuitBreakerFailure(ctx, err) {
-			p.cb.RecordFailure()
-		} else {
-			p.cb.ReleaseProbe()
-		}
-		return nil, err
-	}
-	return ch, nil
 }
 
 // shouldRecordCircuitBreakerFailure reports whether an error should count toward
@@ -123,29 +95,31 @@ func shouldRecordCircuitBreakerFailure(ctx context.Context, err error) bool {
 	return !isRateLimitError(err)
 }
 
-// recordCircuitBreakerOutcome updates breaker state from the result of one
-// upstream call: a blameworthy failure trips the breaker, a failure that is not
-// the provider's fault releases the half-open probe instead, and a success
-// closes it. Used by the stream path once a stream finishes (its startup
-// failures are recorded in cbProvider.CompleteStream) and by withTargetBreaker
-// for the surfaces that cannot be wrapped.
+// recordCircuitBreakerOutcome resolves one admitted upstream call: a
+// blameworthy failure trips the breaker, a failure that is not the provider's
+// fault releases the half-open probe instead, and a success closes it. Used by
+// the pipeline, by the stream path — at the start for a start that failed, and
+// once the stream finishes for one that began — and by withTargetBreaker.
+//
+// The outcome lands on the generation that admitted the call and no other, so
+// a call that outlives a state transition — admitted while Closed, finishing
+// after the circuit opened and aged into HalfOpen — cannot close the circuit or
+// free a probe slot it never took. See circuitbreaker.Admission.
 //
 // It records the outcome and nothing else. The gateway_circuit_breaker_state
 // gauge is not written here — it is resolved from the live breakers on each
 // scrape (see Gateway.CircuitBreakerStates), because a breaker also changes
-// state on a timer that no request outcome observes. The target name that used
-// to label that write is now unused; the parameter stays so the call sites on
-// the streaming and pipeline paths are untouched by this change.
-func recordCircuitBreakerOutcome(ctx context.Context, cb *circuitbreaker.CircuitBreaker, _ string, err error) {
+// state on a timer that no request outcome observes.
+func recordCircuitBreakerOutcome(ctx context.Context, adm circuitbreaker.Admission, err error) {
 	if err != nil {
 		if !shouldRecordCircuitBreakerFailure(ctx, err) {
-			cb.ReleaseProbe()
+			adm.Release()
 			return
 		}
-		cb.RecordFailure()
+		adm.Failure()
 		return
 	}
-	cb.RecordSuccess()
+	adm.Success()
 }
 
 // withTargetBreaker runs fn under the target's circuit breaker, for the surfaces
@@ -166,21 +140,22 @@ func (g *Gateway) withTargetBreaker(ctx context.Context, target string, fn func(
 	if cb == nil {
 		return fn(ctx)
 	}
-	if !cb.Allow() {
+	adm, ok := cb.Admit()
+	if !ok {
 		return circuitbreaker.ErrCircuitOpen
 	}
 	// Deferred for the same reason as cbProvider.Complete: fn panicking must
-	// still resolve the half-open probe Allow() admitted, or the breaker gets
+	// still resolve the half-open probe Admit() admitted, or the breaker gets
 	// stuck rejecting this target forever with no self-healing. A panic
 	// counts as a failure and is re-raised afterward, never swallowed.
 	defer func() {
 		if r := recover(); r != nil {
-			cb.RecordFailure()
+			adm.Failure()
 			panic(r)
 		}
 	}()
 	err := fn(ctx)
-	recordCircuitBreakerOutcome(ctx, cb, target, err)
+	recordCircuitBreakerOutcome(ctx, adm, err)
 	return err
 }
 

@@ -156,7 +156,7 @@ func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-cha
 	// timer, deferred here purely so a panic can't leak it.
 	startCtx, cancelStart := withRequestDeadline(ctx, requestTimeout)
 	defer cancelStart()
-	target, rawCh, targetBreaker, err := g.startStreamWithStrategy(startCtx, ctx, req)
+	target, rawCh, admission, err := g.startStreamWithStrategy(startCtx, ctx, req)
 	providerName := target.key
 	span.SetAttribute(observability.AttrGenAISystem, providerName)
 	// Stamp the resolved target key (virtual key = provider name in this routing layer).
@@ -200,14 +200,16 @@ func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-cha
 	}
 	// The breaker's outcome is resolved when the STREAM ends, not when the start
 	// call returns — the pipeline was told as much (responseOutlivesCall), so it
-	// left the probe cbProvider admitted still held and nothing else will
-	// resolve it. targetBreaker is the INSTANCE that admitted the probe, handed
-	// back by the pipeline — a lookup by name here would race ReloadConfig,
-	// which can retire that instance and install a fresh one under the same key
-	// while the start is in flight.
-	if targetBreaker != nil {
+	// left the admission the start took still held and nothing else will
+	// resolve it. admission names the breaker INSTANCE that admitted the start,
+	// handed back by the pipeline — a lookup by name here would race
+	// ReloadConfig, which can retire that instance and install a fresh one under
+	// the same key while the start is in flight — and the generation it was
+	// admitted in, so a stream that outlives a state transition cannot resolve
+	// the new state's probes.
+	if admission.Breaker() != nil {
 		meta.CircuitBreakerOutcome = func(err error) {
-			recordCircuitBreakerOutcome(ctx, targetBreaker, providerName, err)
+			recordCircuitBreakerOutcome(ctx, admission, err)
 		}
 	}
 	if pctx != nil {

@@ -23,9 +23,11 @@ func resilienceFor(t *testing.T, gw *Gateway, key string) (*circuitbreaker.Circu
 
 // TestGateway_RouteStream_AbandonedStartReleasesHalfOpenProbe covers the start
 // that outruns request_timeout and then succeeds anyway. Nobody downstream ever
-// sees its channel, so the half-open probe it holds is resolved by the goroutine
-// that abandons it or by nothing at all — and a probe left at the cap makes
-// Allow() reject the target for the life of the process.
+// sees its channel, so the half-open probe it holds is resolved when the wait
+// is abandoned or by nothing at all — and a probe left at the cap makes
+// Allow() reject the target for the life of the process. Overrunning the
+// gateway's own deadline counts as the probe failing, so the circuit reopens
+// and must then age back into half-open and admit a fresh probe.
 func TestGateway_RouteStream_AbandonedStartReleasesHalfOpenProbe(t *testing.T) {
 	var calls atomic.Int32
 	unblock := make(chan struct{})
@@ -99,6 +101,7 @@ func TestGateway_RouteStream_AbandonedStartReleasesHalfOpenProbe(t *testing.T) {
 	}
 	close(unblock)
 	<-drained
+	fakeNow = fakeNow.Add(5 * time.Millisecond)
 
 	ch, err := gw.RouteStream(context.Background(), req)
 	if err != nil {

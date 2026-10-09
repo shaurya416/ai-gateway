@@ -755,10 +755,10 @@ func (g *Gateway) routeChat(ctx context.Context, s strategies.Strategy, req prov
 //   - The gate is the providers.StreamProvider assertion.
 //   - The circuit breaker must NOT resolve when the call returns: a stream that
 //     started is not yet a success. Streaming therefore passes cb == nil to the
-//     pipeline and keeps resolving the outcome through streamwrap's
-//     CircuitBreakerOutcome, admitting the probe itself via cbProvider as it
-//     does today. raceCompleteStream's ReleaseProbe on an abandoned-but-
-//     successful start is part of that ownership and stays exactly where it is.
+//     pipeline, and its leaf call takes the breaker admission itself
+//     (startStreamAttempt): every failed start — an abandoned wait included —
+//     is resolved there, once, and a started stream's admission is resolved
+//     through streamwrap's CircuitBreakerOutcome when the stream ends.
 //     Anything else strands the half-open probe and wedges the target for good.
 //   - Success recording stays in streamwrap; only the START failure path is the
 //     pipeline's, which is the half that is genuinely unary-shaped.

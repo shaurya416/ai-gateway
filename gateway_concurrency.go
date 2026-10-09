@@ -124,15 +124,27 @@ func (p *limitedProvider) CompleteStream(ctx context.Context, req providers.Requ
 	if err := p.lim.acquire(ctx); err != nil {
 		return nil, err
 	}
+	return p.lim.streamHolding(ctx, sp, req)
+}
+
+// streamHolding starts sp's stream with a slot the caller has already
+// acquired, and owns that slot from here on: it is released at once when the
+// start fails, and otherwise when the stream ends. A provider that answers with
+// neither a channel nor an error has failed to start, and is reported as
+// errNilStream rather than handed on as a stream that can never end.
+func (l *providerLimiter) streamHolding(ctx context.Context, sp providers.StreamProvider, req providers.Request) (<-chan providers.StreamChunk, error) {
 	upstream, err := sp.CompleteStream(ctx, req)
+	if err == nil && upstream == nil {
+		err = errNilStream
+	}
 	if err != nil {
-		p.lim.release()
+		l.release()
 		return nil, err
 	}
 
 	out := make(chan providers.StreamChunk)
 	go func() {
-		defer p.lim.release()
+		defer l.release()
 		defer close(out)
 		for {
 			select {
@@ -194,9 +206,26 @@ func decorateProvider(name string, p providers.Provider, cb *circuitbreaker.Circ
 		p = &limitedProvider{Provider: p, lim: lim, name: name}
 	}
 	if cb != nil {
-		p = &cbProvider{Provider: p, cb: cb, name: name}
+		p = &cbProvider{Provider: p, cb: cb}
 	}
 	return p
+}
+
+// undecorate is decorateProvider's inverse: the provider beneath the
+// decorators, and the breaker and limiter they applied — nil where a layer is
+// absent. Streaming's leaf call resolves both itself rather than through the
+// wrappers, because a stream start waits on one context and runs on another,
+// and its breaker outcome outlives the call (see startStreamAttempt).
+func undecorate(p providers.Provider) (providers.Provider, *circuitbreaker.CircuitBreaker, *providerLimiter) {
+	var cb *circuitbreaker.CircuitBreaker
+	if cbp, ok := p.(*cbProvider); ok {
+		p, cb = cbp.Provider, cbp.cb
+	}
+	var lim *providerLimiter
+	if lp, ok := p.(*limitedProvider); ok {
+		p, lim = lp.Provider, lp.lim
+	}
+	return p, cb, lim
 }
 
 // The embeddings and image surfaces used to reach the limiter through a
