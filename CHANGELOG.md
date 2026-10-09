@@ -124,6 +124,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - An attempt that ran out `targets[].timeout` names its target once in the
   error instead of twice (`target a: target a: attempt timed out …`). The
   attempt and the target walk both prefixed it; only the walk does now.
+- A Gemini stream that fails after it has started now fails instead of ending
+  as a success. Gemini reports such a failure as a data frame carrying its
+  error envelope (`{"error":{"code":…,"message":…,"status":…}}`, the body a
+  non-success status carries), and the stream decoder read only the chunk
+  fields: the frame became an empty delta, the stream closed cleanly at EOF,
+  and the truncated answer reached the caller as a complete one and was
+  recorded as a success. The frame now ends the stream with the upstream's
+  status, status code and message, as the same failure on a non-success
+  response already did.
+- A streamed Gemini candidate that made tool calls now finishes with
+  `tool_calls` even when its `STOP` arrives on a chunk carrying no call of its
+  own. Gemini splits a candidate's function calls across chunks, but the
+  finish reason was inferred from the terminal chunk alone, so such a stream
+  ended with `stop` — the reason a client reads as "no tools to run" — while
+  the same candidate answered without streaming reported `tool_calls`. The
+  inference now covers every call the candidate has streamed.
+- An embeddings answer carrying fewer embeddings than the request had inputs
+  is now a failed call on OpenAI, Azure OpenAI, Ollama, Ollama Cloud and
+  Cohere, as it already was on the OpenAI-compatible providers, Gemini, Vertex
+  AI, Bedrock and Hugging Face. A `2xx` body with an error envelope and no
+  data, or a short list, was returned as a successful response, so the caller
+  received fewer vectors than it sent texts and the target was recorded as
+  healthy; it now counts against the breaker and fails over like any other
+  target failure.
 
 ## [1.5.9] — 2026-09-18
 

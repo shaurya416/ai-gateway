@@ -258,6 +258,9 @@ func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.
 	if err != nil {
 		return nil, sdkError(err)
 	}
+	if want := core.EmbeddingInputCount(normalized); len(result.Data) < want {
+		return nil, fmt.Errorf("openai embedding response carried %d embeddings for %d inputs", len(result.Data), want)
+	}
 
 	embeddings := make([]core.Embedding, len(result.Data))
 	for i, d := range result.Data {

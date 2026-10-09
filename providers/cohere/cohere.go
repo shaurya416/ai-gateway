@@ -704,6 +704,9 @@ func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.
 	if err := json.Unmarshal(respBody, &cohResp); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal embed response: %w", err)
 	}
+	if len(cohResp.Embeddings) < len(texts) {
+		return nil, fmt.Errorf("cohere embed response carried %d embeddings for %d inputs", len(cohResp.Embeddings), len(texts))
+	}
 
 	data := make([]core.Embedding, len(cohResp.Embeddings))
 	for i, emb := range cohResp.Embeddings {

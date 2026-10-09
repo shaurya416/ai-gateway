@@ -64,6 +64,19 @@ func NormalizeEmbeddingInput(input any) (any, error) {
 	}
 }
 
+// EmbeddingInputCount is the number of embeddings a normalized input asks for:
+// one for a bare string, one per element for a []string. A provider compares it
+// against the vectors it decoded, because a 2xx body carrying fewer — an error
+// envelope with no data at all, or a short list — decodes without error, and
+// returned as an answer it hands the caller fewer vectors than it sent texts
+// while the target is recorded as having served them.
+func EmbeddingInputCount(normalized any) int {
+	if texts, ok := normalized.([]string); ok {
+		return len(texts)
+	}
+	return 1
+}
+
 // ValidateEmbeddingEncodingFormat rejects an embeddings encoding_format the
 // gateway cannot serve. Empty (unset) and "float" are accepted; any other
 // value — "base64" included — is refused.

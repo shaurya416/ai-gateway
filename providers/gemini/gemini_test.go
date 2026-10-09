@@ -674,6 +674,32 @@ func TestGeminiProvider_CompleteStream_FinishReasonOnlyOnTerminalChunk(t *testin
 	}
 }
 
+// TestGeminiProvider_CompleteStream_ToolCallsReasonCoversEarlierChunks verifies a
+// candidate whose function calls arrived on earlier chunks reports tool_calls
+// when its STOP arrives on a chunk carrying no call of its own — the reason
+// Complete gives the same candidate — while a candidate that made no call, and
+// a truncated one, keep their own reasons.
+func TestGeminiProvider_CompleteStream_ToolCallsReasonCoversEarlierChunks(t *testing.T) {
+	sse := `data: {"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"id":"call_1","name":"lookup_weather","args":{"city":"SF"}}}]}},{"content":{"role":"model","parts":[{"text":"no tools"}]}},{"content":{"role":"model","parts":[{"functionCall":{"id":"call_2","name":"lookup_time","args":{"city":"SF"}}}]}}]}` + "\n\n" +
+		`data: {"candidates":[{"content":{"role":"model","parts":[{"text":""}]},"finishReason":"STOP"},{"content":{"role":"model","parts":[{"text":""}]},"finishReason":"STOP"},{"content":{"role":"model","parts":[{"text":""}]},"finishReason":"MAX_TOKENS"}],"usageMetadata":{"promptTokenCount":3,"candidatesTokenCount":2,"totalTokenCount":5}}` + "\n\n"
+
+	chunks := streamGemini(t, sse)
+
+	if len(chunks) != 2 || len(chunks[1].Choices) != 3 {
+		t.Fatalf("chunks = %#v, want two chunks, the terminal one with three candidates", chunks)
+	}
+	for i, c := range chunks {
+		if c.Error != nil {
+			t.Fatalf("chunk %d error = %v", i, c.Error)
+		}
+	}
+	for i, want := range []string{core.FinishReasonToolCalls, core.FinishReasonStop, core.FinishReasonLength} {
+		if got := chunks[1].Choices[i].FinishReason; got != want {
+			t.Errorf("candidate %d finish_reason = %q, want %q", i, got, want)
+		}
+	}
+}
+
 // TestGeminiProvider_Complete_ErrorPath verifies a non-200 surfaces the upstream
 // message via core.APIError.
 func TestGeminiProvider_Complete_ErrorPath(t *testing.T) {

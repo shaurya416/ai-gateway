@@ -229,6 +229,47 @@ type geminiStreamResponse struct {
 		FinishReason string `json:"finishReason,omitempty"`
 	} `json:"candidates"`
 	UsageMetadata geminiUsageMetadata `json:"usageMetadata"`
+	// Error is Gemini's error envelope — the body a non-success status carries
+	// (testdata/error.401.json) — sent as a frame in place of a chunk when the
+	// generation fails after the 200 was written. Decoding only the chunk fields
+	// turned it into a content-free delta, and the stream then ended cleanly at
+	// EOF, so a truncated answer was delivered and recorded as a success. It is
+	// raw so a shape other than the documented object cannot fail the whole
+	// frame's decode; see streamFrameError.
+	Error json.RawMessage `json:"error"`
+}
+
+// geminiStreamError is the object inside a mid-stream error frame. Code repeats
+// the HTTP status the same failure would have been answered with.
+type geminiStreamError struct {
+	Code    int    `json:"code"`
+	Message string `json:"message"`
+	Status  string `json:"status"`
+}
+
+// streamFrameError returns the failure a stream frame's "error" field carries,
+// or nil for a healthy frame: one without the field, with "error": null, or
+// with a value that is not the documented object. frame is the raw data line,
+// so the typed error is built by the same envelope reader a non-success status
+// goes through and carries Gemini's status ("INTERNAL", "RESOURCE_EXHAUSTED")
+// as its code. A code that is not an error status cannot stand in for one, so
+// it yields an untyped error instead.
+func streamFrameError(raw json.RawMessage, frame string) error {
+	if len(raw) == 0 {
+		return nil
+	}
+	var e geminiStreamError
+	if json.Unmarshal(raw, &e) != nil || (e.Code == 0 && e.Message == "" && e.Status == "") {
+		return nil
+	}
+	if e.Code >= http.StatusBadRequest && e.Code <= 599 {
+		return core.APIError(Name, e.Code, []byte(frame))
+	}
+	msg := e.Message
+	if msg == "" {
+		msg = e.Status
+	}
+	return fmt.Errorf("%s stream error: %s", Name, msg)
 }
 
 // convertToGemini converts gateway Messages to Gemini contents format. System
@@ -369,9 +410,15 @@ func parseImageDataURI(uri string) (mimeType, data string, ok bool) {
 //     itself was rejected. Reporting tool_calls for any of them would make a
 //     truncated or blocked response look like a normal tool invocation, so they
 //     outrank the inference.
-func geminiFinishReason(reason string, toolCalls []core.ToolCall) string {
+//
+// hasToolCalls is about the whole candidate, not one chunk: on a stream it is
+// true once any chunk of the candidate carried a functionCall. Because the calls
+// are split across chunks, the chunk carrying STOP need not carry one itself,
+// and reading only that chunk reported "stop" for a candidate that made tool
+// calls — the reason Complete gives the same candidate is tool_calls.
+func geminiFinishReason(reason string, hasToolCalls bool) string {
 	normalized := core.NormalizeFinishReason(reason)
-	if normalized == core.FinishReasonStop && len(toolCalls) > 0 {
+	if normalized == core.FinishReasonStop && hasToolCalls {
 		return core.FinishReasonToolCalls
 	}
 	return normalized
@@ -660,7 +707,7 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 				Content:   text,
 				ToolCalls: toolCalls,
 			},
-			FinishReason: geminiFinishReason(candidate.FinishReason, toolCalls),
+			FinishReason: geminiFinishReason(candidate.FinishReason, len(toolCalls) > 0),
 		})
 	}
 
@@ -718,6 +765,11 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 			if json.Unmarshal([]byte(data), &chunk) != nil {
 				continue
 			}
+			// Nothing valid follows an error frame, so it ends the stream.
+			if err := streamFrameError(chunk.Error, data); err != nil {
+				core.SendChunk(ctx, ch, core.StreamChunk{Error: err})
+				return
+			}
 
 			// Gemini repeats responseId on every streamed chunk; it is the same
 			// id the non-streaming response carries, so both surfaces agree on
@@ -738,7 +790,9 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 						Content:   text,
 						ToolCalls: toolCalls,
 					},
-					FinishReason: geminiFinishReason(candidate.FinishReason, toolCalls),
+					// counter now includes this chunk's calls, so it covers
+					// every call the candidate has streamed so far.
+					FinishReason: geminiFinishReason(candidate.FinishReason, counter > 0),
 				})
 			}
 			// Gemini reports usage on the final streamed chunk.

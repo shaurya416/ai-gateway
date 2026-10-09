@@ -71,6 +71,9 @@ func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.
 	if err := json.Unmarshal(respBody, &oResp); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal embedding response: %w", err)
 	}
+	if want := core.EmbeddingInputCount(input); len(oResp.Embeddings) < want {
+		return nil, fmt.Errorf("ollama embedding response carried %d embeddings for %d inputs", len(oResp.Embeddings), want)
+	}
 
 	data := make([]core.Embedding, 0, len(oResp.Embeddings))
 	for i, row := range oResp.Embeddings {

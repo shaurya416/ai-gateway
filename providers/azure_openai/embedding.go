@@ -86,6 +86,9 @@ func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.
 	if err := json.Unmarshal(respBody, &pResp); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal embedding response: %w", err)
 	}
+	if want := core.EmbeddingInputCount(input); len(pResp.Data) < want {
+		return nil, fmt.Errorf("azure openai embedding response carried %d embeddings for %d inputs", len(pResp.Data), want)
+	}
 	return &core.EmbeddingResponse{
 		Object: pResp.Object,
 		Data:   pResp.Data,

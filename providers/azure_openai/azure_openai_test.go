@@ -280,7 +280,7 @@ func TestAzureOpenAIProvider_Embed_FallbackDeployment(t *testing.T) {
 		gotPath = r.URL.Path
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"object":"list","data":[],"usage":{}}`))
+		_, _ = w.Write([]byte(`{"object":"list","data":[{"object":"embedding","index":0,"embedding":[0.1]}],"usage":{}}`))
 	}))
 	defer srv.Close()
 
