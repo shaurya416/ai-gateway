@@ -1028,6 +1028,42 @@ func TestCacheKey_ParallelToolCallsProducesDistinctKeys(t *testing.T) {
 	}
 }
 
+// RoutingMetadata decides which target a conditional rule sends a request to,
+// and two targets can map one routed model onto different upstream models. Left
+// out of the key, a request for one tier was served another tier's answer.
+func TestCacheKey_RoutingMetadataProducesDistinctKeys(t *testing.T) {
+	t.Parallel()
+
+	base := func(metadata map[string]string) *providers.Request {
+		return &providers.Request{
+			Model:           "gpt-4",
+			Messages:        []providers.Message{{Role: "user", Content: "hello"}},
+			RoutingMetadata: metadata,
+		}
+	}
+
+	keys := map[string]string{
+		"none":     cacheKey(base(nil), ""),
+		"gold":     cacheKey(base(map[string]string{"tier": "gold"}), ""),
+		"standard": cacheKey(base(map[string]string{"tier": "standard"}), ""),
+		"region":   cacheKey(base(map[string]string{"region": "gold"}), ""),
+	}
+	for a, ka := range keys {
+		for b, kb := range keys {
+			if a < b && ka == kb {
+				t.Errorf("routing metadata %s and %s must produce distinct cache keys", a, b)
+			}
+		}
+	}
+
+	// The same entries hit whatever order the map yields them in.
+	both := map[string]string{"tier": "gold", "region": "eu"}
+	same := map[string]string{"region": "eu", "tier": "gold"}
+	if cacheKey(base(both), "") != cacheKey(base(same), "") {
+		t.Error("identical routing metadata must produce the same cache key")
+	}
+}
+
 // The cache stands down on the non-chat surfaces, and the reason is not that
 // caching an embedding would be useless — it is that the request it would key on
 // is a PROJECTION of the embeddings input onto the chat request shape, so it

@@ -100,8 +100,21 @@ func (h *Handlers) guardKeyMutation(w http.ResponseWriter, r *http.Request, acti
 	// A key that cannot authenticate as an admin today — missing the scope, or
 	// already revoked — is not holding anyone's access open, so removing it is
 	// always safe. A missing key falls through to the store's own 404.
-	target, ok := h.Keys.Get(r.Context(), id)
-	if !ok || !model.IsUsableAdmin(target) {
+	//
+	// A store that could not answer is not a missing key. Lookup keeps the two
+	// apart where Get folds them together: read as "not found", a transient
+	// lookup failure waved the mutation through without counting, and a store
+	// that had recovered by the next statement deleted the last admin key.
+	target, err := h.Keys.Lookup(r.Context(), id)
+	if errors.Is(err, model.ErrKeyNotFound) {
+		return true
+	}
+	if err != nil {
+		h.recordAudit(r, action, id, model.AuditError, "error", err.Error())
+		writeKeyStoreError(w, err)
+		return false
+	}
+	if !model.IsUsableAdmin(target) {
 		return true
 	}
 
@@ -176,9 +189,13 @@ func (h *Handlers) listKeys(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handlers) getKey(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	key, ok := h.Keys.Get(r.Context(), id)
-	if !ok {
+	key, err := h.Keys.Lookup(r.Context(), id)
+	if errors.Is(err, model.ErrKeyNotFound) {
 		writeError(w, http.StatusNotFound, "key not found", "not_found_error", "resource_not_found")
+		return
+	}
+	if err != nil {
+		writeKeyStoreError(w, err)
 		return
 	}
 

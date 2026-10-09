@@ -182,6 +182,12 @@ func cloneResponse(resp *providers.Response) *providers.Response {
 // whichever target serves it. That is the same assumption a fallback target
 // makes, so a deployment where it does not hold has a routing problem, not a
 // cache problem.
+//
+// RoutingMetadata is in the key for the same reason model, user, stream and
+// tools are: each is an input a conditional rule can route on, and the request
+// carries it at before_request, so two requests the router sends to different
+// targets — which may map the model onto different upstream models — must not
+// share an entry. It never reaches a provider; it decides which one answers.
 func cacheKey(req *providers.Request, apiKey string) string {
 	h := sha256.New()
 	writeCacheKeyString(h, "api_key")
@@ -218,6 +224,7 @@ func cacheKey(req *providers.Request, apiKey string) string {
 	writeCacheKeyString(h, "user")
 	writeCacheKeyString(h, req.User)
 	writeCacheKeyFloatMap(h, "logit_bias", req.LogitBias)
+	writeCacheKeyStringMap(h, "routing_metadata", req.RoutingMetadata)
 
 	return hex.EncodeToString(h.Sum(nil))
 }
@@ -323,6 +330,20 @@ func writeCacheKeyFloatMap(h hash.Hash, label string, values map[string]float64)
 	for _, key := range keys {
 		writeCacheKeyString(h, key)
 		writeCacheKeyString(h, strconv.FormatFloat(values[key], 'g', -1, 64))
+	}
+}
+
+func writeCacheKeyStringMap(h hash.Hash, label string, values map[string]string) {
+	writeCacheKeyString(h, label)
+	writeCacheKeyInt(h, len(values))
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		writeCacheKeyString(h, key)
+		writeCacheKeyString(h, values[key])
 	}
 }
 

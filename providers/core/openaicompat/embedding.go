@@ -95,10 +95,26 @@ func PostEmbeddings(ctx context.Context, p EmbeddingParams, req core.EmbeddingRe
 	if err := json.Unmarshal(respBody, &pResp); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal embedding response: %w", err)
 	}
+	// The contract is one embedding per input. A 2xx body carrying fewer — an
+	// error envelope with no "data" at all, or a short list — is a failed call,
+	// not an answer: returned as one, the caller received fewer vectors than it
+	// sent texts and the target was recorded as having served them.
+	if want := embeddingInputCount(input); len(pResp.Data) < want {
+		return nil, fmt.Errorf("%s embedding response carried %d embeddings for %d inputs", p.Label, len(pResp.Data), want)
+	}
 	return &core.EmbeddingResponse{
 		Object: pResp.Object,
 		Data:   pResp.Data,
 		Model:  pResp.Model,
 		Usage:  pResp.Usage,
 	}, nil
+}
+
+// embeddingInputCount is the number of embeddings a normalized input asks for:
+// one for a bare string, one per element for an array.
+func embeddingInputCount(input any) int {
+	if texts, ok := input.([]string); ok {
+		return len(texts)
+	}
+	return 1
 }

@@ -20,6 +20,17 @@ const embeddingSuccessBody = `{
 	"usage":{"prompt_tokens":5,"total_tokens":5}
 }`
 
+// embeddingTwoInputBody answers a two-input request: one embedding per input.
+const embeddingTwoInputBody = `{
+	"object":"list",
+	"model":"text-embedding-3-small",
+	"data":[
+		{"object":"embedding","index":0,"embedding":[0.1,0.2,0.3]},
+		{"object":"embedding","index":1,"embedding":[0.4,0.5,0.6]}
+	],
+	"usage":{"prompt_tokens":4,"total_tokens":4}
+}`
+
 // TestPostEmbeddings_Success exercises the request-building path (method, headers
 // from params, normalized body), the 2xx success-range check, and response
 // unmarshalling. It also asserts a non-200 2xx (202) still decodes — PostEmbeddings
@@ -109,7 +120,7 @@ func TestPostEmbeddings_ArrayInputForwarded(t *testing.T) {
 		_ = json.Unmarshal(raw, &body)
 		gotInput = body["input"]
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(embeddingSuccessBody))
+		_, _ = w.Write([]byte(embeddingTwoInputBody))
 	}))
 	defer srv.Close()
 
@@ -170,5 +181,51 @@ func TestPostEmbeddings_RejectsInvalidInput(t *testing.T) {
 	}
 	if called {
 		t.Error("HTTP endpoint was called; invalid input should short-circuit before the request")
+	}
+}
+
+// TestPostEmbeddings_RejectsMissingEmbeddings pins that a 2xx answer carrying
+// fewer embeddings than the request had inputs is a failure. Decoded as it
+// stood — an error envelope on a 200 has no "data" at all — it was returned as
+// a successful response holding fewer vectors than the caller sent texts, so
+// the gap reached the caller as an answer and the target was recorded as
+// healthy.
+func TestPostEmbeddings_RejectsMissingEmbeddings(t *testing.T) {
+	cases := []struct {
+		name  string
+		input any
+		body  string
+	}{
+		{
+			name:  "error envelope on a 200",
+			input: "hello",
+			body:  `{"error":{"message":"upstream overloaded","code":502}}`,
+		},
+		{
+			name:  "empty data",
+			input: "hello",
+			body:  `{"object":"list","model":"m","data":[],"usage":{"prompt_tokens":0,"total_tokens":0}}`,
+		},
+		{
+			name:  "fewer embeddings than inputs",
+			input: []string{"a", "b"},
+			body:  embeddingSuccessBody,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer srv.Close()
+
+			p := EmbeddingParams{HTTPClient: srv.Client(), URL: srv.URL, Label: "testprov"}
+			resp, err := PostEmbeddings(context.Background(), p, core.EmbeddingRequest{Model: "m", Input: tc.input})
+			if err == nil {
+				t.Fatalf("PostEmbeddings = %d embeddings, nil error; want a missing-embeddings error", len(resp.Data))
+			}
+		})
 	}
 }

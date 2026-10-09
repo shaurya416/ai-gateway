@@ -24,6 +24,11 @@ type Store interface {
 	// defaultScopes, which every implementation resolves the list through.
 	Create(ctx context.Context, name string, scopes []string, expiresAt *time.Time) (*model.APIKey, error)
 	Get(ctx context.Context, id string) (*model.APIKey, bool)
+	// Lookup is Get for a caller that must not mistake a store failure for an
+	// absent key: a missing key is an error wrapping model.ErrKeyNotFound, and
+	// any other error means the store could not answer. Get folds both into
+	// false, which is safe only where false already denies.
+	Lookup(ctx context.Context, id string) (*model.APIKey, error)
 	List(ctx context.Context) []*model.APIKey
 	// IsEmpty reports whether the store holds no keys. It returns an error
 	// rather than a bare bool so callers can distinguish "no keys" from a

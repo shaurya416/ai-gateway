@@ -152,6 +152,17 @@ func (s *KeyStore) Get(_ context.Context, id string) (*model.APIKey, bool) {
 	return cloneAPIKey(rec.apiKey), true
 }
 
+// Lookup retrieves an API key by ID, reporting a missing key as an error
+// wrapping ErrKeyNotFound. The in-memory store cannot fail to answer, so that is
+// the only error it returns.
+func (s *KeyStore) Lookup(ctx context.Context, id string) (*model.APIKey, error) {
+	key, ok := s.Get(ctx, id)
+	if !ok {
+		return nil, fmt.Errorf("%w: %s", model.ErrKeyNotFound, id)
+	}
+	return key, nil
+}
+
 // List returns all keys, newest first, with the id as the tiebreak.
 //
 // Map iteration is randomised, so without the sort two reads of an unchanged

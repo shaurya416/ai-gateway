@@ -328,8 +328,9 @@ config:
 
 Returns a stored response for an identical repeated request instead of calling
 the provider again. The cache key includes the API credential, so one key's
-response is never served to another. List it at both stages with identical
-config.
+response is never served to another, and the `X-Gateway-Metadata` routing
+hints, so requests a conditional rule sends to different targets never share an
+entry. List it at both stages with identical config.
 
 ```yaml
 config:

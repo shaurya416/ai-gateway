@@ -70,6 +70,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   propagating OpenTelemetry trace context to the gateway — which adds
   `traceparent` to every fetch it sends there — could not reach it at all.
   `Access-Control-Allow-Headers` now lists all four.
+- A key-store read that fails no longer lets the last admin key be deleted,
+  revoked, de-scoped or expired. The last-admin guard read the target through
+  `Get`, which on the SQL stores answers a database error exactly as it answers
+  a missing key, so a transient lookup failure read as "not an admin key", the
+  count was skipped, and a mutation that reached a recovered store went
+  through. The guard now uses a lookup that tells the two apart and answers
+  `500` without changing anything when the store cannot say what the key is.
+  `GET /admin/keys/{id}` reports the same failure as `500` instead of `404`.
+- The response cache no longer serves one routing tier's answer to another.
+  `X-Gateway-Metadata` was the one conditional-routing input outside the cache
+  key — model, user, `stream` and tools are all in it — so two requests a
+  `key: metadata` rule sent to different targets shared an entry, and with a
+  per-target `model_map` the second was answered from a model it was never
+  routed to. The routing metadata is now part of the key.
+- An OpenAI-compatible embeddings answer that carries fewer embeddings than
+  the request had inputs is now a failed call. A `2xx` body with an error
+  envelope and no `data`, or a short `data` list, was returned as a successful
+  response, so the caller received fewer vectors than it sent texts and the
+  target was recorded as healthy; it now counts against the breaker and fails
+  over like any other target failure.
 
 ## [1.5.9] — 2026-09-18
 
