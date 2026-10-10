@@ -361,6 +361,44 @@ func TestExecute_AllowsAChoiceCarryingOnlyAToolCall(t *testing.T) {
 	}
 }
 
+// A model that calls a tool often says so first. Anthropic returns a text block
+// ahead of its tool_use blocks ("Let me check."), and the gateway carries both
+// on one choice: the text as Content, the calls as ToolCalls. That choice is a
+// tool call all the same — the caller executes the tool and asks again — so the
+// text is commentary, not the document this schema describes, and denying it
+// refused every such turn with "response is not valid JSON".
+func TestExecute_AllowsAChoiceCallingAToolWithText(t *testing.T) {
+	for _, action := range []string{"block", "warn"} {
+		t.Run(action, func(t *testing.T) {
+			g := &SchemaGuard{}
+			if err := g.Init(map[string]any{"schema": objectSchema(), "action": action}); err != nil {
+				t.Fatalf("Init: %v", err)
+			}
+
+			pctx := newChoice(providers.Message{
+				Role:    "assistant",
+				Content: "Let me check.",
+				ToolCalls: []providers.ToolCall{{
+					ID:       "toolu_1",
+					Type:     "function",
+					Function: providers.FunctionCall{Name: "lookup", Arguments: `{"city":"SF"}`},
+				}},
+			})
+			pctx.Response.Choices[0].FinishReason = "tool_calls"
+			if err := g.Execute(context.Background(), pctx); err != nil {
+				t.Fatalf("Execute: %v", err)
+			}
+
+			if pctx.Reject {
+				t.Fatalf("a choice calling a tool was denied because text came with the call: %q", pctx.Reason)
+			}
+			if len(pctx.GuardrailMatches) != 0 {
+				t.Fatalf("guardrail matches = %+v, want none: a tool call is not a violation", pctx.GuardrailMatches)
+			}
+		})
+	}
+}
+
 // Every choice is validated, not only the first: n > 1 returns independent
 // candidates and the caller unmarshals whichever it picks.
 func TestExecute_ValidatesEveryChoice(t *testing.T) {

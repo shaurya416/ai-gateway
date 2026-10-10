@@ -1248,3 +1248,85 @@ func TestResponseCache_StoresUnderTheKeyItLookedUp(t *testing.T) {
 		t.Fatal("an identical request missed the cache: the response was stored under the rewritten request's key")
 	}
 }
+
+// A failed request is not an answer to cache. on_error runs because the request
+// failed, and it can still carry a response: one an after_request guardrail
+// refused, or the usage-only response the gateway leaves behind when an MCP
+// tool loop fails part-way, which has no choices at all. The store branch used
+// to run at every stage but before_request, so a cache also listed at on_error
+// filed that response, and every identical request for max_age was answered
+// from it without reaching a provider — the loop failure as an empty 200.
+func TestResponseCache_DoesNotStoreAFailedRequest(t *testing.T) {
+	t.Parallel()
+
+	cases := map[string]struct {
+		resp *providers.Response
+		err  error
+	}{
+		"an MCP tool loop that failed part-way": {
+			resp: &providers.Response{Model: "gpt-4", Provider: "test", Usage: providers.Usage{PromptTokens: 40, CompletionTokens: 9, TotalTokens: 49}},
+			err:  fmt.Errorf("mcp tool execution at depth 1: tool failed"),
+		},
+		"a response an after_request guardrail refused": {
+			resp: testResponse(),
+			err:  &plugin.RejectionError{Plugin: "schema-guard", Stage: plugin.StageAfterRequest, Reason: "response is not valid JSON"},
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			c := initCache(t, map[string]any{})
+			m := plugin.NewManager(nil)
+			for _, stage := range []plugin.Stage{plugin.StageBeforeRequest, plugin.StageAfterRequest, plugin.StageOnError} {
+				if err := m.Register(stage, c); err != nil {
+					t.Fatalf("Register %s: %v", stage, err)
+				}
+			}
+
+			failed := plugin.NewContext(testRequest("gpt-4", "hello"))
+			t.Cleanup(func() { plugin.PutContext(failed) })
+			failed.Metadata["api_key"] = "key-alice"
+			if err := m.RunBefore(context.Background(), failed); err != nil {
+				t.Fatalf("RunBefore: %v", err)
+			}
+			failed.Response = tc.resp
+			failed.Error = tc.err
+			m.RunOnError(context.Background(), failed)
+
+			next := plugin.NewContext(testRequest("gpt-4", "hello"))
+			t.Cleanup(func() { plugin.PutContext(next) })
+			next.Metadata["api_key"] = "key-alice"
+			if err := m.RunBefore(context.Background(), next); err != nil {
+				t.Fatalf("RunBefore: %v", err)
+			}
+			if next.SkipProvider || next.Response != nil {
+				t.Fatalf("an identical request was served the failed request's response from cache (choices: %d)", len(next.Response.Choices))
+			}
+		})
+	}
+}
+
+// A context built without a Metadata map is one the plugins already allow for:
+// this one guards its lookup-key write, and budget and request-logger guard
+// theirs. The hit marker beside that write did not, so a hit on such a context
+// assigned into a nil map and panicked — a fail-closed transform, so the
+// request that should have been served from the cache was answered 500.
+func TestResponseCache_HitWithoutAMetadataMap(t *testing.T) {
+	t.Parallel()
+
+	c := initCache(t, map[string]any{})
+	req := testRequest("gpt-4", "hello")
+	storeAs(t, c, req, "", testResponse())
+
+	m := plugin.NewManager(nil)
+	if err := m.Register(plugin.StageBeforeRequest, c); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	pctx := &plugin.Context{Request: req}
+	if err := m.RunBefore(context.Background(), pctx); err != nil {
+		t.Fatalf("RunBefore: %v", err)
+	}
+	if !pctx.SkipProvider || pctx.Response == nil {
+		t.Fatal("an identical request missed a primed cache")
+	}
+}

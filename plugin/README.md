@@ -271,9 +271,11 @@ fragments, and `n > 1` has every candidate validated. A choice carrying
 satisfy a schema requiring an object. So is a chat response carrying **no
 choice at all**; on the other surfaces, whose responses never carry choices,
 there is nothing to validate and the plugin stands aside. A choice carrying
-**only a tool call** passes without validation — a tool call is a different
-kind of answer, not a malformed one, so this plugin is safe to run on a gateway
-serving structured output and tool calling at once.
+**a tool call** passes without validation, with or without text beside it — a
+tool call is a different kind of answer, not a malformed one, and text alongside
+it (Anthropic's "Let me check." ahead of a `tool_use`) narrates the call rather
+than answering in the schema's shape — so this plugin is safe to run on a
+gateway serving structured output and tool calling at once.
 
 ```yaml
 config:
@@ -354,7 +356,10 @@ hints, so requests a conditional rule sends to different targets never share an
 entry. A response is stored under the key its request was looked up under, so a
 `before_request` plugin listed after the cache that rewrites the request —
 `pii-redact` under `redact` — does not stop its repeats from hitting. List it
-at both stages with identical config. Both settings must be
+at both stages with identical config. It stores at `after_request` only, so
+an entry at `on_error` does nothing and a failed request's response — an MCP
+tool loop's partial usage, a response refused by an `after_request` guardrail
+listed ahead of the cache — is never filed. Both settings must be
 whole numbers `>= 0`; anything else, a quoted number included, fails the load.
 
 ```yaml

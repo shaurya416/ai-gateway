@@ -19,10 +19,10 @@
 //
 // Each choice is assembled into one document and validated once, and a choice
 // carrying NEITHER content NOR a tool call is a violation, as is a chat
-// response carrying no choice at all. A choice that carries only a tool call
-// passes without validation: a tool call is a different kind of answer, not a
-// malformed one, so a model that chose to call a tool did not return a
-// document this schema describes.
+// response carrying no choice at all. A choice that carries a tool call passes
+// without validation, with or without text beside it: a tool call is a
+// different kind of answer, not a malformed one, so a model that chose to call
+// a tool did not return a document this schema describes.
 package schemaguard
 
 import (
@@ -248,18 +248,21 @@ func choiceDocument(msg providers.Message) string {
 // the absence as conformance let every empty answer through a guardrail
 // configured to require one.
 //
-// A choice carrying a TOOL CALL and no text is not that case. A tool call is a
-// different kind of answer, not a malformed one: a model that chose to call a
-// tool did not return a document this schema describes, and denying it would
-// make the plugin incompatible with tool calling rather than protective of it.
-// A choice with nothing in it at all is still a violation, because that is the
-// case the rule exists for.
+// A choice carrying a TOOL CALL is not that case, whatever text comes with it.
+// A tool call is a different kind of answer, not a malformed one: a model that
+// chose to call a tool did not return a document this schema describes, and
+// denying it would make the plugin incompatible with tool calling rather than
+// protective of it. Text alongside the call is the model narrating it —
+// Anthropic puts a text block ahead of its tool_use blocks, and the gateway
+// carries both on one choice — so validating that text refused every such turn
+// as invalid JSON. A choice with nothing in it at all is still a violation,
+// because that is the case the rule exists for.
 func (g *SchemaGuard) validate(msg providers.Message) string {
+	if len(msg.ToolCalls) > 0 {
+		return ""
+	}
 	text := choiceDocument(msg)
 	if strings.TrimSpace(text) == "" {
-		if len(msg.ToolCalls) > 0 {
-			return ""
-		}
 		return "response carries no content"
 	}
 	var doc any

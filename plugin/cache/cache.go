@@ -161,15 +161,23 @@ func (c *ResponseCache) Execute(_ context.Context, pctx *plugin.Context) error {
 		if resp, ok := c.Get(key); ok {
 			pctx.Response = cloneResponse(resp)
 			pctx.SkipProvider = true
-			pctx.Metadata["cache_hit"] = true
+			if pctx.Metadata != nil {
+				pctx.Metadata["cache_hit"] = true
+			}
 		}
 		return nil
 	}
 
-	// after_request: store. A response this plugin just served is already in the
-	// cache; re-storing it would refresh a TTL the operator set from the original
-	// fetch.
-	if pctx.SkipProvider || pctx.Response == nil {
+	// The store runs at after_request and nowhere else. on_error runs because
+	// the request failed, and it can still carry a response — one an
+	// after_request guardrail refused, or the usage-only, choiceless response an
+	// MCP tool loop leaves when it fails part-way. Inferring the store stage as
+	// "not before_request" filed those, and a cache also listed at on_error
+	// answered every identical request from a failure until it expired.
+	//
+	// A response this plugin just served is already in the cache; re-storing it
+	// would refresh a TTL the operator set from the original fetch.
+	if pctx.Stage != plugin.StageAfterRequest || pctx.SkipProvider || pctx.Response == nil {
 		return nil
 	}
 

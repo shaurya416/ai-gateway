@@ -296,6 +296,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   such call under one missing key and finished with `finish_reason:
   tool_calls` and an empty `tool_calls` list. The reasoning a non-streamed
   request for the same answer received was dropped from the replay.
+- `response-cache` serves a hit on a plugin context that carries no `Metadata`
+  map. It guarded its lookup-key write against a nil map but not the
+  `cache_hit` marker written beside it, so an embedder running the plugin
+  manager on a `plugin.Context` built without one had every hit panic, and —
+  the cache being a fail-closed transform — answered with a `500` instead of
+  the cached response. The marker is now written only when there is a map to
+  hold it, as the plugin's other writes already are.
+- `response-cache` no longer stores the response of a request that failed. It
+  stored at every stage other than `before_request`, so a cache also listed at
+  `on_error` filed whatever response a failed request still carried — one an
+  `after_request` guardrail listed ahead of the cache had refused, or the
+  usage-only response with no choices that an MCP tool loop leaves when it
+  fails part-way. Every identical request for `max_age` was then answered from
+  that entry without reaching a provider: refused again however many times it
+  was retried, or, for the loop, served as an empty `200`. The cache now stores
+  at `after_request` only; an entry at `on_error` does nothing.
+- `schema-guard` no longer refuses a response that calls a tool and says so in
+  text. It passed a choice carrying only a tool call, but validated any text
+  beside the call against the schema — and a model that calls a tool commonly
+  narrates it first: Anthropic returns a text block ahead of its `tool_use`
+  blocks ("Let me check."), and the gateway carries the two on one choice. Such
+  a turn was refused as `response is not valid JSON`, so a gateway running the
+  plugin alongside tool calling answered `502` to every one, and under `warn`
+  or `log` recorded a violation for each. A choice carrying a tool call now
+  passes without validation whatever text accompanies it; a choice carrying
+  neither text nor a tool call is still a violation.
 - `prompt-shield` detects a phrase whose words are separated by a no-break
   space or any other Unicode space. Its categories matched the gap between
   words with RE2's `\s`, which is ASCII only — not even a vertical tab — so
