@@ -134,11 +134,12 @@ before enforcing it). Redaction rewrites every screenable field — a message's
 `Content`, its reasoning content, each of its content parts and each tool
 call's arguments — so none of them can carry the value past the plugin. The
 arguments are rewritten as the JSON document they are: each string by its
-decoded value, so a value after an escaped newline is found and the arguments
-still parse afterwards. A custom pattern written against the arguments as text,
-spanning a key and its value, is still applied to the text as written. A
-`credit_card` match must also pass the Luhn check, so a sixteen-digit order id
-or tracking number is not denied as a card.
+decoded value, so a value after an escaped newline is found, and a number
+carrying a match replaced whole by the placeholder as a JSON string, so the
+arguments still parse afterwards. A custom pattern written against the
+arguments as text, spanning a key and its value, is still applied to the text
+as written. A `credit_card` match must also pass the Luhn check, so a
+sixteen-digit order id or tracking number is not denied as a card.
 
 **`redact` takes effect on the chat-shaped surfaces** — `/v1/chat/completions`
 (streamed or not) and `/v1/completions` — where the gateway reads the rewritten

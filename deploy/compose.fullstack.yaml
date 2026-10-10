@@ -74,7 +74,8 @@ services:
       - PORT=8080
       - MASTER_KEY=${MASTER_KEY:-fgw_fullstack_demo_master_key}
       # Tracing straight to Jaeger over OTLP — no config file required for it.
-      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-jaeger:4317}
+      # http:// selects plaintext; a bare host:port here would mean TLS.
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-http://jaeger:4317}
       # Optional: mount your own config and name it here to customise routing,
       # plugins, and strategy. Left empty, the gateway derives targets from the
       # provider keys below.

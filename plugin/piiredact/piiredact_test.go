@@ -576,7 +576,9 @@ func TestExecute_RedactKeepsToolCallArgumentsValidJSON(t *testing.T) {
 // left `\[REDACTED]`, an escape JSON does not have, so the arguments stopped
 // parsing; an SSN after one had no word boundary and was forwarded untouched;
 // and a card number written as a JSON number was replaced by a bare
-// placeholder, which is not JSON either.
+// placeholder, which is not JSON either. A number whose card digits are only
+// part of it — signed, fractional, an exponent — is replaced whole: replacing
+// the matched digits alone left `-"[REDACTED]"` or `"[REDACTED]".5`.
 func TestExecute_RedactsToolCallArgumentsAsJSONValues(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -587,6 +589,10 @@ func TestExecute_RedactsToolCallArgumentsAsJSONValues(t *testing.T) {
 		{"email after an escaped newline", `{"note":"write to\njane@example.com"}`, "note", "write to\n[REDACTED]"},
 		{"ssn after an escaped newline", `{"note":"ssn:\n123-45-6789"}`, "note", "ssn:\n[REDACTED]"},
 		{"card number written as a number", `{"card":4111111111111111}`, "card", "[REDACTED]"},
+		{"card number written as a negative number", `{"amount": -4111111111111111}`, "amount", "[REDACTED]"},
+		{"card number before a fraction", `{"amount": 4111111111111111.5}`, "amount", "[REDACTED]"},
+		{"card number after a decimal point", `{"amount": 0.4111111111111111}`, "amount", "[REDACTED]"},
+		{"card number in an exponent", `{"amount": 1E-4111111111111111}`, "amount", "[REDACTED]"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			p := &PIIRedact{}

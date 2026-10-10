@@ -137,6 +137,13 @@ func (c *Client) Initialize(ctx context.Context) (*ServerInfo, error) {
 	if err := json.Unmarshal(resp.Result, &result); err != nil {
 		return nil, fmt.Errorf("mcp initialize unmarshal: %w", err)
 	}
+	// The handshake decides the session from its own response: the ID it
+	// issued, or none when the server runs without sessions. Set only once the
+	// handshake has succeeded, so a failed renewal keeps the expired ID for the
+	// next call to meet the same 404 and try again.
+	c.sessionMu.Lock()
+	c.sessionID = resp.sessionID
+	c.sessionMu.Unlock()
 	info := ServerInfo{
 		Name:            result.ServerInfo.Name,
 		Version:         result.ServerInfo.Version,
@@ -284,16 +291,12 @@ func (c *Client) renewSession(ctx context.Context, stale string) error {
 	if c.getSessionID() != stale {
 		return nil
 	}
+	// Initialize replaces the session with whatever its response issued, none
+	// included. Comparing the ID held afterwards against stale cannot tell a
+	// server that issued none from one that issued the same ID again.
 	if _, err := c.Initialize(ctx); err != nil {
 		return err
 	}
-	// A server that issued no ID this time runs without sessions now, and the
-	// stale one must not keep being presented to it.
-	c.sessionMu.Lock()
-	if c.sessionID == stale {
-		c.sessionID = ""
-	}
-	c.sessionMu.Unlock()
 	logger.Default().Info("mcp server no longer recognised the session; started a new one",
 		"endpoint", c.endpoint)
 	return nil
@@ -341,8 +344,13 @@ func (c *Client) send(ctx context.Context, method string, params any, sid string
 		return nil, fmt.Errorf("mcp server %s returned HTTP %d: %w", method, httpResp.StatusCode, errSessionExpired)
 	}
 
-	// Persist the session ID returned by the server (set on initialize).
-	c.setSessionID(httpResp.Header.Get("Mcp-Session-Id"))
+	// Persist a session ID the server returns. An initialize response is left
+	// to Initialize, which adopts its ID — or its absence — only once the
+	// handshake has succeeded.
+	issuedSID := httpResp.Header.Get("Mcp-Session-Id")
+	if method != mcpMethodInitialize {
+		c.setSessionID(issuedSID)
+	}
 
 	if httpResp.StatusCode != http.StatusOK {
 		// A refused redirect has no body worth quoting, and the endpoint is
@@ -373,6 +381,7 @@ func (c *Client) send(ctx context.Context, method string, params any, sid string
 	if rpcResp.Error != nil {
 		return nil, fmt.Errorf("mcp rpc error %d: %s", rpcResp.Error.Code, rpcResp.Error.Message)
 	}
+	rpcResp.sessionID = issuedSID
 	return rpcResp, nil
 }
 

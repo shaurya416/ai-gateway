@@ -11,6 +11,7 @@ import (
 	"github.com/ferro-labs/ai-gateway/providers"
 
 	_ "github.com/ferro-labs/ai-gateway/plugin/regexguard"
+	_ "github.com/ferro-labs/ai-gateway/plugin/secretscan"
 )
 
 // TestGateway_Route_EmitsGuardrailMatchEvent proves the log-only visibility the
@@ -150,4 +151,82 @@ func eventStrings(evt observability.Event) []string {
 		out = append(out, k, v)
 	}
 	return out
+}
+
+// TestGateway_Passthrough_ObserveOnlyGuardrailRecordsUninspectableBody holds
+// the pass-through surfaces to the routed ones: a body no guardrail can read is
+// forwarded past an observe-only instance, and that instance records the
+// decision its own action names, so log mode still counts what block mode would
+// refuse. The pass-through never told the stage the body was unreadable, so the
+// instance scanned an empty projection and recorded nothing at all.
+func TestGateway_Passthrough_ObserveOnlyGuardrailRecordsUninspectableBody(t *testing.T) {
+	guardrails := []struct {
+		name   string
+		plugin config.PluginConfig
+		action string
+	}{
+		{
+			name: "regex-guard log",
+			plugin: config.PluginConfig{
+				Name: "regex-guard", Type: "guardrail", Stage: "before_request", Enabled: true,
+				Config: map[string]any{"action": "log", "rules": []any{map[string]any{"pattern": "tripwire"}}},
+			},
+			action: "log",
+		},
+		{
+			name: "secret-scan warn",
+			plugin: config.PluginConfig{
+				Name: "secret-scan", Type: "guardrail", Stage: "before_request", Enabled: true,
+				Config: map[string]any{"action": "warn"},
+			},
+			action: "warn",
+		},
+	}
+	surfaces := []struct {
+		name  string
+		route func(gw *Gateway, forward func(context.Context) error) error
+	}{
+		{"/v1/*", func(gw *Gateway, forward func(context.Context) error) error {
+			return gw.RoutePassthrough(context.Background(), "mock", testModel, "", false, forward)
+		}},
+		{"/v1/responses", func(gw *Gateway, forward func(context.Context) error) error {
+			var usage providers.Usage
+			return gw.RouteResponses(context.Background(), "mock", testModel, "", false, 0, &usage, forward)
+		}},
+	}
+	for _, g := range guardrails {
+		for _, s := range surfaces {
+			t.Run(g.name+" on "+s.name, func(t *testing.T) {
+				gw, err := newTestGateway(t, config.Config{
+					Strategy: config.StrategyConfig{Mode: config.ModeSingle},
+					Targets:  []config.Target{{VirtualKey: "mock"}},
+					Plugins:  []config.PluginConfig{g.plugin},
+				})
+				if err != nil {
+					t.Fatalf("New: %v", err)
+				}
+				ep := &matchCapturingProvider{eventCapturingProvider: eventCapturingProvider{recordingActive: true}}
+				gw.SetObservability(ep)
+				if err := gw.LoadPlugins(); err != nil {
+					t.Fatalf("LoadPlugins: %v", err)
+				}
+				gw.RegisterProvider(&mockProvider{name: "mock", models: []string{testModel}})
+
+				forwarded := false
+				if err := s.route(gw, func(context.Context) error { forwarded = true; return nil }); err != nil {
+					t.Fatalf("an observe-only guardrail must not refuse an unreadable body, got %v", err)
+				}
+				if !forwarded {
+					t.Fatal("the body was not forwarded")
+				}
+				matches := eventsWithSubject(ep.capturedEvents(), observability.SubjectGuardrailMatch)
+				if len(matches) != 1 {
+					t.Fatalf("want one %s event for the unreadable body, got %d", observability.SubjectGuardrailMatch, len(matches))
+				}
+				if got := matches[0].Attributes[observability.AttrFerroGuardrailAction]; got != g.action {
+					t.Errorf("recorded action = %v, want %q", got, g.action)
+				}
+			})
+		}
+	}
 }

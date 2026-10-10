@@ -307,8 +307,9 @@ func logExporterPanic(name, phase string, recovered any) {
 //
 // The endpoint is resolved by resolveExportTarget, which follows the OTLP
 // exporter specification. Transport security comes from the endpoint's scheme —
-// https:// is TLS, http:// is plaintext — and a bare host:port keeps its
-// historical plaintext meaning.
+// https:// is TLS, http:// is plaintext. A bare host:port in
+// observability.tracing.endpoint keeps its historical plaintext meaning; one in
+// the environment follows OTEL_EXPORTER_OTLP_INSECURE, which defaults to TLS.
 func newSpanExporter(ctx context.Context, cfg Config) (sdktrace.SpanExporter, error) {
 	httpProtocol := isHTTPProtocol(cfg.Protocol)
 	target, err := resolveExportTarget(cfg, os.Getenv, httpProtocol)

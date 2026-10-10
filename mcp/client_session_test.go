@@ -26,6 +26,17 @@ type restartableMCPServer struct {
 	// toolCallsAlways404 makes tools/call refuse every session, issued or not.
 	toolCallsAlways404 bool
 
+	// reissuesIDs makes restart reset the ID counter, so the first session
+	// issued afterwards repeats an ID issued before it — the behaviour of a
+	// server that numbers sessions in memory. A tools/call carrying no session
+	// is refused 400, as the spec asks of a server that requires one.
+	reissuesIDs bool
+
+	// issuesNoIDAfterRestart makes every initialize after a restart answer with
+	// no session ID: the server now runs without sessions.
+	issuesNoIDAfterRestart bool
+	restarted              bool
+
 	initializes   atomic.Int64
 	initWithSID   atomic.Int64
 	toolCalls     atomic.Int64
@@ -45,6 +56,10 @@ func newRestartableMCPServer(t *testing.T) *restartableMCPServer {
 func (s *restartableMCPServer) restart() {
 	s.mu.Lock()
 	s.issued = map[string]bool{}
+	if s.reissuesIDs {
+		s.sessions = 0
+	}
+	s.restarted = true
 	s.mu.Unlock()
 }
 
@@ -64,10 +79,15 @@ func (s *restartableMCPServer) handle(w http.ResponseWriter, r *http.Request) {
 		s.mu.Lock()
 		s.sessions++
 		newSID := "session-" + strconv.Itoa(s.sessions)
+		if s.issuesNoIDAfterRestart && s.restarted {
+			newSID = ""
+		}
 		s.issued[newSID] = true
 		s.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("Mcp-Session-Id", newSID)
+		if newSID != "" {
+			w.Header().Set("Mcp-Session-Id", newSID)
+		}
 		_ = json.NewEncoder(w).Encode(JSONRPCResponse{JSONRPC: "2.0", ID: req.ID, Result: initializeResult("restartable", "1")})
 		return
 	}
@@ -83,6 +103,10 @@ func (s *restartableMCPServer) handle(w http.ResponseWriter, r *http.Request) {
 	if req.Method == mcpMethodToolsCall {
 		s.toolCalls.Add(1)
 		s.lastCallerSID.Store(sid)
+		if sid == "" && s.reissuesIDs {
+			http.Error(w, "missing session", http.StatusBadRequest)
+			return
+		}
 		if !known || s.toolCallsAlways404 {
 			s.toolCalls404.Add(1)
 			http.Error(w, "session not found", http.StatusNotFound)
@@ -146,6 +170,64 @@ func TestClientRenewsSessionTheServerNoLongerRecognises(t *testing.T) {
 	}
 	if got := srv.initializes.Load(); got != 2 {
 		t.Errorf("initialize requests = %d after a healthy call, want still 2", got)
+	}
+}
+
+// A server that numbers its sessions in memory issues the same ID again after a
+// restart. The renewal decided whether the server still issued sessions by
+// comparing the ID it held afterwards against the stale one, which cannot tell
+// "issued the same ID again" from "issued none" — so it discarded the live
+// session and sent every later call with none, refused 400 by a server that
+// requires one, until the configuration was reloaded.
+func TestClientRenewalKeepsAReissuedSessionID(t *testing.T) {
+	srv := newRestartableMCPServer(t)
+	srv.reissuesIDs = true
+	c := NewClient(srv.URL, nil, 5*time.Second)
+	ctx := context.Background()
+
+	if _, err := c.Initialize(ctx); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	if _, err := c.CallTool(ctx, "t", json.RawMessage(`{}`)); err != nil {
+		t.Fatalf("CallTool before restart: %v", err)
+	}
+
+	srv.restart()
+
+	for i := range 2 {
+		if _, err := c.CallTool(ctx, "t", json.RawMessage(`{}`)); err != nil {
+			t.Fatalf("CallTool %d after the server restarted and reissued session-1: %v", i, err)
+		}
+	}
+	if got := c.getSessionID(); got != "session-1" {
+		t.Errorf("session ID = %q, want the reissued session-1", got)
+	}
+	if got := srv.initializes.Load(); got != 2 {
+		t.Errorf("initialize requests = %d, want 2 (the original handshake and one renewal)", got)
+	}
+}
+
+// A server that issues no session ID on the renewal handshake runs without
+// sessions now, and the expired ID must stop being presented to it.
+func TestClientRenewalDropsTheSessionWhenNoneIsIssued(t *testing.T) {
+	srv := newRestartableMCPServer(t)
+	srv.issuesNoIDAfterRestart = true
+	c := NewClient(srv.URL, nil, 5*time.Second)
+	ctx := context.Background()
+
+	if _, err := c.Initialize(ctx); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	srv.restart()
+
+	if _, err := c.CallTool(ctx, "t", json.RawMessage(`{}`)); err != nil {
+		t.Fatalf("CallTool after the server stopped issuing sessions: %v", err)
+	}
+	if got, _ := srv.lastCallerSID.Load().(string); got != "" {
+		t.Errorf("retried tool call carried session %q, want none", got)
+	}
+	if got := c.getSessionID(); got != "" {
+		t.Errorf("session ID = %q, want none once the server issued none", got)
 	}
 }
 

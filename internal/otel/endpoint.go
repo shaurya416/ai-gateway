@@ -19,6 +19,13 @@ const (
 	envTracesEndpoint = "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"
 )
 
+// The standard variables that decide transport security for an endpoint
+// written without a scheme. The signal-specific one outranks the other.
+const (
+	envInsecure       = "OTEL_EXPORTER_OTLP_INSECURE"
+	envTracesInsecure = "OTEL_EXPORTER_OTLP_TRACES_INSECURE"
+)
+
 // tracesSignalPath is the path the OTLP/HTTP traces signal is sent to, relative
 // to a base endpoint. Fixed by the specification, not configurable.
 const tracesSignalPath = "v1/traces"
@@ -37,8 +44,9 @@ type exportTarget struct {
 	// url is a complete endpoint URL, scheme and path included, ready to hand
 	// to WithEndpointURL.
 	url string
-	// hostPort is a bare host:port with no scheme, which has always meant
-	// plaintext here and still does.
+	// hostPort is a bare host:port with no scheme from
+	// observability.tracing.endpoint, which has always meant plaintext there
+	// and still does.
 	hostPort string
 }
 
@@ -82,12 +90,23 @@ func isHTTPProtocol(protocol string) bool {
 // written rather than having it appended twice; see parseConfiguredEndpoint.
 func resolveExportTarget(cfg Config, getenv func(string) string, httpProtocol bool) (exportTarget, error) {
 	if v := strings.TrimSpace(getenv(envTracesEndpoint)); v != "" {
-		return envExportTarget(envTracesEndpoint, v, httpProtocol, true)
+		return envExportTarget(envTracesEndpoint, v, httpProtocol, true, envInsecureSet(getenv))
 	}
 	if v := strings.TrimSpace(getenv(envEndpoint)); v != "" {
-		return envExportTarget(envEndpoint, v, httpProtocol, false)
+		return envExportTarget(envEndpoint, v, httpProtocol, false, envInsecureSet(getenv))
 	}
 	return parseConfiguredEndpoint(cfg.Endpoint, httpProtocol)
+}
+
+// envInsecureSet reports whether the environment opts a scheme-less endpoint
+// out of transport security, read as the SDK reads it: the signal-specific
+// variable outranks the base one, and only "true", in any case, is true.
+func envInsecureSet(getenv func(string) string) bool {
+	v := strings.TrimSpace(getenv(envTracesInsecure))
+	if v == "" {
+		v = strings.TrimSpace(getenv(envInsecure))
+	}
+	return strings.EqualFold(v, "true")
 }
 
 // envExportTarget resolves the value of one standard endpoint variable.
@@ -97,18 +116,21 @@ func resolveExportTarget(cfg Config, getenv func(string) string, httpProtocol bo
 // parse and is silently replaced by the default collector address, and
 // "jaeger:4317" parses with the host name as its scheme and no host at all —
 // the exporter then dials nowhere, over TLS, while the gateway reports that it
-// is exporting. That is the form the quick start and the full-stack compose file
-// use, so it is read here the way observability.tracing.endpoint reads it:
-// plaintext to that host. The signal-specific variable keeps its own path rule
-// — a signal endpoint with no path is sent to the root path — so under OTLP/HTTP
-// it becomes that URL rather than a base.
+// is exporting. So it is resolved here, to a URL whose scheme carries the
+// transport the specification assigns a scheme-less endpoint:
+// OTEL_EXPORTER_OTLP_INSECURE (or its signal-specific form) set to true is
+// plaintext, and anything else — unset included — is TLS. Plaintext is never
+// assumed: the SDK still sends OTEL_EXPORTER_OTLP_HEADERS, which commonly
+// carries a collector credential. The signal-specific variable keeps its own
+// path rule — a signal endpoint with no path is sent to the root path — so under
+// OTLP/HTTP it becomes that URL rather than a base.
 //
 // A value with no port is left to the SDK as well: it reads a bare host as a
 // path, which gRPC dials over TLS on its default port, and that already works.
 //
 // A scheme-less host:port carrying a path is refused, as it is for the
 // configured endpoint: there is no reading of it the exporter can use.
-func envExportTarget(name, v string, httpProtocol, signal bool) (exportTarget, error) {
+func envExportTarget(name, v string, httpProtocol, signal, insecure bool) (exportTarget, error) {
 	if strings.Contains(v, "://") {
 		return exportTarget{}, nil
 	}
@@ -119,10 +141,18 @@ func envExportTarget(name, v string, httpProtocol, signal bool) (exportTarget, e
 		return exportTarget{}, fmt.Errorf(
 			"%s %q has a path but no scheme: write it as a URL (http://host:port/...) or as a bare host:port", name, v)
 	}
-	if signal && httpProtocol {
-		return exportTarget{url: "http://" + v + "/"}, nil
+	scheme := "https"
+	if insecure {
+		scheme = "http"
 	}
-	return exportTarget{hostPort: v}, nil
+	switch {
+	case httpProtocol && signal:
+		return exportTarget{url: scheme + "://" + v + "/"}, nil
+	case httpProtocol:
+		return exportTarget{url: scheme + "://" + v + "/" + tracesSignalPath}, nil
+	default:
+		return exportTarget{url: scheme + "://" + v}, nil
+	}
 }
 
 // parseConfiguredEndpoint validates observability.tracing.endpoint and resolves

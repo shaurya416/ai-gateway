@@ -293,7 +293,7 @@ Enable tracing with one variable (or the `observability:` config block —
 endpoint, protocol, sampling, privacy, headers are all documented in the guide):
 
 ```bash
-export OTEL_EXPORTER_OTLP_ENDPOINT=localhost:4317
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317
 ferrogw serve
 ```
 

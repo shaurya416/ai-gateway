@@ -49,11 +49,18 @@ type surfaceRecord struct {
 	cost       models.CostResult
 }
 
-// billable is the record in the shape the cost calculator prices.
+// billable is the record in the shape the cost calculator prices. It carries
+// every token class the provider reported, as the chat path's calculateCost
+// does: a Responses forward reports a cached prompt subset, and dropping it
+// billed the whole prompt at the full input rate. A mode that does not bill a
+// class ignores it.
 func (r surfaceRecord) billable() models.Usage {
 	return models.Usage{
 		PromptTokens:     r.tokens.PromptTokens,
 		CompletionTokens: r.tokens.CompletionTokens,
+		ReasoningTokens:  r.tokens.ReasoningTokens,
+		CacheReadTokens:  r.tokens.CacheReadTokens,
+		CacheWriteTokens: r.tokens.CacheWriteTokens,
 		ImageCount:       r.imageCount,
 	}
 }

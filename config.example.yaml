@@ -598,10 +598,11 @@ mcp_servers:
 # OTEL_EXPORTER_OTLP_ENDPOINT and OTEL_EXPORTER_OTLP_TRACES_ENDPOINT both take
 # precedence over the endpoint set here; when either is set a URL in it is
 # handed to the OTel SDK unread, so the specification's own path rules apply to
-# it, and a bare host:port in it means plaintext, as it does here.
-# Setting either one turns tracing on. They are the only OTEL_* variables
-# the gateway itself reads: sampling comes from sample_ratio below, not from
-# OTEL_TRACES_SAMPLER.
+# it, and a bare host:port in it is TLS unless OTEL_EXPORTER_OTLP_INSECURE is
+# true, as the specification gives it — unlike here, where it means plaintext.
+# Setting either one turns tracing on. With OTEL_EXPORTER_OTLP_INSECURE and its
+# traces form, they are the only OTEL_* variables the gateway itself reads:
+# sampling comes from sample_ratio below, not from OTEL_TRACES_SAMPLER.
 observability:
   tracing:
     enabled: true

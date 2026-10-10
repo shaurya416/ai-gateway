@@ -23,7 +23,7 @@ reference with inline comments see [`../config.example.yaml`](../config.example.
 Set one environment variable:
 
 ```bash
-export OTEL_EXPORTER_OTLP_ENDPOINT=localhost:4317
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317
 ferrogw serve
 ```
 
@@ -58,6 +58,11 @@ The `endpoint` is a **base** URL, treated the way the OTLP specification treats
 - The **scheme selects transport security**: `https://` is TLS, `http://` and a
   bare `host:port` (e.g. `localhost:4317`) are plaintext. Managed backends need
   the `https://` form.
+- A bare `host:port` in `OTEL_EXPORTER_OTLP_ENDPOINT` or
+  `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` follows the OTLP specification instead:
+  TLS, unless `OTEL_EXPORTER_OTLP_INSECURE` (or
+  `OTEL_EXPORTER_OTLP_TRACES_INSECURE`) is `true`. Write a plaintext collector
+  in those variables as an `http://` URL.
 
 An endpoint the exporter cannot understand is rejected at startup rather than
 failing silently per batch. The startup log prints the exact URL spans are posted
@@ -111,7 +116,7 @@ exports without the key.
 
 ```bash
 docker run -d --name jaeger -p 16686:16686 -p 4317:4317 jaegertracing/all-in-one:latest
-OTEL_EXPORTER_OTLP_ENDPOINT=localhost:4317 ferrogw serve
+OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317 ferrogw serve
 # send a request, then open http://localhost:16686 and search for service "ferrogw"
 ```
 

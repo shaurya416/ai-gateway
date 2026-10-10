@@ -288,7 +288,7 @@ make up-fullstack   # 然后在 http://localhost:3000 打开 Grafana
 采样、隐私级别与请求头都在指南中有说明）：
 
 ```bash
-export OTEL_EXPORTER_OTLP_ENDPOINT=localhost:4317
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317
 ferrogw serve
 ```
 

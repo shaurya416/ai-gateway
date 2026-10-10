@@ -320,6 +320,15 @@ func (g *Gateway) runPassthroughGovernance(
 		plugins.RunOnError(ctx, pctx)
 		return surfaceRecord{}, ErrPassthroughUninspectable
 	}
+	// Past the refusal, every guardrail left has declared it approves a body it
+	// cannot read. It is still told the body was unreadable, as the routed
+	// surfaces tell it, so an observe-only instance records the decision its
+	// own action names (plugin.ScreenUninspectable) rather than scanning an
+	// empty projection and recording nothing — log mode then counts what block
+	// mode would refuse.
+	if !bodyInspectable {
+		pctx.Metadata[plugin.MetadataUninspectableContent] = true
+	}
 
 	if err := plugins.RunBefore(ctx, pctx); err != nil {
 		return surfaceRecord{}, err

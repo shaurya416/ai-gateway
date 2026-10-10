@@ -346,8 +346,9 @@ func (p *PIIRedact) redactRequest(ctx context.Context, pctx *plugin.Context) {
 // `\[REDACTED]`, an escape JSON does not have, and an SSN after one had no word
 // boundary and was forwarded as written. What lies between the strings — a
 // number, above all — is replaced by the placeholder as a JSON string rather
-// than as bare text, which is not a JSON value. Structure, key order, and every
-// string with nothing to redact are left exactly as written.
+// than as bare text, which is not a JSON value, and a number is replaced whole;
+// see redactBetweenStrings. Structure, key order, and every string with nothing
+// to redact are left exactly as written.
 //
 // A custom pattern written against the document as text — a key together with
 // its value — matches no single string and no segment between them. Block mode
@@ -364,12 +365,38 @@ func (p *PIIRedact) redactArguments(ctx context.Context, pctx *plugin.Context, a
 	var out strings.Builder
 	last := 0
 	for start, end := range plugin.JSONStringLiterals(args) {
-		out.WriteString(p.redactWith(ctx, pctx, args[last:start], p.jsonValuePlaceholder))
+		out.WriteString(p.redactBetweenStrings(ctx, pctx, args[last:start]))
 		out.WriteString(p.redactJSONString(ctx, pctx, args[start:end]))
 		last = end
 	}
-	out.WriteString(p.redactWith(ctx, pctx, args[last:], p.jsonValuePlaceholder))
+	out.WriteString(p.redactBetweenStrings(ctx, pctx, args[last:]))
 	return p.redactWith(ctx, pctx, out.String(), p.jsonPlaceholder)
+}
+
+// jsonNumber matches one JSON number token: sign, integer part, fraction and
+// exponent. Between a valid document's string literals digits occur nowhere
+// else.
+var jsonNumber = regexp.MustCompile(`-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?`)
+
+// redactBetweenStrings redacts the text between two string literals of a JSON
+// document. A match inside a number replaces the whole number token with the
+// placeholder as a JSON string: an entity's word boundary also falls beside a
+// sign, a decimal point and an exponent marker, so replacing the matched digits
+// alone left `-"[REDACTED]"` or `"[REDACTED]".5`, which is not JSON.
+func (p *PIIRedact) redactBetweenStrings(ctx context.Context, pctx *plugin.Context, segment string) string {
+	var out strings.Builder
+	last := 0
+	for _, loc := range jsonNumber.FindAllStringIndex(segment, -1) {
+		out.WriteString(p.redactWith(ctx, pctx, segment[last:loc[0]], p.jsonValuePlaceholder))
+		number := segment[loc[0]:loc[1]]
+		if p.redactWith(ctx, pctx, number, p.jsonValuePlaceholder) != number {
+			number = p.jsonValuePlaceholder
+		}
+		out.WriteString(number)
+		last = loc[1]
+	}
+	out.WriteString(p.redactWith(ctx, pctx, segment[last:], p.jsonValuePlaceholder))
+	return out.String()
 }
 
 // redactJSONString redacts one JSON string literal, quotes included, by its

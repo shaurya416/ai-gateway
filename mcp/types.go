@@ -32,6 +32,10 @@ type JSONRPCResponse struct {
 	ID      any             `json:"id"`
 	Result  json.RawMessage `json:"result,omitempty"`
 	Error   *JSONRPCError   `json:"error,omitempty"`
+
+	// sessionID is the Mcp-Session-Id header the HTTP response carried, empty
+	// when it carried none. Initialize reads it to decide the session.
+	sessionID string
 }
 
 // JSONRPCError is the error object nested inside a failed JSON-RPC 2.0 response.

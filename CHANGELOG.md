@@ -316,17 +316,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unusable id, and the request and attempt spans' other string attributes, and
   every error message a span records, have invalid sequences replaced with
   U+FFFD.
-- `OTEL_EXPORTER_OTLP_ENDPOINT=localhost:4317` — the form the quick start and
-  the full-stack compose file (`jaeger:4317`) use — exports traces again. The
-  variable was handed to the OTel SDK unread, and the SDK parses it as a URL:
-  a bare IP and port fails to parse and is replaced by the default collector
-  address, and a bare host name and port is read with the host name as the
-  URL scheme, so the exporter dialled no host at all, over TLS, while the
-  gateway logged that it was exporting. A bare `host:port` in either standard
-  endpoint variable now means plaintext to that host, as it already did in
-  `observability.tracing.endpoint`; a URL or a host with no port is still left
-  to the SDK, and a scheme-less `host:port` carrying a path is refused at
-  startup.
+- A bare `host:port` in `OTEL_EXPORTER_OTLP_ENDPOINT` or
+  `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` (`localhost:4317`, `jaeger:4317`)
+  reaches the host it names again. The variable was handed to the OTel SDK
+  unread, and the SDK parses it as a URL: a bare IP and port fails to parse and
+  is replaced by the default collector address, and a bare host name and port
+  is read with the host name as the URL scheme, so the exporter dialled no host
+  at all while the gateway logged that it was exporting. The gateway now
+  resolves it with the transport the OTLP specification gives a scheme-less
+  endpoint: plaintext when `OTEL_EXPORTER_OTLP_INSECURE` (or
+  `OTEL_EXPORTER_OTLP_TRACES_INSECURE`) is `true`, TLS otherwise — unset
+  included — so `OTEL_EXPORTER_OTLP_HEADERS` is never sent in the clear to a
+  collector the operator did not mark insecure. A bare `host:port` in
+  `observability.tracing.endpoint` still means plaintext. The quick start and
+  the full-stack compose file now name their plaintext collector as a URL
+  (`http://localhost:4317`, `http://jaeger:4317`). A URL or a host with no port
+  is still left to the SDK, and a scheme-less `host:port` carrying a path is
+  refused at startup.
 - `observability.tracing.protocol` and `sample_ratio` are validated at load.
   An unrecognised protocol — `http/json`, which the exporter does not
   implement, or `HTTP/protobuf` — silently selected gRPC and failed every
@@ -466,8 +472,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a bare placeholder, which is not a JSON value either — so a provider that
   parses the arguments failed the request or dropped them. Every string in the
   arguments that is written with an escape is now screened decoded as well, and
-  `redact` rewrites each string by its decoded value and replaces a bare value
-  with the placeholder as a JSON string, so the arguments still parse. A
+  `redact` rewrites each string by its decoded value and replaces a number
+  carrying a match with the placeholder as a JSON string — the whole number,
+  sign, fraction and exponent included, since a card number's word boundary
+  also falls beside `-`, `.` and `E-` — so the arguments still parse. A
   custom pattern written against the arguments as text, spanning a key and its
   value, is still redacted from the text as written.
   `plugin.JSONStringLiterals` locates the strings in a JSON document for a
@@ -623,8 +631,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   success by the circuit breaker and then dereferenced, panicking the request;
   a pool mode never offered it to a sibling. The call now fails with
   `provider returned a nil response`, counts against the breaker, and fails
-  over as any other target failure does — the treatment a nil stream already
-  had.
+  over as any other target failure does — as a nil stream start now does too
+  (see the stream-start entry below).
 - Behind a trusted proxy that adds its own `X-Forwarded-For` line rather than
   extending the caller's (HAProxy's `option forwardfor` does), a caller could
   again choose its own client address: only the first header line was read,
@@ -818,9 +826,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unreadable content ignored the configured action. It now applies only to an
   instance that can block; an observe-only instance forwards the request and
   records a guardrail match carrying its own action, so log mode still counts
-  what block mode would deny. `block`, and `pii-redact` under `redact`, still
-  deny content they cannot read. `plugin.ScreenUninspectable` applies the rule
-  for a guardrail's configured actions.
+  what block mode would deny. That holds on the `/v1/*` and `/v1/responses`
+  pass-throughs as on the routed surfaces: they now tell the `before_request`
+  stage a body was unreadable, where an observe-only instance had scanned an
+  empty projection and recorded nothing. `block`, and `pii-redact` under
+  `redact`, still deny content they cannot read. `plugin.ScreenUninspectable`
+  applies the rule for a guardrail's configured actions.
 - `word-filter` refuses a `blocked_words` it cannot use. A bare string
   (`blocked_words: password`) and a non-string entry were dropped in silence,
   so the filter loaded, reported itself enabled and never blocked the words it
@@ -842,7 +853,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   new session, as the MCP specification requires, and the request is retried
   once on it — the server never processed the refused request, so the retry
   cannot repeat a tool's side effects. An initialize request no longer carries
-  the previous session ID.
+  the previous session ID. The new session is the one the handshake response
+  issues — the same ID again included, which a server numbering its sessions
+  in memory hands out after a restart — or none, when the response carries no
+  `Mcp-Session-Id`; it is adopted only once the handshake succeeds.
 - An HTTP MCP server that paginates `tools/list` now has all of its tools
   discovered. Only the first page was read and its `nextCursor` ignored, so
   every later tool was silently missing — the server reported ready, an
@@ -930,12 +944,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   not zero, so the check for an all-zero price list passed as well: the plugin
   loaded with its `spend_limit_usd` set and never refused a request. Each is
   now a load error, reported by `ferrogw validate` as well as at startup.
-- The per-turn check a budget runs inside the MCP tool-call loop now counts
-  the provider call made before the loop. The running spend started at zero on
-  entering the loop, so that call never entered it: the first loop turn was
-  checked as though nothing had been spent and every later turn's figure was
-  short by it, and a request whose first turn alone crossed the budget was
-  still sent another turn.
 - A stdio MCP server whose `tools/list` never stops paginating no longer drives
   gateway memory up for the whole initialization window. The stdio transport
   followed `nextCursor` through its library, which sets no bound, so a server
@@ -985,9 +993,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `o3-deep-research` and the rest of the Responses-only families — are priced.
   Cost calculation had no arm for that mode, so every such request was
   recorded unpriced: no cost on the request-log row, the span or the completed
-  event, and no rank under `cost-optimized` with `unpriced_strategy: skip`. The
-  mode is now billed per token exactly as chat is, against the row's input,
-  output and cache-read rates.
+  event. The mode is now billed per token exactly as chat is, against the row's
+  input, output and cache-read rates. The same rows now also count as priced to
+  `cost-optimized` routing under `unpriced_strategy: skip`, which orders the
+  targets of the routed surfaces and decides what `/v1/models` lists;
+  `/v1/responses` picks its target by which one serves the model, not through
+  the routing strategy, so its target choice is unchanged.
+- A `/v1/responses` request whose prompt the upstream partly served from its
+  cache is priced at the catalog's cache-read rate for that part. The forward
+  reads the cached count from `input_tokens_details.cached_tokens`, but the
+  record handed to cost calculation carried only the prompt and completion
+  counts, so the whole prompt was billed at the full input rate — with 90% of a
+  prompt cached at a tenth of the input rate, about five times the true figure —
+  on the request-log cost column, the span cost and the completed event. The
+  record now carries the cache-read, cache-write and reasoning counts as the
+  chat path already does.
 - A streamed chat completion from a Mistral reasoning model (`magistral-*`) now
   delivers what it generated. Mistral's stream sends `delta.content` as either
   a string or a list of content chunks, and its reasoning models use the list —

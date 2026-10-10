@@ -2,10 +2,12 @@ package aigateway
 
 import (
 	"context"
+	"math"
 	"strings"
 	"testing"
 
 	"github.com/ferro-labs/ai-gateway/config"
+	"github.com/ferro-labs/ai-gateway/models"
 	"github.com/ferro-labs/ai-gateway/plugin"
 	"github.com/ferro-labs/ai-gateway/providers"
 )
@@ -120,5 +122,57 @@ func TestRouteResponses_AfterPluginSeesThePrice(t *testing.T) {
 	}
 	if passthrough := measured[1]; passthrough.HasCost || passthrough.CostUSD != 0 {
 		t.Errorf("pass-through Measurements = %+v, want no cost: its response is opaque, so it is unpriced", passthrough)
+	}
+}
+
+// TestRouteResponses_PricesCachedPromptAtCacheReadRate holds the Responses
+// surface to the chat path's convention: a prompt the upstream served from its
+// cache is billed at the catalog's cache-read rate. The usage tee reports the
+// cached subset as CacheReadTokens, and pricing that dropped it billed every
+// cached Responses turn as though nothing had been cached.
+func TestRouteResponses_PricesCachedPromptAtCacheReadRate(t *testing.T) {
+	for _, mode := range []models.ModelMode{models.ModeResponses, models.ModeChat} {
+		t.Run(string(mode), func(t *testing.T) {
+			gw, _ := newTestGateway(t, config.Config{
+				Strategy: config.StrategyConfig{Mode: config.ModeSingle},
+				Targets:  []config.Target{{VirtualKey: "mock"}},
+			})
+			gw.catalog = models.Catalog{
+				"mock/" + testModel: {
+					Provider: "mock",
+					ModelID:  testModel,
+					Mode:     mode,
+					Pricing: models.Pricing{
+						InputPerMTokens:     ptrFloat64(1.25),
+						OutputPerMTokens:    ptrFloat64(10.0),
+						CacheReadPerMTokens: ptrFloat64(0.125),
+					},
+				},
+			}
+			fp := &fakeProvider{}
+			gw.SetObservability(fp)
+			gw.RegisterProvider(&mockProvider{name: "mock", models: []string{testModel}})
+
+			var usage providers.Usage
+			err := gw.RouteResponses(context.Background(), "mock", testModel, "hello", true, 0, &usage,
+				func(context.Context) error {
+					// What the tee decodes from input_tokens_details.cached_tokens.
+					usage = providers.Usage{PromptTokens: 1_000_000, TotalTokens: 1_000_000, CacheReadTokens: 900_000}
+					return nil
+				})
+			if err != nil {
+				t.Fatalf("RouteResponses: %v", err)
+			}
+
+			// 100,000 uncached prompt tokens at $1.25/M plus 900,000 cached at $0.125/M.
+			const want = 0.125 + 0.1125
+			sp := fp.rootSpan()
+			if sp == nil {
+				t.Fatal("expected a root span")
+			}
+			if math.Abs(sp.cost.TotalUSD-want) > 1e-9 || sp.cost.CacheReadUSD == 0 {
+				t.Errorf("responses span cost = %+v, want TotalUSD %.4f with the cached subset at the cache-read rate", sp.cost, want)
+			}
+		})
 	}
 }

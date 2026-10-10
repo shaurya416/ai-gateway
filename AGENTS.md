@@ -517,18 +517,23 @@ already presented a credential carrying `read_only` or `admin`.
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | OTLP collector **base** endpoint. Setting it alone turns tracing on, and it takes precedence over `observability.tracing.endpoint` |
 | `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | Signal-specific OTLP traces endpoint, used verbatim, and it outranks the variable above. Setting either variable turns tracing on |
 
-Those two are the only `OTEL_*` variables the gateway itself reads. Once the
-pipeline is active and either is set, a URL in it is handed to the OTel SDK
-unread, so the specification's own path rules apply — the base endpoint gets
-`v1/traces` appended, the signal-specific one does not. A bare `host:port`
-(`localhost:4317`, `jaeger:4317`) is the exception: the SDK cannot parse one —
-it reads the host name as a URL scheme and exports nowhere — so the gateway
-reads it the way it reads `observability.tracing.endpoint`, as plaintext to that
-host. The head sampler is
-built from `observability.tracing.sample_ratio` alone, so `OTEL_TRACES_SAMPLER`
-has no effect. (`OTEL_EXPORTER_OTLP_HEADERS` reaches the exporter through the
-SDK, not through the gateway, and only while `observability.tracing.headers` is
-unset: a configured header map replaces the variable rather than adding to it.)
+Those two are the only `OTEL_*` variables the gateway itself reads, beside the
+transport-security pair below. Once the pipeline is active and either is set, a
+URL in it is handed to the OTel SDK unread, so the specification's own path
+rules apply — the base endpoint gets `v1/traces` appended, the signal-specific
+one does not. A bare `host:port` (`localhost:4317`, `jaeger:4317`) is the
+exception: the SDK cannot parse one — it reads the host name as a URL scheme
+and exports nowhere — so the gateway resolves it, with the transport the
+specification gives a scheme-less endpoint: plaintext only when
+`OTEL_EXPORTER_OTLP_INSECURE` (outranked by `OTEL_EXPORTER_OTLP_TRACES_INSECURE`)
+is `true`, TLS otherwise, unset included. That differs from
+`observability.tracing.endpoint`, where a bare `host:port` means plaintext; in
+the environment, write a plaintext collector as `http://host:port`. The head
+sampler is built from `observability.tracing.sample_ratio` alone, so
+`OTEL_TRACES_SAMPLER` has no effect. (`OTEL_EXPORTER_OTLP_HEADERS` reaches the
+exporter through the SDK, not through the gateway, and only while
+`observability.tracing.headers` is unset: a configured header map replaces the
+variable rather than adding to it.)
 
 ### Ollama model list (`FERRO_OLLAMA_MODELS`)
 
