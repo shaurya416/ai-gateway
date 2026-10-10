@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/ferro-labs/ai-gateway/internal/redact"
+	"github.com/ferro-labs/ai-gateway/pkg/circuitbreaker"
 	"github.com/ferro-labs/ai-gateway/providers"
 	openaipkg "github.com/ferro-labs/ai-gateway/providers/openai"
 )
@@ -938,5 +939,50 @@ func TestProxyHandler_NonSuccessStreamDoesNotStallTheGateway(t *testing.T) {
 		// whole package hangs instead of reporting this failure.
 		stopUpstream()
 		t.Fatal("gateway never answered a trickling non-2xx stream: the scan read is bounded in size but not in time")
+	}
+}
+
+// An upstream that answers 5xx and trickles its body past the scan budget is
+// the upstream stalling, and the governed forward must record it as one. The
+// budget cancelled the upstream context with no cause, and on the generic
+// pass-through the governed forward runs under a context derived from it — so
+// the lifecycle read the cancel as the caller's own, recorded the request as
+// client_canceled and released the breaker, while /v1/responses, whose
+// upstream context sits beneath the governed one, counted the identical
+// failure.
+func TestForward_ErrorBodyPastScanBudgetCountsAgainstTheTarget(t *testing.T) {
+	defer SetSanitizeScanBudgetForTest(100 * time.Millisecond)()
+	for name := range abortSurfaces(nil) {
+		t.Run(name, func(t *testing.T) {
+			up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusInternalServerError)
+				for {
+					if _, err := w.Write([]byte(" ")); err != nil {
+						return
+					}
+					_ = http.NewResponseController(w).Flush()
+					select {
+					case <-r.Context().Done():
+						return
+					case <-time.After(20 * time.Millisecond):
+					}
+				}
+			}))
+			t.Cleanup(up.Close)
+			gw, store := abortTestGateway(t, up.URL)
+
+			w := postResponses(t, abortSurfaces(gw)[name], nil)
+
+			if w.Code != http.StatusInternalServerError || w.Body.String() != genericUpstreamErrorBody {
+				t.Fatalf("client got %d %q, want 500 with the unscanned body replaced", w.Code, w.Body.String())
+			}
+			if state := gw.CircuitBreakerStates()["stub"]; state != float64(circuitbreaker.StateOpen) {
+				t.Errorf("breaker state = %v, want open (%v): an upstream 5xx that stalled its body is a target failure", state, float64(circuitbreaker.StateOpen))
+			}
+			if got := onErrorRows(store); got != 1 {
+				t.Errorf("on_error rows naming the target = %d, want 1; rows: %+v", got, store.all())
+			}
+		})
 	}
 }

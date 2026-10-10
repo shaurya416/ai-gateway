@@ -9,6 +9,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- An upstream that refuses a `/v1/responses` or `/v1/*` pass-through request
+  with a `4xx` — a `401` from a revoked provider credential, a `429` from a
+  throttled upstream — is now recorded as the failed request it is. The
+  forward reported nothing to the request lifecycle for any status below
+  `500`, so the caller received the error while the `after_request` stage ran,
+  the request log wrote a success row, and the metrics, span and completed
+  event all counted a success; and a `429` never parked the target, so routing
+  kept offering it its full share of traffic. A relayed `4xx` now runs
+  `on_error` and is recorded as a failure, and a `429` parks the target for its
+  `Retry-After` as it does on the routed surfaces. A `4xx` is still kept off
+  the target's circuit breaker: it is the upstream's verdict on the caller's
+  request, which these forwards relay verbatim.
+- An upstream that answers a `/v1/*` pass-through request with a `5xx` and
+  trickles its body past the credential-scan budget now counts against the
+  target's circuit breaker. The budget cancelled the upstream context with no
+  cause, and the governed forward runs under a context derived from it, so the
+  lifecycle read the cancel as the caller's own: the request was recorded as
+  `client_canceled` and released from the breaker, while `/v1/responses`
+  counted the identical failure. The budget now cancels with a cause the
+  lifecycle reads as the gateway's own bound on a stalled upstream.
+- The `/v1/responses/{id}` sub-routes now answer `501` when `responses_target`
+  names a provider that does not speak the OpenAI wire, as `POST
+  /v1/responses` already did. The id routes checked only that the provider
+  could be proxied, so they sent the request under that provider's credential
+  to a path its upstream does not serve — anthropic, gemini, azure-openai — and
+  relayed whatever it answered.
 - A caller closing a streamed `/v1/responses` or `/v1/*` pass-through response
   no longer counts against the target's circuit breaker. The reverse proxy
   reports a body copy that breaks off by panicking, and the panic unwound

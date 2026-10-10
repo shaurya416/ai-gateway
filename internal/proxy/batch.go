@@ -35,8 +35,6 @@ type BatchSource interface {
 // cleared WriteTimeout. A large multipart file upload streams straight through
 // (no body-size cap here — the upstream enforces its own), so this handler must
 // be mounted outside the shared request-body limit.
-//
-//nolint:dupl // deliberately parallel to ResponsesIDs — both are single configured-target forwarders; a shared helper would hide their different config source (BatchTarget vs ResponsesTarget) and provider seam (BatchProvider vs ProxiableProvider)
 func BatchHandler(src BatchSource) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if unsafeProxyPath(r.URL) {
@@ -79,11 +77,11 @@ func BatchHandler(src BatchSource) http.HandlerFunc {
 		}
 
 		// Files/Batches are a straight forward: no governance to score, so the
-		// upstream status the forwarder reports is unused; only a mid-body abort
-		// is re-raised. Trace policy is read per request (see passThroughHandler)
+		// failure the forwarder reports is unused; only a mid-body abort is
+		// re-raised. Trace policy is read per request (see passThroughHandler)
 		// so a live config reload of propagate_passthrough takes effect on the
 		// next call.
-		_, err = forwardFixedTarget(w, r, target, bp.BatchAuthHeaders(), p.Name(), propagatesTrace(src), nil)
+		err = forwardFixedTarget(w, r, target, bp.BatchAuthHeaders(), p.Name(), propagatesTrace(src), nil)
 		reraiseAbort(err)
 	}
 }

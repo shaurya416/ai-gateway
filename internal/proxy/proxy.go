@@ -97,6 +97,15 @@ const proxyFlushInterval = -1 * time.Nanosecond
 // one delivers the whole thing in a read or two.
 var sanitizeScanBudget = 15 * time.Second
 
+// errSanitizeScanBudget is the cause the scan budget cancels the upstream with.
+// It wraps context.DeadlineExceeded, as streamio.ErrIdleTimeout does, for the
+// same reason: on the generic pass-through the governed forward runs under a
+// context derived from the one this cancels, and a bare cancel reads to the
+// lifecycle as the caller's own cancellation. An upstream that trickled its 5xx
+// body past the budget was then recorded as client_canceled and released from
+// the breaker, when it is the upstream that stalled.
+var errSanitizeScanBudget = fmt.Errorf("gateway upstream error body scan budget exceeded: %w", context.DeadlineExceeded)
+
 // SetSanitizeScanBudgetForTest overrides the scan budget and returns a restore
 // function, so a test can prove the bound without waiting out the real one.
 func SetSanitizeScanBudgetForTest(d time.Duration) func() {
@@ -293,8 +302,8 @@ func passThroughHandler(src providers.ProviderSource) http.HandlerFunc {
 		// Both are written only from inside ServeHTTP, which returns before they
 		// are read, so neither needs synchronising.
 		var (
-			forwardErr     error
-			upstreamStatus int
+			forwardErr  error
+			upstreamErr error
 		)
 
 		proxy := &httputil.ReverseProxy{
@@ -307,7 +316,7 @@ func passThroughHandler(src providers.ProviderSource) http.HandlerFunc {
 				// its ErrorHandler instead, so a caller would stop seeing the
 				// 500 the upstream actually sent. The status is reported to the
 				// lifecycle after the fact so the circuit breaker can score it.
-				upstreamStatus = resp.StatusCode
+				upstreamErr = relayedStatusError(providerName, resp)
 				resp.Header.Set("X-Gateway-Provider", providerName)
 				// Redact before wrapping: an upstream that quotes the credential
 				// this proxy injected must not have that quote relayed to the
@@ -318,7 +327,7 @@ func passThroughHandler(src providers.ProviderSource) http.HandlerFunc {
 				// The scan buffers that body under a size cap that is not a time
 				// cap, and the idle bound installed below cannot stand in for one.
 				// See sanitizeScanBudget.
-				scanTimer := time.AfterFunc(sanitizeScanBudget, func() { cancelUpstream(nil) })
+				scanTimer := time.AfterFunc(sanitizeScanBudget, func() { cancelUpstream(errSanitizeScanBudget) })
 				sanitizeErr := sanitizeResponse(resp, secrets)
 				scanTimer.Stop()
 				if sanitizeErr != nil {
@@ -383,25 +392,37 @@ func passThroughHandler(src providers.ProviderSource) http.HandlerFunc {
 				if forwardErr != nil {
 					return forwardErr
 				}
-				// A 5xx is the upstream failing, and the breaker exists to stop
-				// calling a target that is failing. 4xx is deliberately not one:
-				// a rejected request is the caller's fault, and tripping a
-				// shared breaker on it would let one client's bad requests take
-				// a healthy provider out for everybody.
-				//
-				// The error never reaches the client — the upstream's own
-				// response is already on the wire — so it carries no upstream
-				// text. It exists to be counted, logged and scored.
-				if upstreamStatus >= http.StatusInternalServerError {
-					return core.StatusError(providerName, upstreamStatus, "")
-				}
-				return nil
+				// An error status is a failed request whichever side caused it,
+				// and the lifecycle records it as one. Which statuses the breaker
+				// scores is the gateway's call, not this forward's: a 4xx is the
+				// upstream's verdict on the caller's request and is kept off the
+				// shared breaker, and a 429 parks the target. See
+				// Gateway.RoutePassthrough.
+				return upstreamErr
 			})
 		reraiseAbort(abortErr)
 		if err != nil && !forwarded {
 			apierror.WriteRouteError(w, err)
 		}
 	}
+}
+
+// relayedStatusError is the failure a forward reports to the gateway lifecycle
+// when the upstream answered with an error status, or nil for any status below
+// 400.
+//
+// Reporting nothing for a 4xx is what made one read as success: a 401 from a
+// revoked provider credential or a 429 from a throttled upstream ran the
+// after_request stage, wrote a success row to the request log and counted as a
+// successful request, while the caller received the error. The error never
+// reaches the client — the upstream's own response is already on the wire — so
+// it carries no upstream text, only the status and the Retry-After hint a 429
+// parks the target for. It exists to be counted, logged and scored.
+func relayedStatusError(provider string, resp *http.Response) error {
+	if resp.StatusCode < http.StatusBadRequest {
+		return nil
+	}
+	return core.StatusError(provider, resp.StatusCode, "").WithRetryAfter(resp.Header)
 }
 
 // errResponseAborted is the failure a forward reports when the response it was

@@ -33,15 +33,18 @@ import (
 // caller's Accept-Encoding, so the body it reads arrives decoded and the client
 // receives it uncompressed.
 //
-// It returns the upstream status (0 if the upstream was never reached) and the
-// forward error (non-nil only when the upstream could not be reached or read;
-// the ErrorHandler has already written the client's response in that case). A
-// governed caller uses these to score the circuit breaker and record the
-// outcome. A response that broke off mid-body is reported as errResponseAborted
-// rather than raised; every caller must pass the error to reraiseAbort once it
-// has recorded the outcome, so the client connection is still dropped.
-func forwardFixedTarget(w http.ResponseWriter, r *http.Request, target *url.URL, authHeaders map[string]string, providerName string, propagateTrace bool, wrapBody func(*http.Response)) (upstreamStatus int, forwardErr error) {
+// It returns the forward's failure, nil when the upstream answered with a status
+// below 400: the forward error when the upstream could not be reached or read
+// (the ErrorHandler has already written the client's response in that case), or
+// the upstream's own error status (see relayedStatusError; the upstream's
+// response is already on the wire). A governed caller hands it to the lifecycle
+// to record the outcome and score the circuit breaker. A response that broke off
+// mid-body is reported as errResponseAborted rather than raised; every caller
+// must pass the error to reraiseAbort once it has recorded the outcome, so the
+// client connection is still dropped.
+func forwardFixedTarget(w http.ResponseWriter, r *http.Request, target *url.URL, authHeaders map[string]string, providerName string, propagateTrace bool, wrapBody func(*http.Response)) error {
 	secrets := injectedSecrets(authHeaders)
+	var upstreamErr, forwardErr error
 
 	upstreamCtx, cancelUpstream := context.WithCancelCause(r.Context())
 	defer cancelUpstream(nil)
@@ -68,7 +71,7 @@ func forwardFixedTarget(w http.ResponseWriter, r *http.Request, target *url.URL,
 		FlushInterval: proxyFlushInterval,
 		Rewrite:       rewrite,
 		ModifyResponse: func(resp *http.Response) error {
-			upstreamStatus = resp.StatusCode
+			upstreamErr = relayedStatusError(providerName, resp)
 			resp.Header.Set("X-Gateway-Provider", providerName)
 			scanTimer := time.AfterFunc(sanitizeScanBudget, func() { cancelUpstream(nil) })
 			sanitizeErr := sanitizeResponse(resp, secrets)
@@ -96,7 +99,10 @@ func forwardFixedTarget(w http.ResponseWriter, r *http.Request, target *url.URL,
 	}
 
 	if err := serveForward(proxy, streamio.WrapResponseWriter(w), r); err != nil {
-		return upstreamStatus, err
+		return err
 	}
-	return upstreamStatus, forwardErr
+	if forwardErr != nil {
+		return forwardErr
+	}
+	return upstreamErr
 }

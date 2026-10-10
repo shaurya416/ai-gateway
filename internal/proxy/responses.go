@@ -12,7 +12,6 @@ import (
 	"github.com/ferro-labs/ai-gateway/internal/apierror"
 	"github.com/ferro-labs/ai-gateway/pkg/logger"
 	"github.com/ferro-labs/ai-gateway/providers"
-	"github.com/ferro-labs/ai-gateway/providers/core"
 )
 
 // ResponsesSource is what the Responses surface needs from the gateway: provider
@@ -91,18 +90,11 @@ func ResponsesCreate(src ResponsesSource) http.HandlerFunc {
 		var forwardErr error
 		forward := func(ctx context.Context) error {
 			forwarded = true
-			var status int
-			status, forwardErr = forwardFixedTarget(w, r.WithContext(ctx), target, authHeaders, providerName, propagatesTrace(src), wrapBody)
-			if forwardErr != nil {
-				return forwardErr
-			}
-			// A 5xx is the upstream failing; 4xx is the caller's and must not trip a
-			// shared breaker. The error never reaches the client (the upstream's own
-			// response is already on the wire) — it exists to be scored and logged.
-			if status >= http.StatusInternalServerError {
-				return core.StatusError(providerName, status, "")
-			}
-			return nil
+			// An upstream error status comes back as a failure for the lifecycle
+			// to record; which statuses the breaker scores is the gateway's call
+			// (see Gateway.RoutePassthrough).
+			forwardErr = forwardFixedTarget(w, r.WithContext(ctx), target, authHeaders, providerName, propagatesTrace(src), wrapBody)
+			return forwardErr
 		}
 
 		err = src.RouteResponsesWithPricingProvider(r.Context(), providerName, priceProvider, model, projText, inspectable, maxOutputTokens, &usage, forward)
@@ -118,8 +110,6 @@ func ResponsesCreate(src ResponsesSource) http.HandlerFunc {
 // /v1/responses/{id}/input_items. These carry no model and reference an opaque,
 // provider-scoped response id, so a single configured responses_target serves
 // them all (the same reasoning as Files/Batches). Off (501) when unset.
-//
-//nolint:dupl // deliberately parallel to BatchHandler — both are single configured-target forwarders; a shared helper would hide their different config source (ResponsesTarget vs BatchTarget) and provider seam (ProxiableProvider vs BatchProvider)
 func ResponsesIDs(src ResponsesSource) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if unsafeProxyPath(r.URL) {
@@ -146,6 +136,14 @@ func ResponsesIDs(src ResponsesSource) http.HandlerFunc {
 			apierror.WriteOpenAI(w, http.StatusNotImplemented, "provider "+p.Name()+" does not support the responses endpoint", "invalid_request_error", "responses_not_supported")
 			return
 		}
+		// The same refusal the create route makes. A non-OpenAI-wire provider
+		// serves no Responses id under its base URL, so forwarding sent the
+		// request, under that provider's credential, to a path its upstream
+		// does not have, and relayed whatever it answered.
+		if _, nativeOnly := providers.As[providers.NonOpenAIWireProvider](p); nativeOnly {
+			apierror.WriteOpenAI(w, http.StatusNotImplemented, "provider "+p.Name()+" is not available for the OpenAI-compatible responses endpoint", "invalid_request_error", "responses_not_supported")
+			return
+		}
 
 		target, err := url.Parse(pp.BaseURL())
 		if err != nil {
@@ -155,9 +153,9 @@ func ResponsesIDs(src ResponsesSource) http.HandlerFunc {
 		}
 
 		// The id sub-routes are a straight forward like Files/Batches: no
-		// governance to score, so the reported status is unused; only a mid-body
-		// abort is re-raised.
-		_, err = forwardFixedTarget(w, r, target, pp.AuthHeaders(), p.Name(), propagatesTrace(src), nil)
+		// governance to score, so the reported failure is unused; only a
+		// mid-body abort is re-raised.
+		err = forwardFixedTarget(w, r, target, pp.AuthHeaders(), p.Name(), propagatesTrace(src), nil)
 		reraiseAbort(err)
 	}
 }

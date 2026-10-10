@@ -80,7 +80,10 @@ var ErrPassthroughUninspectable error = &plugin.RejectionError{
 //   - before_request, after_request and on_error plugins: yes, with
 //     Metadata["surface"] = "passthrough" so a plugin can branch on it.
 //   - circuit breaker and per-target concurrency: yes, via the same
-//     callUnderResilience the routed pipeline uses.
+//     callUnderResilience the routed pipeline uses. An upstream 4xx the
+//     forward reports is recorded as a failed request but is not scored
+//     against the breaker, and a 429 parks the target; see
+//     forwardUnderResilience.
 //   - request log and cost accounting: yes. Cost is recorded as UNPRICED, never
 //     as a known zero: the response is opaque by construction, and buffering an
 //     arbitrarily large, possibly streaming, possibly binary body to hunt for a
@@ -360,16 +363,35 @@ func (g *Gateway) runPassthroughGovernance(
 // generic parameters are unused here because a pass-through has no typed
 // request or response to carry: the bytes go straight from the client to the
 // upstream and back.
+//
+// A 4xx the forward reports is the upstream's verdict on the caller's own
+// request, which this surface relayed verbatim rather than built, so the
+// breaker scores the call as answered — tripping a shared breaker on it would
+// let one client's bad requests take a healthy provider out for everybody. It
+// is still returned, so the lifecycle records the failed request. A 429 also
+// parks the target for its Retry-After, as it does on the routed surfaces.
 func (g *Gateway) forwardUnderResilience(ctx context.Context, key string, forward func(context.Context) error) error {
 	g.mu.RLock()
 	cb := g.circuitBreakers[key]
 	lim := g.limiters[key]
 	g.mu.RUnlock()
 
+	var rejected error
 	_, err := callUnderResilience(ctx, nil, cb, lim, struct{}{}, "",
 		func(ctx context.Context, _ providers.Provider, _ struct{}, _ string) (struct{}, error) {
-			return struct{}{}, forward(ctx)
+			err := forward(ctx)
+			if status := providers.ParseStatusCode(err); status >= 400 && status < 500 {
+				rejected = err
+				return struct{}{}, nil
+			}
+			return struct{}{}, err
 		})
+	if err == nil {
+		err = rejected
+	}
+	if isRateLimitError(err) {
+		g.parkRateLimited(key, err)
+	}
 	return err
 }
 
