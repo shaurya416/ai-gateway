@@ -622,11 +622,22 @@ func TestShutdown_ReportsADrainCutShortByTheDeadline(t *testing.T) {
 		t.Errorf("shutdown error %q does not say the event drain was cut short", err)
 	}
 
-	blk.mu.Lock()
-	shutdownCalled := blk.shutdownCalled
-	blk.mu.Unlock()
-	if !shutdownCalled {
-		t.Error("exporter.Shutdown was not called after the drain deadline")
+	// The exporter is still asked to shut down. With the deadline already past,
+	// that call is made but not awaited — an exporter's Shutdown is waited on
+	// no longer than the deadline allows — so it may land just after Shutdown
+	// returns.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		blk.mu.Lock()
+		shutdownCalled := blk.shutdownCalled
+		blk.mu.Unlock()
+		if shutdownCalled {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("exporter.Shutdown was not called after the drain deadline")
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }
 

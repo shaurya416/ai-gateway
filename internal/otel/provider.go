@@ -302,8 +302,9 @@ func exportEvent(ctx context.Context, ex observability.Exporter, evt observabili
 }
 
 // Shutdown stops the async worker, drains buffered events within the ctx
-// deadline (best-effort), then calls each exporter's Shutdown. Safe to call
-// multiple times — subsequent calls are no-ops.
+// deadline (best-effort), then calls each exporter's Shutdown, waiting on each
+// no longer than ctx allows (see shutdownExporter). Safe to call multiple
+// times — subsequent calls are no-ops.
 //
 // The shutdown context is threaded into the drain dispatch so a blocked
 // exporter Export is bounded by the shutdown deadline (ctx-aware exporters
@@ -359,11 +360,41 @@ func (p *otelProvider) Shutdown(ctx context.Context) error {
 	return firstErr
 }
 
-// shutdownExporter shuts one exporter down, reporting a panic as an error. An
-// uncontained panic here ended the process mid-shutdown, so the exporters
-// behind it were never shut down and the TracerProvider drain that follows in
-// the ShutdownFunc never ran, dropping every span still buffered.
-func shutdownExporter(ctx context.Context, ex observability.Exporter) (err error) {
+// shutdownExporter shuts one exporter down and waits for it no longer than ctx
+// allows, reporting an exporter still running at the deadline as an error that
+// wraps ctx's.
+//
+// Exporter.Shutdown is asked to honour its deadline, but an exporter is
+// third-party code, and the drain above already stops waiting on an Export that
+// does not. Waiting on Shutdown unconditionally let one that ignored ctx — still
+// flushing to a backend that stopped answering — hold shutdown open
+// indefinitely: the exporters behind it and the TracerProvider flush that
+// follows in the ShutdownFunc never ran, so every span still buffered was lost
+// when the orchestrator killed the process. The abandoned call keeps running in
+// the background, as an abandoned Export does.
+func shutdownExporter(ctx context.Context, ex observability.Exporter) error {
+	done := make(chan error, 1)
+	go func() { done <- callExporterShutdown(ctx, ex) }()
+	select {
+	case err := <-done:
+		return err
+	case <-ctx.Done():
+		// The second look covers a select that picked this case while the
+		// exporter had in fact already returned.
+		select {
+		case err := <-done:
+			return err
+		default:
+			return fmt.Errorf("exporter %q: shutdown did not finish before the deadline: %w", ex.Name(), ctx.Err())
+		}
+	}
+}
+
+// callExporterShutdown calls one exporter's Shutdown, reporting a panic as an
+// error. An uncontained panic here ended the process mid-shutdown, so the
+// exporters behind it were never shut down and the TracerProvider drain that
+// follows in the ShutdownFunc never ran, dropping every span still buffered.
+func callExporterShutdown(ctx context.Context, ex observability.Exporter) (err error) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			name := ex.Name()

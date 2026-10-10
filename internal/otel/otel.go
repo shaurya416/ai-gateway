@@ -10,6 +10,7 @@ import (
 
 	"github.com/ferro-labs/ai-gateway/internal/envref"
 	"github.com/ferro-labs/ai-gateway/internal/httpclient"
+	"github.com/ferro-labs/ai-gateway/internal/version"
 	"github.com/ferro-labs/ai-gateway/observability"
 	"github.com/ferro-labs/ai-gateway/pkg/logger"
 	"go.opentelemetry.io/otel"
@@ -129,10 +130,13 @@ func buildOTLPProvider(ctx context.Context, cfg Config, hasEndpoint bool) (*otel
 		return nil, nil, nil, fmt.Errorf("otel: build span exporter: %w", err)
 	}
 
+	// service.version is the version stamped into the binary at link time, so
+	// a trace names the release that produced it. OTEL_SERVICE_NAME and
+	// OTEL_RESOURCE_ATTRIBUTES, read by WithFromEnv, still override both.
 	res, err := resource.New(ctx,
 		resource.WithAttributes(
 			semconv.ServiceName(serviceName(cfg)),
-			semconv.ServiceVersion(""), // populated later via build flag
+			semconv.ServiceVersion(version.Short()),
 		),
 		resource.WithFromEnv(),
 		resource.WithProcess(),

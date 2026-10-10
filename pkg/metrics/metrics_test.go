@@ -2,6 +2,7 @@ package metrics
 
 import (
 	"fmt"
+	"math"
 	"testing"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -227,5 +228,41 @@ func TestProviderInitFailures_Observable(t *testing.T) {
 
 	if delta := after - before; delta != 1 {
 		t.Fatalf("init failure delta = %v, want 1", delta)
+	}
+}
+
+// TestForRequest_UsageCountersDropUncountableDeltas is the regression test for a
+// provider reporting a negative token count. The usage handles fed a Prometheus
+// counter directly, which panics on a negative Add, so one malformed usage object
+// turned a request the provider had served into a panic on the request path.
+func TestForRequest_UsageCountersDropUncountableDeltas(t *testing.T) {
+	h := ForRequest("usage-provider", "usage-model")
+	counters := map[string]prometheus.Counter{
+		"TokensIn":  h.TokensIn,
+		"TokensOut": h.TokensOut,
+		"CostUSD":   h.CostUSD,
+	}
+	for name, c := range counters {
+		t.Run(name, func(t *testing.T) {
+			before := counterValue(t, c)
+			for _, v := range []float64{-3, math.NaN(), math.Inf(1), math.Inf(-1)} {
+				func() {
+					defer func() {
+						if r := recover(); r != nil {
+							t.Fatalf("%s.Add(%v) panicked: %v", name, v, r)
+						}
+					}()
+					c.Add(v)
+				}()
+			}
+			if got := counterValue(t, c); got != before {
+				t.Fatalf("%s = %v after uncountable deltas, want it unchanged at %v", name, got, before)
+			}
+
+			c.Add(2)
+			if delta := counterValue(t, c) - before; delta != 2 {
+				t.Fatalf("%s delta after Add(2) = %v, want 2", name, delta)
+			}
+		})
 	}
 }

@@ -244,7 +244,9 @@ unrecognised or failing exporter is warned and skipped; the gateway still starts
 An `Export` that returns an error is logged at error level with the exporter's
 name — the first failure and every 64th after it — so a backend refusing every
 event shows up in the gateway's log rather than as an integration with no
-traffic.
+traffic. At shutdown an exporter's `Shutdown` is waited on no longer than
+`shutdown_grace`: one still running then is reported as a shutdown error and
+left behind, so the exporters after it and the span flush still run.
 
 ## Reference
 

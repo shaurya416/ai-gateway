@@ -393,6 +393,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reached the upstream as no count at all and was generated, billed and
   answered `200` at the upstream's default count; a negative `n` was forwarded
   for the upstream to refuse.
+- A provider response reporting a negative token count no longer turns the
+  request into a panic. The counters behind `gateway_tokens_input_total`,
+  `gateway_tokens_output_total` and `gateway_request_cost_usd_total` were fed
+  straight from the provider's `usage` object, and a Prometheus counter panics
+  on a negative increment, so `"prompt_tokens": -3` on a chat, embeddings or
+  image request turned a call the provider had already served and billed into a
+  panic: an embedder calling `Route` lost the process, and over HTTP the caller
+  was answered 500, inviting a retry that is billed again. A negative, NaN or
+  infinite increment is now dropped, as the streaming path already dropped a
+  non-positive one, and the request completes.
+- Shutdown no longer waits indefinitely on an observability exporter whose
+  `Shutdown` ignores its deadline. The event drain already stopped waiting on
+  such an exporter's `Export`, but its `Shutdown` was awaited unconditionally,
+  so one still flushing to a backend that had stopped answering held the
+  process open past `observability.tracing.shutdown_grace`: the exporters after
+  it were never shut down, the span flush that follows never ran, and every
+  span still buffered was lost when the orchestrator killed the process. Each
+  exporter's `Shutdown` is now waited on no longer than the grace allows; one
+  still running is reported as a shutdown error naming it, and shutdown carries
+  on.
+- Exported traces now name the gateway release that produced them. The OTLP
+  resource set `service.version` to the empty string whatever version the
+  binary was built as, so a tracing backend grouping or filtering by
+  `service.version` saw every deployment as the same blank release. It now
+  carries the version stamped into the build — `dev` for a build without one —
+  and `OTEL_RESOURCE_ATTRIBUTES` can still override it.
 - A configured credential that begins with another configured credential is
   now removed whole from log lines, span errors, request-log rows and exporter
   events. Value redaction takes the first registered secret that matches at a

@@ -6,6 +6,7 @@ package metrics
 import (
 	"context"
 	"errors"
+	"math"
 	"sync"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -244,6 +245,10 @@ var (
 
 // RequestMetricHandles stores cached Prometheus handles for a provider/model
 // pair so hot-path metric updates avoid repeated vector lookups.
+//
+// TokensIn, TokensOut and CostUSD are fed from what an upstream reported, so
+// they drop a delta that cannot be counted rather than panic on it; see
+// usageCounter.
 type RequestMetricHandles struct {
 	Success   prometheus.Counter
 	Error     prometheus.Counter
@@ -273,12 +278,38 @@ func ForRequest(provider, model string) *RequestMetricHandles {
 		Error:     mustGetCounter(RequestsTotal, provider, model, "error"),
 		Rejected:  mustGetCounter(RequestsTotal, provider, model, "rejected"),
 		Duration:  mustGetObserver(RequestDuration, provider, model),
-		TokensIn:  mustGetCounter(TokensInput, provider, model),
-		TokensOut: mustGetCounter(TokensOutput, provider, model),
-		CostUSD:   mustGetCounter(RequestCostUSD, provider, model),
+		TokensIn:  usageCounter{mustGetCounter(TokensInput, provider, model)},
+		TokensOut: usageCounter{mustGetCounter(TokensOutput, provider, model)},
+		CostUSD:   usageCounter{mustGetCounter(RequestCostUSD, provider, model)},
 	}
 	actual, _ := requestMetricCache.LoadOrStore(key, handles)
 	return actual.(*RequestMetricHandles)
+}
+
+// usageCounter is a counter fed from figures an upstream reported — token
+// counts, and the cost priced from them — rather than from the gateway's own
+// arithmetic.
+//
+// A Prometheus counter panics on a negative Add, which for a count the gateway
+// computes itself is the right answer to a programming error. A usage object is
+// data from outside the process, and one reporting prompt_tokens: -3 turned a
+// request the provider had served into a panic: an embedder calling Route lost
+// the process, and over HTTP the recovered panic answered 500 for a call the
+// provider had already billed, inviting a retry that is billed again. A delta
+// that cannot be counted — negative, NaN or infinite — is dropped instead, as
+// the streaming path's own guards already drop it, so the counter keeps the
+// figures it can trust.
+type usageCounter struct {
+	prometheus.Counter
+}
+
+// Add adds v when it is a finite, non-negative amount, and otherwise does
+// nothing.
+func (c usageCounter) Add(v float64) {
+	if v < 0 || math.IsNaN(v) || math.IsInf(v, 0) {
+		return
+	}
+	c.Counter.Add(v)
 }
 
 // error_type label values on ProviderErrors.

@@ -173,7 +173,8 @@ type Exporter interface {
 	Export(ctx context.Context, evt Event) error
 
 	// Shutdown drains the exporter's buffers within the supplied
-	// deadline. Called once at gateway shutdown.
+	// deadline. Called once at gateway shutdown. The gateway stops waiting
+	// at the deadline and reports a call still running then as an error.
 	Shutdown(ctx context.Context) error
 }
 
