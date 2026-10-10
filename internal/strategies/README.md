@@ -143,7 +143,8 @@ named by `field` — of the single `X-Gateway-Metadata` request header: a JSON
 object of at most 32 string, number or boolean values within 4 KiB, accepted on
 `/v1/chat/completions` and `/v1/completions` and never forwarded to a provider.
 No other header is ever exposed to a rule. `user` also applies to embeddings and
-image requests, which carry the field; `stream` and `has_tools` are chat-only,
+image requests, which carry the field; `stream` and `has_tools` are chat-only —
+on every other surface a rule on either is skipped, whichever value it names —
 and `metadata` matches nothing on the surfaces that do not accept the header.
 
 ```yaml

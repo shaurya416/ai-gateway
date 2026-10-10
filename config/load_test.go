@@ -871,6 +871,38 @@ func TestValidateConfig_RequestTimeout(t *testing.T) {
 	}
 }
 
+// max_request_bytes: 0 (or omitted) is the 10 MiB default. A negative value is
+// not that default and is no setting the router can honour — it read only
+// positive values and served the default in their place — so `-1`, written
+// for "no limit", loaded clean and capped bodies at 10 MiB.
+func TestValidateConfig_MaxRequestBytes(t *testing.T) {
+	tests := []struct {
+		name    string
+		max     int64
+		wantErr bool
+	}{
+		{"omitted is valid", 0, false},
+		{"positive is valid", 1 << 20, false},
+		{"negative one is rejected", -1, true},
+		{"large negative is rejected", -10 << 20, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := config.Config{
+				Targets:         []config.Target{{VirtualKey: "openai"}},
+				MaxRequestBytes: tt.max,
+			}
+			err := config.ValidateConfig(cfg)
+			if tt.wantErr && err == nil {
+				t.Errorf("max_request_bytes %d: expected an error, got nil", tt.max)
+			}
+			if !tt.wantErr && err != nil {
+				t.Errorf("max_request_bytes %d: unexpected error: %v", tt.max, err)
+			}
+		})
+	}
+}
+
 func TestNormalize_AppliesDefaults(t *testing.T) {
 	cfg := config.Config{Targets: []config.Target{{VirtualKey: "openai"}}}
 	cfg.Normalize()
@@ -1130,6 +1162,15 @@ func TestLoadConfig_TargetCircuitBreakerDistinguishesOmittedFromZero(t *testing.
 		{name: "json zero max half threshold", file: "config.json", body: `{"strategy":{"mode":"single"},"targets":[{"virtual_key":"openai","circuit_breaker":{"max_half_threshold":0}}]}`, wantErr: true},
 		{name: "yaml zero max half threshold", file: "config.yaml", body: "strategy: {mode: single}\ntargets:\n  - virtual_key: openai\n    circuit_breaker: {max_half_threshold: 0}\n", wantErr: true},
 		{name: "json positive max half threshold", file: "config.json", body: `{"strategy":{"mode":"single"},"targets":[{"virtual_key":"openai","circuit_breaker":{"max_half_threshold":2}}]}`},
+		// encoding/json matches a field name in any letter case, so these are
+		// the same fields written as zero. Presence was looked up by the exact
+		// spelling, read each as omitted, and the breaker took the default the
+		// canonical spelling of the same zero is refused for.
+		{name: "json zero failure threshold in another letter case", file: "config.json", body: `{"strategy":{"mode":"single"},"targets":[{"virtual_key":"openai","circuit_breaker":{"Failure_Threshold":0}}]}`, wantErr: true},
+		{name: "json zero success threshold in another letter case", file: "config.json", body: `{"strategy":{"mode":"single"},"targets":[{"virtual_key":"openai","circuit_breaker":{"SUCCESS_THRESHOLD":0}}]}`, wantErr: true},
+		{name: "json zero max half threshold in another letter case", file: "config.json", body: `{"strategy":{"mode":"single"},"targets":[{"virtual_key":"openai","circuit_breaker":{"Max_Half_Threshold":0}}]}`, wantErr: true},
+		{name: "json empty timeout in another letter case", file: "config.json", body: `{"strategy":{"mode":"single"},"targets":[{"virtual_key":"openai","circuit_breaker":{"Timeout":""}}]}`, wantErr: true},
+		{name: "json positive threshold in another letter case", file: "config.json", body: `{"strategy":{"mode":"single"},"targets":[{"virtual_key":"openai","circuit_breaker":{"Failure_Threshold":3}}]}`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

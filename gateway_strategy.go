@@ -22,13 +22,15 @@ func (g *Gateway) getStrategy() (strategies.Strategy, error) {
 }
 
 // strategyFor is getStrategy for one surface. It is the same strategy built
-// from the same config; only the provider lookup differs, and it differs by
-// exactly one rule: a target whose provider cannot serve this surface is not a
-// candidate. That keeps a chat-only target from winning a weighted draw it can
-// never serve — which would then hand its whole share to whichever capable
-// target follows it in the rotation — or from taking the cheapest or fastest
-// slot under a ranking mode. Model eligibility, order, and the tail are then
-// decided once, in internal/strategies, for chat and every other surface.
+// from the same config, and differs in two places only. The provider lookup
+// drops a target whose provider cannot serve this surface: that keeps a
+// chat-only target from winning a weighted draw it can never serve — which
+// would then hand its whole share to whichever capable target follows it in
+// the rotation — or from taking the cheapest or fastest slot under a ranking
+// mode. And a conditional rule on a chat-only predicate is left out of every
+// other surface's rule list (see withoutChatOnlyConditions). Model
+// eligibility, order, and the tail are then decided once, in
+// internal/strategies, for chat and every other surface.
 func (g *Gateway) strategyFor(surface string) (strategies.Strategy, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -85,7 +87,12 @@ func (g *Gateway) strategyFor(surface string) (strategies.Strategy, error) {
 		}
 	}
 
-	s, err := buildStrategy(g.config.Strategy, targets, lookup, g.latencyTracker, g.catalog)
+	strategyCfg := g.config.Strategy
+	if surface != "" {
+		strategyCfg.Conditions = withoutChatOnlyConditions(strategyCfg.Conditions)
+	}
+
+	s, err := buildStrategy(strategyCfg, targets, lookup, g.latencyTracker, g.catalog)
 	if err != nil {
 		return nil, err
 	}
@@ -175,6 +182,30 @@ func stickyFrom(cfg *config.StickyConfig) strategies.Sticky {
 	}
 	ttl, _ := time.ParseDuration(cfg.TTL)
 	return strategies.Sticky{On: cfg.On, TTL: ttl}
+}
+
+// withoutChatOnlyConditions returns conds less the rules on `stream` and
+// `has_tools`, in order, for a surface other than chat.
+//
+// Both predicates describe a chat completion — whether it streams, whether it
+// carries tools — and a request on any other surface has neither. Asked of
+// one anyway, the matcher reads the field's zero value, so a "false" rule
+// written for chat traffic matched every embeddings, image, rerank,
+// moderation and audio request, ahead of the rule that names its model, and
+// sent it to a target the operator chose for chat: a different provider than
+// the one configured for that model, or a 404 from one that cannot serve the
+// surface. Dropping the rule is the reading the strategies README gives these
+// keys — chat-only — and the one content-based already gets on these
+// surfaces (see surfaceTargetOrder).
+func withoutChatOnlyConditions(conds []config.Condition) []config.Condition {
+	kept := make([]config.Condition, 0, len(conds))
+	for _, c := range conds {
+		if c.Key == config.ConditionKeyStream || c.Key == config.ConditionKeyHasTools {
+			continue
+		}
+		kept = append(kept, c)
+	}
+	return kept
 }
 
 // chainTargets maps a rule's target chain onto strategy targets.

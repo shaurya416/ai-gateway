@@ -206,6 +206,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   other client of the Admin API was handed a credential that could never
   authenticate. `PUT /admin/keys/{id}` is unchanged: a past expiry there is
   how an existing key is retired.
+- A `conditional` rule on `stream` or `has_tools` no longer claims embeddings,
+  image, rerank, moderation and audio requests. Both keys describe a chat
+  completion and are documented as chat-only, but they were matched against
+  the request every surface routes on, which carries neither — so a
+  `"false"` rule matched every non-chat request, ahead of any rule naming its
+  model. With `{key: has_tools, value: "false", target_key: groq}` above
+  `{key: model, value: text-embedding-3-small, target_key: openai}`, every
+  embeddings request was routed to `groq`, which cannot embed, and answered
+  `404`; with a rule target that can, the request was served by a provider
+  the operator had not chosen for that model. Those surfaces now skip rules on
+  either key, whatever value they name, and reach the rule below; chat routing
+  is unchanged.
+- A JSON `circuit_breaker` block that writes a field in another letter case —
+  `"Failure_Threshold": 0`, `"Timeout": ""` — is now refused like the same
+  value written in lower case. encoding/json fills the field from a key in any
+  letter case, but whether the field was written at all was looked up by its
+  exact spelling, so the written value read as omitted: the config loaded
+  clean, from a file or through `PUT /admin/config`, and the breaker ran on the
+  default for that field — five failures, a 30s timeout — instead of the load
+  reporting that the value is not one it can honour.
+- A negative `max_request_bytes` is now refused at load. The body-size limit
+  applied only a positive value and served the 10 MiB default in place of
+  anything else, so `max_request_bytes: -1`, written for "no limit", loaded
+  clean, `GET /admin/config` reported `-1`, and every body over 10 MiB was
+  answered `413`. `ferrogw validate`, startup and `PUT /admin/config` now name
+  the value; omit it for the default. There is no unlimited setting.
 - A `conditional` rule whose `model` value names a global alias is now refused
   at load. Aliases are resolved before the strategy is asked, so such a rule
   compared a request whose model already read as the alias's target, never

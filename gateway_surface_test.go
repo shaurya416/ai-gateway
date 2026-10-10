@@ -1005,6 +1005,62 @@ func TestSurfaceTargetOrder_ContentBasedFallsToTheFirstCapableTarget(t *testing.
 	}
 }
 
+// `stream` and `has_tools` describe a chat request, and a non-chat request
+// carries neither — so read off the request it routes on, a "false" rule
+// matched every embeddings, image, rerank, moderation and audio request, ahead
+// of the rule that names the model, and sent it to a target the operator wrote
+// for chat. The chat surface keeps the rule.
+func TestSurfaceTargetOrder_ChatOnlyRulesDoNotMatchOtherSurfaces(t *testing.T) {
+	for _, key := range []string{config.ConditionKeyStream, config.ConditionKeyHasTools} {
+		t.Run(key, func(t *testing.T) {
+			gw, err := newTestGateway(t, config.Config{
+				Strategy: config.StrategyConfig{Mode: config.ModeConditional, Conditions: []config.Condition{
+					{Key: key, Value: "false", TargetKey: "chat"},
+					{Key: config.ConditionKeyModel, Value: "embed-model", TargetKey: "embedder"},
+					{Key: config.ConditionKeyModel, Value: "image-model", TargetKey: "painter"},
+				}},
+				// The fallback is not the rule's target, so the chat request
+				// below reaches `chat` only through the rule.
+				Targets: []config.Target{{VirtualKey: "embedder"}, {VirtualKey: "chat"}, {VirtualKey: "painter"}},
+			})
+			if err != nil {
+				t.Fatalf("new gateway: %v", err)
+			}
+			chat := &mockEmbeddingProvider{mockProvider: mockProvider{
+				name:   "chat",
+				models: []string{"chat-model", "embed-model"},
+				resp:   &providers.Response{Choices: []providers.Choice{{Message: providers.Message{Role: "assistant", Content: "ok"}}}},
+			}}
+			embedder := &mockEmbeddingProvider{mockProvider: mockProvider{name: "embedder", models: []string{"embed-model"}}}
+			painter := &mockImageProvider{mockProvider: mockProvider{name: "painter", models: []string{"image-model"}}}
+			gw.RegisterProvider(chat)
+			gw.RegisterProvider(embedder)
+			gw.RegisterProvider(painter)
+
+			if _, err := gw.Embed(context.Background(), providers.EmbeddingRequest{Model: "embed-model", Input: "hi"}); err != nil {
+				t.Fatalf("Embed: %v", err)
+			}
+			if embedder.calls != 1 || chat.calls != 0 {
+				t.Errorf("embeddings calls embedder=%d chat=%d; a %s rule matched a request that is not a chat completion", embedder.calls, chat.calls, key)
+			}
+			if _, err := gw.GenerateImage(context.Background(), providers.ImageRequest{Model: "image-model", Prompt: "cat"}); err != nil {
+				t.Errorf("GenerateImage: %v; a %s rule claimed the request for a target that cannot draw", err, key)
+			}
+
+			resp, err := gw.Route(context.Background(), providers.Request{
+				Model:    "chat-model",
+				Messages: []providers.Message{{Role: "user", Content: "hi"}},
+			})
+			if err != nil {
+				t.Fatalf("Route: %v", err)
+			}
+			if resp.Provider != "chat" {
+				t.Errorf("chat served by %q, want the %s rule's target", resp.Provider, key)
+			}
+		})
+	}
+}
+
 // The caller's `user` reaches the strategy on the surfaces that carry one, so
 // sticky hashing pins an embeddings caller and a `key: user` rule matches an
 // image request exactly as they do on chat.

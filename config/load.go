@@ -403,14 +403,8 @@ func ValidateConfig(cfg Config) error {
 		return err
 	}
 
-	if cfg.RequestTimeout != "" {
-		d, err := time.ParseDuration(cfg.RequestTimeout)
-		if err != nil {
-			return fmt.Errorf("invalid request_timeout %q: %w", cfg.RequestTimeout, err)
-		}
-		if d <= 0 {
-			return fmt.Errorf("request_timeout must be positive, got %q", cfg.RequestTimeout)
-		}
+	if err := validateRequestBounds(cfg); err != nil {
+		return err
 	}
 
 	// Validate observability.tracing.privacy_level, protocol, sample_ratio and
@@ -460,6 +454,29 @@ func ValidateConfig(cfg Config) error {
 		return err
 	}
 
+	return nil
+}
+
+// validateRequestBounds checks the two per-request bounds: max_request_bytes
+// and request_timeout.
+//
+// A zero max_request_bytes is the omitted value and means the default. A
+// negative one is not a cap anything can enforce, and the router served the
+// default in its place — so `-1` written for "no limit" loaded clean and capped
+// bodies at 10 MiB.
+func validateRequestBounds(cfg Config) error {
+	if cfg.MaxRequestBytes < 0 {
+		return fmt.Errorf("max_request_bytes cannot be negative, got %d (omit it for the %d-byte default; there is no unlimited setting)", cfg.MaxRequestBytes, DefaultMaxRequestBytes)
+	}
+	if cfg.RequestTimeout != "" {
+		d, err := time.ParseDuration(cfg.RequestTimeout)
+		if err != nil {
+			return fmt.Errorf("invalid request_timeout %q: %w", cfg.RequestTimeout, err)
+		}
+		if d <= 0 {
+			return fmt.Errorf("request_timeout must be positive, got %q", cfg.RequestTimeout)
+		}
+	}
 	return nil
 }
 

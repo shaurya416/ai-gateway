@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/ferro-labs/ai-gateway/mcp"
 	"go.yaml.in/yaml/v3"
@@ -38,7 +39,8 @@ type Config struct {
 	// (/v1/*) and admin write endpoints. Requests that exceed the limit receive
 	// HTTP 413 Request Entity Too Large before any LLM call is attempted.
 	// 0 (the default when omitted) applies DefaultMaxRequestBytes (10 MiB), which
-	// is well above any realistic chat completion payload.
+	// is well above any realistic chat completion payload. A negative value is
+	// refused at load; there is no unlimited setting.
 	MaxRequestBytes int64 `json:"max_request_bytes,omitempty" yaml:"max_request_bytes,omitempty"`
 	// RequestTimeout bounds a single non-streaming request end to end — plugin
 	// stages, provider call, and every retry and fallback attempt combined — as a
@@ -617,11 +619,24 @@ func (c *CircuitBreakerConfig) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, &fields); err != nil {
 		return err
 	}
+	// Presence follows the decode's own key matching. encoding/json fills a
+	// field from its name in any letter case, so "Failure_Threshold": 0 sets
+	// FailureThreshold; looked up by the exact spelling instead, that written
+	// zero read as omitted and took the default the canonical spelling of the
+	// same zero is refused for.
+	written := func(name string) bool {
+		for key, raw := range fields {
+			if raw != nil && strings.EqualFold(key, name) {
+				return true
+			}
+		}
+		return false
+	}
 	c.setCircuitBreakerWire(wire, circuitBreakerPresence{
-		failureThreshold: fields["failure_threshold"] != nil,
-		successThreshold: fields["success_threshold"] != nil,
-		maxHalfThreshold: fields["max_half_threshold"] != nil,
-		timeout:          fields["timeout"] != nil,
+		failureThreshold: written("failure_threshold"),
+		successThreshold: written("success_threshold"),
+		maxHalfThreshold: written("max_half_threshold"),
+		timeout:          written("timeout"),
 	})
 	return nil
 }
