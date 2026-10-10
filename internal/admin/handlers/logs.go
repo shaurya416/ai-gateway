@@ -109,7 +109,7 @@ func (h *Handlers) deleteLogs(w http.ResponseWriter, r *http.Request) {
 
 	deleted, err := h.LogAdmin.Delete(r.Context(), requestlog.MaintenanceQuery{
 		Before:   &before,
-		Stage:    r.URL.Query().Get("stage"),
+		Stage:    stageFilter(r),
 		Model:    r.URL.Query().Get("model"),
 		Provider: r.URL.Query().Get("provider"),
 	})
@@ -158,7 +158,7 @@ func (h *Handlers) logsStats(w http.ResponseWriter, r *http.Request) {
 	}
 
 	query := requestlog.Query{
-		Stage:         r.URL.Query().Get("stage"),
+		Stage:         stageFilter(r),
 		Model:         r.URL.Query().Get("model"),
 		Provider:      r.URL.Query().Get("provider"),
 		Since:         since,
@@ -199,12 +199,27 @@ func (h *Handlers) logsStats(w http.ResponseWriter, r *http.Request) {
 		"filters": map[string]any{
 			"limit":    limit,
 			"buckets":  buckets,
-			"stage":    query.Stage,
+			"stage":    r.URL.Query().Get("stage"),
 			"model":    query.Model,
 			"provider": query.Provider,
 			"since":    r.URL.Query().Get("since"),
 		},
 	})
+}
+
+// stageFilter is the single stage a purge or a stats query narrows to, or ""
+// for none.
+//
+// stageAll is how GET /admin/logs is asked for every logged row, so it means
+// "every stage" on the two routes beside it too. Passed through as a literal
+// stage name it matched no row: a purge scoped the way the listing is filtered
+// answered {"deleted":0} having removed nothing, and the stats for the same
+// filter read as a gateway that had served no traffic.
+func stageFilter(r *http.Request) string {
+	if stage := r.URL.Query().Get("stage"); stage != stageAll {
+		return stage
+	}
+	return ""
 }
 
 // encodeDimension renders one dimension's groups, keeping the highest-count

@@ -629,7 +629,13 @@ func scrubURLSecrets(s string) string {
 		return s
 	}
 	u, err := url.Parse(s)
-	if err != nil || u.Scheme == "" {
+	if err != nil {
+		// Go's parser refuses the URL — a malformed escape in its path, say — but
+		// the server it names may still accept it, so its query can still carry
+		// a credential. Withholding it does not depend on parsing the rest.
+		return withholdUnparsedQuery(s)
+	}
+	if u.Scheme == "" {
 		return s
 	}
 
@@ -652,6 +658,12 @@ func scrubURLSecrets(s string) string {
 				}
 			}
 			u.RawQuery = values.Encode()
+		} else if raw, withheld := withholdRawQueryValues(u.RawQuery); withheld {
+			// A ";" separator or a stray "%" makes ParseQuery fail, and a server
+			// that splits on ";" accepts the query all the same. Serving it as
+			// written left every value it carried to the keyword backstop alone.
+			u.RawQuery = raw
+			changed = true
 		}
 	}
 	if !changed {
@@ -661,4 +673,54 @@ func scrubURLSecrets(s string) string {
 	// userinfo and query positions; restore the literal so the marker stays
 	// recognisable to RedactedSecretField and to a reader.
 	return strings.ReplaceAll(u.String(), url.QueryEscape(redactedPlaceholder), redactedPlaceholder)
+}
+
+// withholdUnparsedQuery is scrubURLSecrets for a URL url.Parse refuses: the
+// query is taken to run from the first "?" to the first "#" after it, and its
+// values are withheld exactly as withholdRawQueryValues withholds them. The
+// password half of userinfo is left to the redact backstop, which matches it by
+// shape.
+func withholdUnparsedQuery(s string) string {
+	start := strings.IndexByte(s, '?')
+	if start < 0 {
+		return s
+	}
+	query, fragment := s[start+1:], ""
+	if end := strings.IndexByte(query, '#'); end >= 0 {
+		query, fragment = query[:end], query[end:]
+	}
+	raw, withheld := withholdRawQueryValues(query)
+	if !withheld {
+		return s
+	}
+	return s[:start+1] + raw + fragment
+}
+
+// withholdRawQueryValues replaces the value of every name=value pair in a raw
+// query string with the placeholder, keeping names, separators and order.
+//
+// It is the fallback for a query url.ParseQuery refuses, so it decodes nothing:
+// pairs are split on both "&" and ";", the two separators servers accept, and
+// each value is withheld as written. An empty value and a ${VAR} reference are
+// kept, as they are on the parsed path; so is a segment with no "=", which
+// carries no value to withhold.
+func withholdRawQueryValues(raw string) (string, bool) {
+	var b strings.Builder
+	b.Grow(len(raw))
+	withheld := false
+	for raw != "" {
+		segment, sep := raw, ""
+		if i := strings.IndexAny(raw, "&;"); i >= 0 {
+			segment, sep, raw = raw[:i], raw[i:i+1], raw[i+1:]
+		} else {
+			raw = ""
+		}
+		if name, value, ok := strings.Cut(segment, "="); ok && value != "" && !isEnvRef(value) {
+			segment = name + "=" + redactedPlaceholder
+			withheld = true
+		}
+		b.WriteString(segment)
+		b.WriteString(sep)
+	}
+	return b.String(), withheld
 }

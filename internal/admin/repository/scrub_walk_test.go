@@ -427,3 +427,58 @@ func TestScrubURLSecrets(t *testing.T) {
 		})
 	}
 }
+
+// TestScrubURLSecrets_QueryTheParserRefuses covers a URL whose query Go's parser
+// will not decode: a ";" separator, a stray "%", or a malformed escape anywhere
+// in the URL. Every query value used to be withheld only when url.ParseQuery
+// succeeded, so one such character served the whole query verbatim to a
+// read_only caller of GET /admin/config, guarded only by the keyword backstop —
+// which knows "token" and "api_key" but not account_sid or client_secret.
+func TestScrubURLSecrets_QueryTheParserRefuses(t *testing.T) {
+	secret := "AC" + strings.Repeat("7", 16)
+	cases := []struct{ name, in, want string }{
+		{
+			"semicolon separator",
+			"https://mcp.example.com/sse?account_sid=" + secret + ";v=1",
+			"https://mcp.example.com/sse?account_sid=" + redactedPlaceholder + ";v=" + redactedPlaceholder,
+		},
+		{
+			"stray percent sign",
+			"https://mcp.example.com/sse?client_secret=" + secret + "&note=100%",
+			"https://mcp.example.com/sse?client_secret=" + redactedPlaceholder + "&note=" + redactedPlaceholder,
+		},
+		{
+			"malformed escape in the path",
+			"https://mcp.example.com/p%zz?client_secret=" + secret,
+			"https://mcp.example.com/p%zz?client_secret=" + redactedPlaceholder,
+		},
+		{
+			"env ref and bare flag kept",
+			"https://h/p?token=${T};stream&x=" + secret + "#frag",
+			"https://h/p?token=${T};stream&x=" + redactedPlaceholder + "#frag",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := scrubURLSecrets(tc.in); got != tc.want {
+				t.Fatalf("scrubURLSecrets(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+
+	// The same through the served config, and refused on the way back in.
+	live := config.Config{MCPServers: []mcp.ServerConfig{{
+		Name: "voice",
+		URL:  "https://mcp.example.com/sse?account_sid=" + secret + ";region=us1",
+	}}}
+	got := ScrubConfigSecrets(live).MCPServers[0].URL
+	if strings.Contains(got, secret) {
+		t.Fatalf("GET /admin/config served the credential: %q", got)
+	}
+	if !strings.Contains(got, "mcp.example.com/sse?account_sid=") {
+		t.Fatalf("host, path and parameter names should survive, got %q", got)
+	}
+	if field := RedactedSecretField(ScrubConfigSecrets(live)); field != "mcp_servers[0].url" {
+		t.Fatalf("RedactedSecretField = %q, want mcp_servers[0].url", field)
+	}
+}

@@ -9,6 +9,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `GET /admin/config` and `GET /admin/config/history` no longer serve the
+  query of a URL Go's parser cannot decode. Every query value of a URL field —
+  `mcp_servers[].url`, the tracing endpoint — was withheld only when
+  `url.ParseQuery` succeeded, so a `;` separator, a stray `%`, or a malformed
+  escape anywhere in the URL served the whole query verbatim to any
+  `read_only` caller, guarded only by a keyword backstop that recognises
+  `token` and `api_key` but not `account_sid` or `client_secret`. Such a query
+  now has every `name=value` pair withheld as written, split on `&` and `;`,
+  with names, `${VAR}` references and bare flags kept, and `PUT /admin/config`
+  refuses it back like any other withheld value.
+- `DELETE /admin/logs?stage=all` now purges every stage, and
+  `GET /admin/logs/stats?stage=all` reports what the unfiltered stats do.
+  `all` is how `GET /admin/logs` is asked for every logged row, but the purge
+  and the stats passed it through as a literal stage name that no row carries,
+  so a purge scoped the way the listing is filtered answered
+  `200 {"deleted":0}` having removed nothing — and was audited as a successful
+  `logs.purge` — while the stats for the same filter read as a gateway that
+  had served no traffic.
+- `/v1/rerank` now answers `400` for a negative `top_n`, before any target is
+  called. Nothing checked it at the edge, so on an adapter that caps the
+  ranking itself (`nvidia-nim`, `deepinfra`) the upstream rerank was made and
+  paid for, the cap then failed as an unclassified error, and the caller got
+  `500 routing_error` — the gateway's own failure, which every SDK retries —
+  for a request that was invalid from the start. `top_n: 0` is unchanged.
 - A valid credential sent as `Authorization: bearer <key>` — or with the
   scheme in any other case, or with more than one space before the key — is
   now accepted on `/v1/*`, `/admin/*`, `/metrics` and the `POST /admin/session`

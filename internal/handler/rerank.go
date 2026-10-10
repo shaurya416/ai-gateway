@@ -30,6 +30,14 @@ func Rerank(gw *aigateway.Gateway) http.HandlerFunc {
 			apierror.WriteOpenAI(w, http.StatusBadRequest, "documents is required", "invalid_request_error", "invalid_request")
 			return
 		}
+		// A negative top_n names no count, so no target can serve it. Checked
+		// here rather than left to the adapters: the ones that cap the ranking
+		// themselves did so after the upstream call, and refused it as a plain
+		// error the caller received as the gateway's own 500.
+		if req.TopN != nil && *req.TopN < 0 {
+			apierror.WriteOpenAI(w, http.StatusBadRequest, "top_n must not be negative", "invalid_request_error", "invalid_request")
+			return
+		}
 
 		attribution := &aigateway.RoutingAttribution{}
 		ctx := aigateway.WithRoutingAttribution(r.Context(), attribution)
