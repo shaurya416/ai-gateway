@@ -40,7 +40,16 @@ import (
 // the HTTP handlers). It carries the caller's routing metadata for the gateway
 // to read and never reaches a provider on the routed surfaces, so it does not
 // here either.
-var gatewayIdentityHeaders = []string{"baggage", "X-User-ID", "X-Session-ID", "X-Gateway-Metadata"}
+//
+// Origin is the browser's, and it names the site a script runs on to the
+// gateway, whose CORS layer has already decided whether that site may call it.
+// Forwarded, it put the request to the upstream's CORS policy as well: Ollama
+// answers an Origin outside OLLAMA_ORIGINS 403, so a browser application the
+// gateway admits had every forward to an Ollama target refused while chat to
+// the same target was served, and an upstream that allows every origin answered
+// with an Access-Control-Allow-Origin of its own beside the gateway's, a pair a
+// browser refuses. The routed surfaces never send it.
+var gatewayIdentityHeaders = []string{"baggage", "X-User-ID", "X-Session-ID", "X-Gateway-Metadata", "Origin"}
 
 // stripGatewayIdentityHeaders deletes the caller-identity headers from the
 // outbound request. See gatewayIdentityHeaders for why they must not travel
@@ -315,7 +324,15 @@ func passThroughHandler(src providers.ProviderSource) http.HandlerFunc {
 		var body string
 		inspectable := true
 		if governed {
-			body, inspectable = projectBody(r)
+			var bodyModel string
+			body, bodyModel, inspectable = projectBody(r)
+			// A request placed by X-Provider was resolved without reading its
+			// body, so it reached the lifecycle naming no model, and its
+			// request-log rows and span recorded none. The projection has just
+			// read the body, so the model it names is taken from there.
+			if model == "" {
+				model = bodyModel
+			}
 		}
 		// Watched from here on, as the forward reads it. A failure reading it is
 		// the caller's: the governed forward runs under a context derived from

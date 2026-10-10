@@ -53,9 +53,12 @@ const projectionCap = 1 << 20 // 1 MiB
 // the base64, which no blocklist will match — decoding every string that looks
 // like base64 is a decoder, not a projection. Add it when a deployment actually
 // needs to screen inline attachments.
-func projectBody(r *http.Request) (text string, inspectable bool) {
+//
+// model is the body's top-level "model" string when the projection read one,
+// empty otherwise; the decode that projects the body has already found it.
+func projectBody(r *http.Request) (text, model string, inspectable bool) {
 	if r.Body == nil || r.ContentLength == 0 {
-		return "", true
+		return "", "", true
 	}
 
 	// One byte past the cap, so a body sitting exactly at the limit is still
@@ -68,20 +71,23 @@ func projectBody(r *http.Request) (text string, inspectable bool) {
 	if readErr != nil {
 		// Includes http.MaxBytesError from the body-limit middleware. A body the
 		// gateway could not finish reading is a body it did not inspect.
-		return "", false
+		return "", "", false
 	}
 	if len(buf) > projectionCap {
-		return "", false
+		return "", "", false
 	}
 
 	var doc any
 	if err := json.Unmarshal(buf, &doc); err != nil {
-		return "", false
+		return "", "", false
+	}
+	if fields, ok := doc.(map[string]any); ok {
+		model, _ = fields["model"].(string)
 	}
 
 	var sb strings.Builder
 	collectStrings(doc, &sb)
-	return sb.String(), true
+	return sb.String(), model, true
 }
 
 // collectStrings appends every string value reachable from v to sb, one per

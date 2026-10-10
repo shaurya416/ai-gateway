@@ -7,12 +7,17 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"path"
 	"strings"
 
 	"github.com/ferro-labs/ai-gateway/internal/apierror"
 	"github.com/ferro-labs/ai-gateway/pkg/logger"
 	"github.com/ferro-labs/ai-gateway/providers"
 )
+
+// responsesCompactPath is the Responses compaction operation, which carries a
+// model and is billed like create. See ResponsesIDs.
+const responsesCompactPath = "/v1/responses/compact"
 
 // ResponsesSource is what the Responses surface needs from the gateway: provider
 // resolution (via the embedded ProviderSource), the configured id-subroute
@@ -83,7 +88,7 @@ func ResponsesCreate(src ResponsesSource) http.HandlerFunc {
 			return
 		}
 
-		projText, inspectable := projectBody(r)
+		projText, _, inspectable := projectBody(r)
 		providerName := p.Name()
 		priceProvider := providers.CanonicalName(p)
 		authHeaders := pp.AuthHeaders()
@@ -128,12 +133,29 @@ func ResponsesCreate(src ResponsesSource) http.HandlerFunc {
 // /v1/responses/{id}/input_items. These carry no model and reference an opaque,
 // provider-scoped response id, so a single configured responses_target serves
 // them all (the same reasoning as Files/Batches). Off (501) when unset.
+//
+// POST /v1/responses/compact shares the prefix and is not one of them: it names
+// a model, runs it over the caller's conversation and reports the usage it
+// billed, as create does, so it is handed to the create handler and routed,
+// governed and priced exactly as create is. Forwarded as an id sub-route it went
+// to responses_target whatever model it named, past every guardrail, budget and
+// rate limit and absent from the request log, and was a 501 where
+// responses_target was unset.
 func ResponsesIDs(src ResponsesSource) http.HandlerFunc {
+	create := ResponsesCreate(src)
 	return func(w http.ResponseWriter, r *http.Request) {
 		if unsafeProxyPath(r.URL) {
 			apierror.WriteOpenAI(w, http.StatusBadRequest,
 				"pass-through path contains a disallowed traversal segment",
 				"invalid_request_error", "invalid_proxy_path")
+			return
+		}
+
+		// Judged on the cleaned path, the way an upstream that merges slashes
+		// or drops a trailing one reads it, so no spelling of the operation
+		// reaches responses_target as an id.
+		if r.Method == http.MethodPost && path.Clean(r.URL.Path) == responsesCompactPath {
+			create(w, r)
 			return
 		}
 

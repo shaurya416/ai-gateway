@@ -724,7 +724,7 @@ scan is narrowed back to the head segment.
 | `/v1/moderations` | POST | Moderations (OpenAI contract) |
 | `/v1/files`, `/v1/files/*`, `/v1/batches`, `/v1/batches/*` | GET, POST, DELETE | Files + Batch pass-through to the configured `batch_target` (501 when unset — see [Batch and files](#batch-and-files)) |
 | `/v1/responses` | POST | Responses API — model-routed, governed and **priced** (usage teed off the response/stream); see [Responses](#responses) |
-| `/v1/responses/*` | GET, POST, DELETE | Responses id sub-routes (retrieve/delete/cancel/input_items) → `responses_target` (501 when unset) |
+| `/v1/responses/*` | GET, POST, DELETE | Responses id sub-routes (retrieve/delete/cancel/input_items) → `responses_target` (501 when unset); `POST /v1/responses/compact` is routed, governed and priced as create |
 | `/v1/*` | Any | Pass-through proxy to provider |
 | `/admin/keys` | GET, POST | API key management (requires auth) |
 | `/admin/session` | POST | Exchange an API key or `MASTER_KEY` for a short-lived dashboard session token (unauthenticated route — the credential itself is the auth) |
@@ -1050,6 +1050,12 @@ single `responses_target` (the Files/Batches pattern; native ids, zero state).
 They answer **501** when `responses_target` is unset; create is unaffected. `openai`
 and `xai` both serve the OpenAI Responses contract byte-compatibly; a
 `NonOpenAIWire` provider is refused **501** on this surface.
+
+`POST /v1/responses/compact` shares the prefix but is not an id sub-route: it
+names a model, runs it over the caller's conversation and returns the usage it
+billed. It is served by the create handler, so it is routed by its model,
+governed and priced exactly as create is — limits included — and needs no
+`responses_target`.
 
 ### Completion length: `max_tokens` and `max_completion_tokens`
 

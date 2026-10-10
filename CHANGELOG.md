@@ -590,6 +590,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   from the example recorded all traffic as anonymous. The README and the
   `Exporter.Export` godoc now say to read `Event.User`, `Event.SessionID` and
   `Event.Metadata`, which the gateway fills from the request.
+- `POST /v1/responses/compact` is now routed by its model, governed and priced
+  exactly as `POST /v1/responses` is. Compaction names a model, runs it over
+  the caller's conversation and returns the usage it billed, but it sits under
+  `/v1/responses/`, where the id sub-routes are mounted, and was forwarded as
+  one: with `responses_target` set it went to that target whatever model it
+  named, past every guardrail, budget and rate limit and absent from the
+  request log, so a prompt the content guardrail refuses on create reached the
+  provider through compaction; with `responses_target` unset it answered
+  `501`. It is now served by the create handler, limits included, and needs no
+  `responses_target`. The id sub-routes are unchanged.
+- A `/v1/*` pass-through request that names its provider with `X-Provider` is
+  now recorded under the model its body names, as one placed by that model
+  already was. The header is the documented way to reach a model the routing
+  index cannot enumerate, and resolving it skipped reading the body, so every
+  such request reached the request lifecycle naming no model: its request-log
+  rows and span carried none, its metrics counted it under the unknown-model
+  label even when the routing index lists that model, and
+  `GET /admin/logs?model=` did not find it. The model is now read from the
+  body the content guardrails' projection has already decoded, so a body past
+  that projection's 1 MiB cap, or one that is not JSON, still records none.
+- A browser application calling the `/v1/*` pass-through, `POST /v1/responses`
+  or its id sub-routes, `/v1/files` or `/v1/batches` is now answered under the
+  gateway's CORS policy alone. The forwards relayed the browser's `Origin`
+  header upstream, so the upstream applied a CORS policy of its own to a
+  request the gateway had already admitted: an Ollama target answered every
+  such request `403` — Ollama refuses an `Origin` outside `OLLAMA_ORIGINS` —
+  while chat to the same target, which never sends the header, was served; and
+  an upstream that allows every origin answered with an
+  `Access-Control-Allow-Origin` of its own, relayed beside the gateway's, a
+  pair a browser refuses. The forwards no longer send `Origin` upstream, as the
+  routed surfaces never have.
 - The `/v1/*` pass-through, `POST /v1/responses` and its id sub-routes,
   `/v1/files` and `/v1/batches` now authenticate to a provider whose base URL
   carries userinfo, as chat to the same base already did. A base such as
