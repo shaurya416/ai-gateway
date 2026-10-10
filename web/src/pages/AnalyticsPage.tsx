@@ -64,6 +64,22 @@ const REFETCH_INTERVAL_MS = 60_000
 const STAGES = ['before_request', 'after_request', 'on_error'] as const
 
 /**
+ * The stage filter's options. One list feeds both the open menu and the
+ * trigger, which renders the raw value unless told otherwise — "on_error"
+ * where the menu reads "On error".
+ */
+const STAGE_OPTIONS: ReadonlyArray<{ value: string; label: string }> = [
+  { value: '', label: 'All stages' },
+  { value: 'before_request', label: 'Before request' },
+  { value: 'after_request', label: 'After request' },
+  { value: 'on_error', label: 'On error' },
+]
+
+function stageLabel(value: string): string {
+  return STAGE_OPTIONS.find((option) => option.value === value)?.label ?? value
+}
+
+/**
  * A 501 from the statistics endpoint, kept as data rather than raised.
  *
  * The gateway answers 501 when no request-log store is configured — a
@@ -375,13 +391,12 @@ export default function AnalyticsPage() {
             onValueChange={(value) => setDraft((current) => ({ ...current, stage: value ?? current.stage }))}
           >
             <SelectTrigger aria-label="Stage">
-              <SelectValue placeholder="All stages" />
+              <SelectValue>{(value: string) => stageLabel(value)}</SelectValue>
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="">All stages</SelectItem>
-              <SelectItem value="before_request">Before request</SelectItem>
-              <SelectItem value="after_request">After request</SelectItem>
-              <SelectItem value="on_error">On error</SelectItem>
+              {STAGE_OPTIONS.map((option) => (
+                <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+              ))}
             </SelectContent>
           </Select>
           <Button type="submit" variant="outline">

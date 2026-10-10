@@ -65,6 +65,54 @@ const SCOPE_OPTIONS: ReadonlyArray<{ value: Scope; label: string; hint: string }
   { value: 'read_only', label: 'Read only', hint: 'Inspect keys, logs, and configuration without changing anything.' },
 ]
 
+/*
+ * Each Select's options, by wire value and label. One list feeds both the open
+ * menu and the trigger, because the primitive renders the raw value in the
+ * trigger unless told otherwise: "Sort keys" read "usage", the state filter
+ * read nothing under "All keys" and "false" under "Revoked only", and an expiry
+ * of Never left the control blank, as though nothing had been chosen.
+ */
+interface Option<T extends string> {
+  value: T
+  label: string
+}
+
+const SORT_OPTIONS: ReadonlyArray<Option<KeySort>> = [
+  { value: 'usage', label: 'Most used first' },
+  { value: 'last_used', label: 'Recently used first' },
+]
+
+const ACTIVE_FILTER_OPTIONS: ReadonlyArray<Option<ActiveFilter>> = [
+  { value: '', label: 'All keys' },
+  { value: 'true', label: 'Active only' },
+  { value: 'false', label: 'Revoked only' },
+]
+
+const CREATE_EXPIRY_OPTIONS: ReadonlyArray<Option<string>> = [
+  { value: '7', label: '7 days' },
+  { value: '30', label: '30 days' },
+  { value: '90', label: '90 days' },
+  { value: '365', label: '1 year' },
+  { value: '', label: 'Never' },
+]
+
+/** The edit dialog's expiry choices; "keep" names what it keeps. */
+function editExpiryOptions(key: APIKey): ReadonlyArray<Option<ExpiryChoice>> {
+  return [
+    { value: 'keep', label: key.expires_at ? `Keep current expiry (${formatDateTime(key.expires_at)})` : 'Keep — never expires' },
+    { value: '7', label: 'Extend 7 days from now' },
+    { value: '30', label: 'Extend 30 days from now' },
+    { value: '90', label: 'Extend 90 days from now' },
+    { value: '365', label: 'Extend 1 year from now' },
+    { value: 'never', label: 'Never expires' },
+  ]
+}
+
+/** The label a trigger shows for `value`; an unknown value falls back to itself. */
+function optionLabel<T extends string>(options: ReadonlyArray<Option<T>>, value: T): string {
+  return options.find((option) => option.value === value)?.label ?? value
+}
+
 function toggleScope(scopes: readonly Scope[], scope: Scope, checked: boolean): Scope[] {
   if (!checked) return scopes.filter((value) => value !== scope)
   return scopes.includes(scope) ? [...scopes] : [...scopes, scope]
@@ -434,21 +482,22 @@ export default function KeysPage() {
             <div className="flex flex-wrap items-center gap-2">
               <Select value={sort} onValueChange={(value) => changeQuery(() => setSort(value ?? sort))}>
                 <SelectTrigger aria-label="Sort keys">
-                  <SelectValue />
+                  <SelectValue>{(value: KeySort) => optionLabel(SORT_OPTIONS, value)}</SelectValue>
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="usage">Most used first</SelectItem>
-                  <SelectItem value="last_used">Recently used first</SelectItem>
+                  {SORT_OPTIONS.map((option) => (
+                    <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
               <Select value={activeFilter} onValueChange={(value) => changeQuery(() => setActiveFilter(value ?? activeFilter))}>
                 <SelectTrigger aria-label="Filter by state">
-                  <SelectValue />
+                  <SelectValue>{(value: ActiveFilter) => optionLabel(ACTIVE_FILTER_OPTIONS, value)}</SelectValue>
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="">All keys</SelectItem>
-                  <SelectItem value="true">Active only</SelectItem>
-                  <SelectItem value="false">Revoked only</SelectItem>
+                  {ACTIVE_FILTER_OPTIONS.map((option) => (
+                    <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
             </div>
@@ -626,14 +675,12 @@ export default function KeysPage() {
               onValueChange={(value) => setCreateInput((current) => ({ ...current, expiresInDays: value ?? current.expiresInDays }))}
             >
               <SelectTrigger aria-label="Expires" className="w-full" id="create-key-expiry">
-                <SelectValue />
+                <SelectValue>{(value: string) => optionLabel(CREATE_EXPIRY_OPTIONS, value)}</SelectValue>
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="7">7 days</SelectItem>
-                <SelectItem value="30">30 days</SelectItem>
-                <SelectItem value="90">90 days</SelectItem>
-                <SelectItem value="365">1 year</SelectItem>
-                <SelectItem value="">Never</SelectItem>
+                {CREATE_EXPIRY_OPTIONS.map((option) => (
+                  <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+                ))}
               </SelectContent>
             </Select>
           </div>
@@ -686,17 +733,12 @@ export default function KeysPage() {
                 }}
               >
                 <SelectTrigger aria-label="Expires" className="w-full" id="edit-key-expiry">
-                  <SelectValue />
+                  <SelectValue>{(value: ExpiryChoice) => optionLabel(editExpiryOptions(editState.key), value)}</SelectValue>
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="keep">
-                    {editState.key.expires_at ? `Keep current expiry (${formatDateTime(editState.key.expires_at)})` : 'Keep — never expires'}
-                  </SelectItem>
-                  <SelectItem value="7">Extend 7 days from now</SelectItem>
-                  <SelectItem value="30">Extend 30 days from now</SelectItem>
-                  <SelectItem value="90">Extend 90 days from now</SelectItem>
-                  <SelectItem value="365">Extend 1 year from now</SelectItem>
-                  <SelectItem value="never">Never expires</SelectItem>
+                  {editExpiryOptions(editState.key).map((option) => (
+                    <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
             </div>

@@ -89,6 +89,21 @@ describe('StrategyPage', () => {
     expect(within(anthropic).getByText('Configured')).toBeInTheDocument()
   })
 
+  it('reports no circuit breaker on a target that configures none', async () => {
+    // The gateway builds a breaker only for a target with a `circuit_breaker`
+    // block and applies none by default, so the absence is not a default
+    // policy: a dead target is attempted on every request. "Gateway default"
+    // read as protection that does not exist.
+    arm()
+    render(<StrategyPage />)
+    await screen.findByRole('heading', { name: 'Fallback' })
+
+    const openai = screen.getByRole('row', { name: /openai/ })
+    const breaker = openai.querySelector('[data-label="Circuit breaker"]')
+    expect(breaker).toHaveTextContent(/^None$/)
+    expect(within(openai).queryByText(/default/i)).toBeNull()
+  })
+
   it('reads a target with no weight as drained under a mode that reads weights', async () => {
     // `targets[].weight` has no default, and GET /admin/config omits a zero
     // weight, so a target drained with `weight: 0` arrives here with no weight

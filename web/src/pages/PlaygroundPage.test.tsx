@@ -40,10 +40,11 @@ function jsonResponse(body: unknown): Response {
 }
 
 /** An SSE body the panel's reader can drain, one chunk per `read()`. */
-function streamResponse(frames: readonly string[]): Response {
+function streamResponse(frames: readonly string[], headers: Record<string, string> = {}): Response {
   const encoder = new TextEncoder()
   let index = 0
   return {
+    headers: new Headers(headers),
     body: {
       getReader: () => ({
         read: () =>
@@ -226,17 +227,26 @@ describe('PlaygroundPage', () => {
     ])
   })
 
-  it('says that a streamed answer cannot report its target, and stops saying it when streaming is off', async () => {
+  it('names the target that served a streamed answer, from the header the gateway sends before the first chunk', async () => {
+    // Streaming is the default, and the gateway names the serving target on
+    // every routed response, streamed or not. The page used to say a streamed
+    // answer could not report it, and the badge never appeared in the mode an
+    // operator sees first.
     const user = userEvent.setup()
+    rawRequestMock.mockResolvedValue(
+      streamResponse(
+        ['data: {"choices":[{"delta":{"content":"Fell back."}}]}\n', 'data: [DONE]\n'],
+        { 'X-Gateway-Target': 'anthropic', 'X-Gateway-Provider': 'anthropic' },
+      ),
+    )
     renderPage()
 
-    // Streaming is the default, so this is what an operator sees first: the
-    // badge is absent by choice, not because the page is broken.
-    const note = await screen.findByText(/streamed answer cannot report which target served it/i)
-    expect(note).toBeInTheDocument()
+    await user.type(await screen.findByLabelText('Message'), 'hi')
+    await user.click(screen.getByRole('button', { name: /send/i }))
 
-    await user.click(screen.getByLabelText('Stream the response'))
-    expect(screen.queryByText(/streamed answer cannot report which target served it/i)).not.toBeInTheDocument()
+    expect(await screen.findByText('Fell back.')).toBeInTheDocument()
+    expect(screen.getByText('Served by anthropic')).toBeInTheDocument()
+    expect(screen.queryByText(/cannot report which target served it/i)).not.toBeInTheDocument()
   })
 
   it('warns when a control the operator is adjusting cannot reach the provider', async () => {

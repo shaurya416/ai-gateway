@@ -124,6 +124,22 @@ describe('AuditPage', () => {
     expect(screen.getByTestId('location').textContent).toContain('outcome=denied')
   })
 
+  it('names the chosen outcome and range on their triggers rather than the values sent', async () => {
+    // The trigger renders the raw value unless told otherwise: the range read
+    // "24" where its menu reads "Last 24 hours", and a chosen outcome read
+    // "denied" where the menu and the table both read "Denied".
+    const user = userEvent.setup()
+    renderPage('/audit?outcome=denied&hours=168')
+    await screen.findByText('key.create')
+
+    expect(screen.getByRole('combobox', { name: 'Outcome' })).toHaveTextContent(/^Denied/)
+    expect(screen.getByRole('combobox', { name: 'Time range' })).toHaveTextContent(/^Last 7 days/)
+
+    await user.click(screen.getByRole('combobox', { name: 'Outcome' }))
+    await user.click(await screen.findByRole('option', { name: 'All outcomes' }))
+    expect(screen.getByRole('combobox', { name: 'Outcome' })).toHaveTextContent(/^All outcomes/)
+  })
+
   it('marks a denied action for attention without calling it a failure', async () => {
     requestMock.mockResolvedValue(
       auditResponse([

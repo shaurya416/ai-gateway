@@ -41,6 +41,21 @@ const OUTCOME_PRESENTATION: Record<AuditOutcome, { label: string; tone: 'success
   error: { label: 'Error', tone: 'error' },
 }
 
+/*
+ * What each filter trigger reads. The primitive renders the selected value
+ * unless told otherwise, so the range read "24" where its menu reads "Last 24
+ * hours", and a chosen outcome read "denied" where the menu and the table both
+ * read "Denied".
+ */
+function outcomeLabel(value: string): string {
+  if (!value) return 'All outcomes'
+  return OUTCOME_PRESENTATION[value as AuditOutcome]?.label ?? value
+}
+
+function rangeLabel(value: number): string {
+  return TIME_RANGES.find((range) => range.hours === value)?.label ?? String(value)
+}
+
 /**
  * The filter set, read from the URL rather than component state.
  *
@@ -318,7 +333,7 @@ export default function AuditPage() {
             </Label>
             <Select value={draft.outcome} onValueChange={(value) => setDraft((current) => ({ ...current, outcome: value ?? current.outcome }))}>
               <SelectTrigger aria-label="Outcome">
-                <SelectValue placeholder="All outcomes" />
+                <SelectValue>{(value: string) => outcomeLabel(value)}</SelectValue>
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="">All outcomes</SelectItem>
@@ -329,7 +344,7 @@ export default function AuditPage() {
             </Select>
             <Select value={draft.hours} onValueChange={(value) => setDraft((current) => ({ ...current, hours: value ?? current.hours }))}>
               <SelectTrigger aria-label="Time range">
-                <SelectValue />
+                <SelectValue>{(value: number) => rangeLabel(value)}</SelectValue>
               </SelectTrigger>
               <SelectContent>
                 {TIME_RANGES.map((range) => (

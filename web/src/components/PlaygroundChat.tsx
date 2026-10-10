@@ -33,13 +33,18 @@ interface Usage {
  * without a final `[DONE]`. `ChatStreamChunk` only models the success shape;
  * this extends it locally rather than teaching the shared type about a frame
  * most callers never see.
- *
- * `provider` is read defensively: `core.StreamChunk` carries no such field
- * today, so a streamed answer cannot say which target served it. Reading it
- * anyway costs nothing and means the badge below starts working the day the
- * gateway starts sending it, rather than the day someone notices.
  */
-type StreamFrame = ChatStreamChunk & { error?: { message?: string }; provider?: string }
+type StreamFrame = ChatStreamChunk & { error?: { message?: string } }
+
+/**
+ * The response header naming the target that served a routed request — the
+ * same `targets[].virtual_key` a non-streamed answer carries as `provider`.
+ *
+ * The gateway writes it before the first chunk of a stream, because routing has
+ * finished choosing by then, and its CORS layer exposes it to a dashboard on
+ * another origin. The SSE frames themselves stay the OpenAI wire format.
+ */
+const TARGET_HEADER = 'X-Gateway-Target'
 
 /**
  * One turn of the conversation, plus which target answered it.
@@ -135,6 +140,7 @@ export function PlaygroundChat({
           signal: controller.signal,
         })
         if (!stream.body) throw new Error('The gateway returned an empty stream.')
+        answeredBy = stream.headers.get(TARGET_HEADER) ?? ''
         const reader = stream.body.getReader()
         const decoder = new TextDecoder()
         let buffer = ''
@@ -153,7 +159,6 @@ export function PlaygroundChat({
               frameError = chunk.error.message || 'The stream ended with an upstream error.'
               return
             }
-            if (chunk.provider) answeredBy = chunk.provider
             const reason = chunk.choices?.[0]?.finish_reason
             if (reason) finishReason = reason
             const content = chunk.choices?.[0]?.delta?.content
@@ -361,21 +366,6 @@ export function PlaygroundChat({
               onChange={(event) => setStreamEnabled(event.target.checked)}
             />
           </div>
-          {/*
-           * Said out loud rather than left to be noticed. The "Served by" badge
-           * is this page's whole reason for existing, streaming is on by
-           * default, and a streamed answer cannot carry the target that served
-           * it: the SSE frames are the OpenAI wire format every client reads,
-           * and a gateway-specific field does not belong in them for the sake
-           * of one dashboard panel. Without this note the badge silently never
-           * appears, which reads as a broken feature rather than a choice.
-           */}
-          {streamEnabled ? (
-            <p className="text-xs text-muted-foreground">
-              A streamed answer cannot report which target served it. Turn streaming off to see the
-              “Served by” badge on each reply.
-            </p>
-          ) : null}
         </aside>
 
         <section aria-labelledby="chat-heading" className="flex flex-col gap-3 rounded-lg border border-border bg-card p-4">
@@ -415,8 +405,8 @@ export function PlaygroundChat({
                      * behaviour this page exists to make visible.
                      *
                      * Per turn, because consecutive turns can be answered by
-                     * different targets. Absent on a streamed turn — see the
-                     * note beside the toggle.
+                     * different targets. A streamed turn reads it from the
+                     * response header, a non-streamed one from the body.
                      */}
                     {message.servedBy ? (
                       <StatusPill tone="neutral">Served by {message.servedBy}</StatusPill>

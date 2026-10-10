@@ -1363,6 +1363,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   lists read exactly like one that did, while serving the lists it started
   with. Discovery is still left off for such a value; `0` and an unset
   variable remain a silent off.
+- The Routing Strategies page and the Configuration page's Strategy tab no
+  longer describe a target without a circuit breaker as protected. A target
+  with no `circuit_breaker` block read "Gateway default" in the Circuit breaker
+  column, but the gateway builds a breaker only for a target that configures
+  one and applies none by default — such a target is attempted on every
+  request however long it has been failing, paying its timeout each time. The
+  column now reads "None".
+- The Playground names the target that served a streamed answer. Streaming is
+  the default, and the page said a streamed answer could not report its target,
+  so the "Served by" badge only ever appeared with streaming turned off — while
+  the gateway names the serving target in the `X-Gateway-Target` header on
+  every routed response, written before the first chunk of a stream. A
+  streamed turn now reads the target from that header, and the note claiming
+  it could not is gone.
+- Dashboard dropdowns now show the chosen option's label instead of the value
+  sent to the gateway. The API Keys sort read "usage", its state filter read
+  nothing under "All keys" and "false" under "Revoked only", a new key's
+  expiry of Never left the Expires control blank as though nothing had been
+  chosen, and the Audit Trail's range and outcome and the Analytics stage
+  filter read "24", "denied" and "on_error". Each trigger now reads the same
+  label as the option chosen in its menu.
 
 ## [1.5.9] — 2026-09-18
 

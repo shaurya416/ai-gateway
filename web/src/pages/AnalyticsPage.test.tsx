@@ -294,6 +294,20 @@ describe('AnalyticsPage', () => {
     expect(screen.getByTestId('location')).toHaveTextContent('stage=on_error')
   })
 
+  it('names the chosen stage on its trigger rather than the value sent', async () => {
+    // The trigger renders the raw value unless told otherwise, so a filtered
+    // view read "on_error" where the menu reads "On error".
+    const user = userEvent.setup()
+    renderPage('/analytics?stage=on_error')
+    await waitFor(() => expect(request).toHaveBeenCalledTimes(1))
+
+    expect(screen.getByRole('combobox', { name: 'Stage' })).toHaveTextContent(/^On error/)
+
+    await user.click(screen.getByRole('combobox', { name: 'Stage' }))
+    await user.click(await screen.findByRole('option', { name: 'Before request' }))
+    expect(screen.getByRole('combobox', { name: 'Stage' })).toHaveTextContent(/^Before request/)
+  })
+
   it('re-reads the range as soon as it is chosen, without waiting for Apply', async () => {
     const user = userEvent.setup()
     renderPage()

@@ -149,12 +149,19 @@ function TargetTable({ targets, weighted }: { targets: StrategyState['targets'];
                 )}
               </TableCell>
               <TableCell className={mobileCell} data-label="Circuit breaker">
+                {/*
+                  * A target without `circuit_breaker` has no breaker at all:
+                  * the gateway builds one only for a target that configures
+                  * it, and applies none by default. "Gateway default" read as
+                  * protection that does not exist — a dead target is attempted
+                  * on every request, paying its timeout each time.
+                  */}
                 {target.circuitBreaker ? (
                   <StatusPill tone="info">Configured</StatusPill>
                 ) : (
                   <span className="inline-flex items-center gap-1 text-muted-foreground">
                     <CircleSlash aria-hidden="true" size={14} />
-                    Gateway default
+                    None
                   </span>
                 )}
               </TableCell>

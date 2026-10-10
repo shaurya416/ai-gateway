@@ -252,6 +252,38 @@ describe('KeysPage', () => {
     await waitFor(() => expect(lastUsageCall(calls).has('active')).toBe(false))
   })
 
+  it('names the chosen option on every select trigger rather than its wire value', async () => {
+    // The trigger renders the raw value unless told otherwise: "usage" for the
+    // sort, nothing at all for "All keys", "false" for "Revoked only", and a
+    // blank control for an expiry of Never — as though nothing were chosen.
+    const user = userEvent.setup()
+    stubGateway((call) => reads()(call) ?? { body: {} })
+
+    renderPage()
+    await screen.findByText('Ops laptop')
+
+    expect(screen.getByLabelText('Sort keys')).toHaveTextContent(/^Most used first/)
+    expect(screen.getByLabelText('Filter by state')).toHaveTextContent(/^All keys/)
+
+    await user.click(screen.getByLabelText('Filter by state'))
+    await user.click(await screen.findByRole('option', { name: 'Revoked only' }))
+    await waitFor(() => expect(screen.getByLabelText('Filter by state')).toHaveTextContent(/^Revoked only/))
+
+    await user.click(screen.getByRole('button', { name: 'Create key' }))
+    const form = await screen.findByRole('dialog')
+    expect(within(form).getByLabelText('Expires')).toHaveTextContent(/^30 days/)
+    await user.click(within(form).getByLabelText('Expires'))
+    await user.click(await screen.findByRole('option', { name: 'Never' }))
+    expect(within(form).getByLabelText('Expires')).toHaveTextContent(/^Never/)
+    await user.click(within(form).getByRole('button', { name: 'Cancel' }))
+
+    await user.click(screen.getByLabelText('Filter by state'))
+    await user.click(await screen.findByRole('option', { name: 'All keys' }))
+    await user.click(await screen.findByRole('button', { name: 'Edit Ops laptop' }))
+    const dialog = await screen.findByRole('dialog')
+    expect(within(dialog).getByLabelText('Expires')).toHaveTextContent(/^Keep — never expires/)
+  })
+
   it('drops the previous rows when a changed filter cannot be loaded, and keeps the way back', async () => {
     const user = userEvent.setup()
     stubGateway((call) => {
