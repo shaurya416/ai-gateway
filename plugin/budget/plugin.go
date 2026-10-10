@@ -260,10 +260,16 @@ func parseBudget(config map[string]any) (settings, error) {
 		s.spendLimitUSD = f
 	}
 
+	// A negative rate prices a request below zero, and a cost that is not
+	// positive is never recorded — so a sign typo here loaded a budget that
+	// reported its limit and refused nothing.
 	if v, ok := config["input_per_m_tokens"]; ok {
 		f, err := plugin.ToFloat64(v)
 		if err != nil {
 			return settings{}, fmt.Errorf("budget: input_per_m_tokens: %w", err)
+		}
+		if f < 0 {
+			return settings{}, fmt.Errorf("budget: input_per_m_tokens must be >= 0")
 		}
 		s.inputPerMTokens = f
 	}
@@ -272,6 +278,9 @@ func parseBudget(config map[string]any) (settings, error) {
 		f, err := plugin.ToFloat64(v)
 		if err != nil {
 			return settings{}, fmt.Errorf("budget: output_per_m_tokens: %w", err)
+		}
+		if f < 0 {
+			return settings{}, fmt.Errorf("budget: output_per_m_tokens must be >= 0")
 		}
 		s.outputPerMTokens = f
 	}

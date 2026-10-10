@@ -606,3 +606,25 @@ func TestBudget_CacheTokenPricing(t *testing.T) {
 		})
 	}
 }
+
+// TestBudget_RejectsNegativeTokenRates covers the two rates the cache rates'
+// non-negative rule did not reach. A negative input or output rate prices a
+// request below zero, a non-positive cost is never recorded, and the rate is
+// not zero, so the "every configured rate is 0" check passed too: the plugin
+// loaded with its limit set and never refused a request.
+func TestBudget_RejectsNegativeTokenRates(t *testing.T) {
+	for _, config := range []map[string]any{
+		{"spend_limit_usd": 0.001, "input_per_m_tokens": -3.0, "output_per_m_tokens": 15.0},
+		{"spend_limit_usd": 0.001, "input_per_m_tokens": 3.0, "output_per_m_tokens": -15.0},
+		{"spend_limit_usd": 0.001, "input_per_m_tokens": -3.0, "output_per_m_tokens": -15.0},
+	} {
+		t.Run(fmt.Sprintf("in=%v,out=%v", config["input_per_m_tokens"], config["output_per_m_tokens"]), func(t *testing.T) {
+			if err := (&Plugin{}).ValidateConfig(config); err == nil {
+				t.Error("ValidateConfig accepted a negative token rate")
+			}
+			if err := (&Plugin{}).Init(config); err == nil {
+				t.Error("Init accepted a negative token rate")
+			}
+		})
+	}
+}

@@ -111,3 +111,34 @@ func TestURLCredentials_UserinfoPassword(t *testing.T) {
 		}
 	}
 }
+
+// The default policy set, not just URLCredentials, must remove a userinfo
+// password whole. A password may carry characters an email address cannot —
+// "!" and "$" are legal in userinfo and common in generated passwords — and a
+// dotted host makes the tail of it read as an email address. Matched as one
+// first, the email rule consumed the "@" the userinfo rule anchors on, removed
+// only the part after the last such character, and left the rest of the
+// password in the text.
+func TestDefaultRedactor_UserinfoPasswordWithPunctuation(t *testing.T) {
+	const (
+		// Synthetic, like the values above: "!" and "$" are the characters an
+		// email address cannot hold.
+		punctuated = "Xk9!mP2$qR7wZ"
+		in         = "dial postgres://ferrogw:" + punctuated + "@db.internal.example.com:5432/gateway failed"
+		want       = "dial postgres://ferrogw:[REDACTED]@db.internal.example.com:5432/gateway failed"
+	)
+	for name, redactFn := range map[string]func(string) string{
+		"DefaultRedactor": DefaultRedactor().Redact,
+		"String":          String,
+	} {
+		got := redactFn(in)
+		for _, fragment := range []string{punctuated, "Xk9!mP2$", "qR7wZ"} {
+			if strings.Contains(got, fragment) {
+				t.Errorf("%s(%q) = %q, leaks password fragment %q", name, in, got, fragment)
+			}
+		}
+		if got != want {
+			t.Errorf("%s(%q)\n got: %q\nwant: %q (scheme, user and host stay readable)", name, in, got, want)
+		}
+	}
+}

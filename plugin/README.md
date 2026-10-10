@@ -285,7 +285,9 @@ config:
 Caps how large a completion a caller may **ask for**, plus message-count and
 total input-length limits. A request that declares no ceiling is uncapped —
 this plugin rejects over-large requests, it does not add a ceiling to requests
-that omit one.
+that omit one. With `max_input_length` set the plugin measures the content, so
+content it cannot read as text — an embeddings input sent as token IDs — is
+refused rather than measured as empty.
 
 ```yaml
 config:

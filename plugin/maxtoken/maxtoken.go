@@ -138,6 +138,14 @@ func (m *MaxToken) Execute(_ context.Context, pctx *plugin.Context) error {
 
 	// Enforce max input length
 	if m.maxInputLen > 0 {
+		// Content the gateway could not project as text — an embeddings input
+		// sent as token IDs — projects to no messages and measured zero, so a
+		// cap of any size approved it. This limit reads the content, so it
+		// takes the verdict every content guardrail gives what it cannot read.
+		// See plugin.MetadataUninspectableContent.
+		if plugin.RejectUninspectable(pctx) {
+			return nil
+		}
 		totalLen := 0
 		for _, msg := range pctx.Request.Messages {
 			totalLen += messageLen(msg)

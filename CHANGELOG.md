@@ -379,6 +379,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   store failure is now answered `503 credential_store_unavailable`, which
   clients retry, and logged; a credential that is unknown, revoked or expired
   is still a `401`, and `MASTER_KEY` still authenticates during the outage.
+- A password in a URL's userinfo is now removed whole from redacted error text
+  — request-log rows, span errors, exporter events and client error bodies —
+  when it contains a character an email address cannot, such as `!` or `$`.
+  Followed by a dotted host, the tail of such a password reads as an email
+  address, and the email rule ran first: it replaced that tail, consumed the
+  `@` the userinfo rule anchors on, and left the rest of the password in the
+  text, so `postgres://app:Xk9!mP2$qR7@db.example.com` was written out as
+  `postgres://app:Xk9!mP2$[REDACTED_EMAIL]`. The userinfo rule now runs first,
+  which also keeps the host readable as it was meant to be.
+- `max-token` with `max_input_length` set now refuses an embeddings input sent
+  as token IDs. Token IDs project to no text, so the input measured zero
+  characters and passed a cap of any size — a length limit evaded by one
+  client-side tokenizer call. With the limit set, the plugin reads the content,
+  and it now gives what it cannot read the denial every content guardrail
+  gives, recorded as a guardrail match; that covers a moderation input given
+  as content parts as well, which `word-filter` already refuses. With
+  `max_input_length` unset or `0` nothing changes.
+- `budget` refuses a negative `input_per_m_tokens` or `output_per_m_tokens`,
+  as it already refused a negative cache rate. A negative rate priced a request
+  below zero, a cost that is not positive is never recorded, and the rate was
+  not zero, so the check for an all-zero price list passed as well: the plugin
+  loaded with its `spend_limit_usd` set and never refused a request. Each is
+  now a load error, reported by `ferrogw validate` as well as at startup.
 
 ## [1.5.9] — 2026-09-18
 

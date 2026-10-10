@@ -35,9 +35,21 @@ import "regexp"
 //
 // Policy ordering: more-specific patterns (anthropic_key, openai_modern_key)
 // are placed before less-specific ones (openai_key) so that a single key
-// produces exactly one redaction token rather than two.
+// produces exactly one redaction token rather than two. url_userinfo runs
+// first of all, because the "@" it anchors on is also the one the email rule
+// matches across.
 func DefaultPolicies() []Policy {
 	return []Policy{
+		// url_userinfo must precede email. A userinfo password followed by a
+		// dotted host reads as an email address from its last character outside
+		// the email class onward — "!" and "$" are legal in userinfo — so the
+		// email rule matched that tail, consumed the "@" this rule anchors on,
+		// and left the rest of the password in the text.
+		{
+			Name:        "url_userinfo",
+			Pattern:     urlUserinfoPassword,
+			Replacement: "${1}" + redactedURLValue + "@",
+		},
 		{
 			Name:        "email",
 			Pattern:     regexp.MustCompile(`[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}`),
@@ -129,11 +141,6 @@ func DefaultPolicies() []Policy {
 			Name:        "url_credential",
 			Pattern:     urlCredentialParam,
 			Replacement: "${1}" + redactedURLValue,
-		},
-		{
-			Name:        "url_userinfo",
-			Pattern:     urlUserinfoPassword,
-			Replacement: "${1}" + redactedURLValue + "@",
 		},
 		{
 			Name: "private_key_block",
