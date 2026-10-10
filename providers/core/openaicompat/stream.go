@@ -20,7 +20,7 @@ import (
 // string ({"error":"…"}), the same split core.APIError reads on a status error.
 // Decoding it into a struct failed the whole frame on the string form, and a
 // frame that fails to decode is skipped — so the failure vanished and the
-// stream ended as a success. See streamErrorFrom.
+// stream ended as a success. See StreamErrorFrom.
 type streamFrame struct {
 	core.StreamChunk
 	Err json.RawMessage `json:"error"`
@@ -47,16 +47,18 @@ func DecodeStreamChunk(data []byte) (core.StreamChunk, error) {
 	for i := range chunk.Choices {
 		chunk.Choices[i].FinishReason = core.NormalizeFinishReason(chunk.Choices[i].FinishReason)
 	}
-	chunk.Error = streamErrorFrom(frame.Err)
+	chunk.Error = StreamErrorFrom(frame.Err)
 	return chunk, nil
 }
 
-// streamErrorFrom renders a frame's "error" field, or returns nil when the
-// frame carries no failure. Only a populated message counts: providers that
-// always emit the field send "error": null (or an empty value) on healthy
+// StreamErrorFrom renders a stream frame's raw "error" field, or returns nil
+// when the frame carries no failure. Only a populated message counts: providers
+// that always emit the field send "error": null (or an empty value) on healthy
 // frames, and a frame can carry content alongside it. A shape that is neither
-// a string nor an object with a message contributes nothing.
-func streamErrorFrom(raw json.RawMessage) error {
+// a string nor an object with a message contributes nothing. It is exported
+// for OpenAI-wire providers that decode their own stream frames, so every
+// OpenAI-wire stream reads the envelope the same way.
+func StreamErrorFrom(raw json.RawMessage) error {
 	if len(raw) == 0 {
 		return nil
 	}

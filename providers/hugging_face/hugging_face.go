@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -133,30 +134,31 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 }
 
 // postTask sends a POST with a JSON body to a task-specific Hugging Face router
-// endpoint and returns the raw response bytes. Non-200 responses are translated
-// into a core.APIError carrying the upstream status and message.
-func (p *Provider) postTask(ctx context.Context, url string, body io.Reader) ([]byte, error) {
+// endpoint and returns the raw response bytes with their declared Content-Type.
+// Non-200 responses are translated into a core.APIError carrying the upstream
+// status and message.
+func (p *Provider) postTask(ctx context.Context, url string, body io.Reader) ([]byte, string, error) {
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, body)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
+		return nil, "", fmt.Errorf("failed to create request: %w", err)
 	}
 	httpReq.Header.Set("Authorization", "Bearer "+p.apiKey)
 	httpReq.Header.Set("Content-Type", "application/json")
 
 	httpResp, err := p.httpClient.Do(httpReq)
 	if err != nil {
-		return nil, fmt.Errorf("request failed: %w", err)
+		return nil, "", fmt.Errorf("request failed: %w", err)
 	}
 	defer func() { _ = httpResp.Body.Close() }()
 
 	respBody, err := core.ReadResponseBody(httpResp.Body, core.MaxProviderResponseBytes)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read response: %w", err)
+		return nil, "", fmt.Errorf("failed to read response: %w", err)
 	}
 	if httpResp.StatusCode != http.StatusOK {
-		return nil, core.APIErrorFromResponse("hugging face", httpResp, respBody)
+		return nil, "", core.APIErrorFromResponse("hugging face", httpResp, respBody)
 	}
-	return respBody, nil
+	return respBody, httpResp.Header.Get("Content-Type"), nil
 }
 
 // Embed sends a feature-extraction request to Hugging Face. The task API is not
@@ -182,7 +184,7 @@ func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.
 	defer release()
 
 	taskURL := p.routerRoot() + "/hf-inference/models/" + escaped + "/pipeline/feature-extraction"
-	respBody, err := p.postTask(ctx, taskURL, bodyReader)
+	respBody, _, err := p.postTask(ctx, taskURL, bodyReader)
 	if err != nil {
 		return nil, err
 	}
@@ -235,7 +237,8 @@ func parseFeatureExtraction(body []byte) ([][]float64, error) {
 // GenerateImage sends a text-to-image request to Hugging Face. The task API is
 // not OpenAI-shaped: it takes {"inputs": <prompt>, "parameters": {...}} and
 // returns the generated image as raw bytes, which are base64-encoded into the
-// OpenAI-style b64_json field.
+// OpenAI-style b64_json field. A 200 body that is not an image is refused (see
+// isImageBody).
 func (p *Provider) GenerateImage(ctx context.Context, req core.ImageRequest) (*core.ImageResponse, error) {
 	if err := core.EnforceImageResponseFormat(Name, req); err != nil {
 		return nil, err
@@ -258,13 +261,33 @@ func (p *Provider) GenerateImage(ctx context.Context, req core.ImageRequest) (*c
 	defer release()
 
 	taskURL := p.routerRoot() + "/hf-inference/models/" + escaped
-	respBody, err := p.postTask(ctx, taskURL, bodyReader)
+	respBody, contentType, err := p.postTask(ctx, taskURL, bodyReader)
 	if err != nil {
 		return nil, err
+	}
+	if !isImageBody(respBody, contentType) {
+		return nil, fmt.Errorf("hugging face: text-to-image response for %q is not an image (content-type %q, %d bytes); the model may not serve text-to-image",
+			req.Model, contentType, len(respBody))
 	}
 
 	b64 := base64.StdEncoding.EncodeToString(respBody)
 	return &core.ImageResponse{Data: []core.GeneratedImage{{B64JSON: b64}}}, nil
+}
+
+// isImageBody reports whether a text-to-image success body is an image. The
+// model route runs whatever pipeline the model declares, so a model that does
+// not generate images still answers 200 — with JSON such as
+// [{"generated_text":…}] — and that body, or an empty one, was base64-encoded
+// and served as the generated image. The body counts as an image when it is
+// non-empty and either its declared Content-Type or its sniffed one is image/*.
+func isImageBody(body []byte, contentType string) bool {
+	if len(body) == 0 {
+		return false
+	}
+	if mediaType, _, err := mime.ParseMediaType(contentType); err == nil && strings.HasPrefix(mediaType, "image/") {
+		return true
+	}
+	return strings.HasPrefix(http.DetectContentType(body), "image/")
 }
 
 // imageParameters builds the Hugging Face text-to-image "parameters" object from

@@ -35,6 +35,19 @@ func TestCompleteStream_MidStreamError(t *testing.T) {
 			wantText: "Hel",
 		},
 		{
+			// An OpenAI-compatible server behind OPENAI_BASE_URL may write the
+			// envelope as a plain string; the frame must still fail the stream.
+			name:     "plain-string error",
+			frame:    `data: {"error":"Model is overloaded"}`,
+			wantErr:  "stream error: Model is overloaded",
+			wantText: "Hel",
+		},
+		{
+			name:     "empty string error alongside content is not a failure",
+			frame:    `data: {"id":"a","error":"","choices":[{"index":0,"delta":{"content":"lo"}}]}`,
+			wantText: "Hello",
+		},
+		{
 			name:     "null error is not a failure",
 			frame:    `data: {"id":"a","error":null,"choices":[{"index":0,"delta":{"content":"lo"}}]}`,
 			wantText: "Hello",

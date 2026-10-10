@@ -515,6 +515,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   event, and no rank under `cost-optimized` with `unpriced_strategy: skip`. The
   mode is now billed per token exactly as chat is, against the row's input,
   output and cache-read rates.
+- A streamed chat completion from a Mistral reasoning model (`magistral-*`) now
+  delivers what it generated. Mistral's stream sends `delta.content` as either
+  a string or a list of content chunks, and its reasoning models use the list —
+  the reasoning in `thinking` chunks, answer text in `text` chunks. The shared
+  stream decoder read `content` only as a string, so each such frame failed to
+  decode and was skipped like a malformed keep-alive: the reasoning, the answer
+  text those frames carried, and a `finish_reason` or `usage` riding on one of
+  them never reached the caller, and the stream still ended as a success. A
+  list is now read as well: `text` chunks join the content and `thinking` text
+  is streamed as `reasoning_content`.
+- Hugging Face image generation no longer serves a non-image response as the
+  image. The text-to-image route runs whatever pipeline the named model
+  declares, so a model that does not generate images still answers `200` —
+  with JSON such as `[{"generated_text": …}]` — and that body, or an empty one,
+  was base64-encoded into `b64_json` and recorded as a generation the target
+  had served. A success body is now accepted only when it is non-empty and its
+  declared or sniffed media type is `image/*`; anything else fails the call.
+- A mid-stream error written as a plain string (`data: {"error":"…"}`) now
+  fails an `openai` provider stream, as it already did on every other
+  OpenAI-compatible provider. The `openai` provider decodes its own frames and
+  read `error` only as an object, so an OpenAI-compatible server behind
+  `OPENAI_BASE_URL` that writes the string form had the frame skipped as
+  undecodable, and the truncated answer ended as a success. A frame carrying
+  content beside `"error": ""` was dropped the same way. It now reads the field
+  with the shared OpenAI-compatible stream decoder's rule: either shape, and
+  only a non-empty message is a failure.
 
 ## [1.5.9] — 2026-09-18
 

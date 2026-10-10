@@ -18,6 +18,7 @@ import (
 
 	providerhttp "github.com/ferro-labs/ai-gateway/internal/httpclient"
 	"github.com/ferro-labs/ai-gateway/providers/core"
+	"github.com/ferro-labs/ai-gateway/providers/core/openaicompat"
 )
 
 // Name is the canonical provider identifier.
@@ -591,11 +592,11 @@ type openAIStreamChunk struct {
 	// Error is the envelope OpenAI emits when a request fails once the 200
 	// headers are already out. It arrives in place of choices, so decoding it
 	// alongside them is what keeps a truncated answer from being reported as a
-	// complete one.
-	Error *struct {
-		Type    string `json:"type"`
-		Message string `json:"message"`
-	} `json:"error"`
+	// complete one. It is raw because an OpenAI-compatible server behind
+	// OPENAI_BASE_URL may write it as a plain string ({"error":"…"}), and a
+	// struct field failed the whole frame on that form: the frame was skipped
+	// as undecodable and the stream ended as a success.
+	Error json.RawMessage `json:"error"`
 }
 
 type openAIStreamToolCall struct {
@@ -640,19 +641,8 @@ func (c openAIStreamChunk) toStreamChunk() core.StreamChunk {
 	}
 	// Only a populated message counts as a failure: "error": null appears on
 	// healthy frames, and a frame can carry content alongside the field.
-	if c.Error != nil && c.Error.Message != "" {
-		sc.Error = streamError(c.Error.Type, c.Error.Message)
-	}
+	sc.Error = openaicompat.StreamErrorFrom(c.Error)
 	return sc
-}
-
-// streamError formats a mid-stream error envelope. The type is optional — it is
-// absent on some error shapes.
-func streamError(typ, msg string) error {
-	if typ == "" {
-		return fmt.Errorf("stream error: %s", msg)
-	}
-	return fmt.Errorf("stream error (%s): %s", typ, msg)
 }
 
 // mapStreamToolCalls maps SSE tool-call deltas to canonical tool calls,

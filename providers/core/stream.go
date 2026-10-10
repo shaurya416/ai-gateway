@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"encoding/json"
+	"strings"
 )
 
 // SendChunk sends c on ch unless ctx is done. It returns false when ctx was
@@ -59,19 +60,79 @@ type messageDeltaAlias MessageDelta
 // OpenAI-compatible endpoint sends. Without this the whole reasoning stream of
 // such a provider is silently dropped. The gateway always re-emits
 // reasoning_content, so only decoding is affected.
+//
+// content may also arrive as an array of chunks rather than a string: Mistral's
+// delta schema is string | list of content chunks, and its reasoning models
+// stream that way, with the reasoning in "thinking" chunks. Read only as a
+// string, such a frame failed to decode and was skipped, so the content it
+// carried never reached the caller and the stream still ended as a success.
+// Text chunks are joined into Content and thinking text into ReasoningContent.
 func (d *MessageDelta) UnmarshalJSON(data []byte) error {
 	var raw struct {
 		messageDeltaAlias
-		Reasoning string `json:"reasoning"`
+		// Content shadows the alias's string field so either shape decodes.
+		Content   json.RawMessage `json:"content"`
+		Reasoning string          `json:"reasoning"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
 	}
 	*d = MessageDelta(raw.messageDeltaAlias)
+	text, thinking, err := deltaContent(raw.Content)
+	if err != nil {
+		return err
+	}
+	d.Content = text
 	if d.ReasoningContent == "" {
 		d.ReasoningContent = raw.Reasoning
 	}
+	if d.ReasoningContent == "" {
+		d.ReasoningContent = thinking
+	}
 	return nil
+}
+
+// deltaChunk is one element of an array-form delta content: a text chunk
+// ({"type":"text","text":…}) or a Mistral thinking chunk
+// ({"type":"thinking","thinking":[{"type":"text","text":…}]}). Other chunk
+// types carry no text a delta can express and are skipped.
+type deltaChunk struct {
+	Type     string `json:"type"`
+	Text     string `json:"text"`
+	Thinking []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	} `json:"thinking"`
+}
+
+// deltaContent reads a delta's content field, which is either a string or an
+// array of chunks, and returns its text and any reasoning text it carried.
+func deltaContent(raw json.RawMessage) (text, thinking string, err error) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return "", "", nil
+	}
+	if raw[0] != '[' {
+		err = json.Unmarshal(raw, &text)
+		return text, "", err
+	}
+	var chunks []deltaChunk
+	if err := json.Unmarshal(raw, &chunks); err != nil {
+		return "", "", err
+	}
+	var t, r strings.Builder
+	for _, c := range chunks {
+		switch c.Type {
+		case ContentTypeText:
+			t.WriteString(c.Text)
+		case "thinking":
+			for _, part := range c.Thinking {
+				if part.Type == ContentTypeText {
+					r.WriteString(part.Text)
+				}
+			}
+		}
+	}
+	return t.String(), r.String(), nil
 }
 
 // StreamNormalizer enforces the parts of the OpenAI streaming contract that a
