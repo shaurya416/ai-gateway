@@ -89,6 +89,25 @@ describe('StrategyPage', () => {
     expect(within(anthropic).getByText('Configured')).toBeInTheDocument()
   })
 
+  it('shows the attempts and queue the gateway applies when a block leaves them unset', async () => {
+    // A retry block that only narrows the status codes is served with
+    // `attempts: 0`, and retryPolicyFor runs it as one attempt. A concurrency
+    // bound with no queue_size is given the limiter's default queue, so the
+    // request past the bound waits rather than being refused.
+    arm({
+      strategy: { mode: 'fallback' },
+      targets: [
+        { virtual_key: 'groq', retry: { attempts: 0, on_status_codes: [429] }, concurrency: { max_concurrency: 8 } },
+      ],
+    })
+    render(<StrategyPage />)
+    await screen.findByRole('heading', { name: 'Fallback' })
+
+    const groq = screen.getByRole('row', { name: /groq/ })
+    expect(groq.querySelector('[data-label="Retry"]')).toHaveTextContent(/^1 attempt$/)
+    expect(groq.querySelector('[data-label="Concurrency"]')).toHaveTextContent(/^8 in flight · 1,000 queued$/)
+  })
+
   it('reports no circuit breaker on a target that configures none', async () => {
     // The gateway builds a breaker only for a target with a `circuit_breaker`
     // block and applies none by default, so the absence is not a default

@@ -325,7 +325,19 @@ describe('OverviewPage — panels', () => {
     renderPage()
 
     expect(await screen.findAllByText('Request logging is disabled')).not.toHaveLength(0)
-    expect(screen.getByText(/Enable the request logger plugin/)).toBeInTheDocument()
+  })
+
+  it('points a gateway with no request-log store at the store, not only at the plugin', async () => {
+    // `enabled: false` means REQUEST_LOG_STORE_BACKEND is unset. Enabling the
+    // request-logger plugin alone persists nothing, so advice naming only the
+    // plugin sent the operator to a change that leaves both panels empty.
+    arm(readyBody, { summary: { ...summary, request_logs: { enabled: false, total: 0 } } })
+    renderPage()
+
+    const traffic = await screen.findByRole('region', { name: 'Requests over time' })
+    expect(within(traffic).getByText(/REQUEST_LOG_STORE_BACKEND/)).toBeInTheDocument()
+    const recent = screen.getByRole('region', { name: 'Recent Requests' })
+    expect(within(recent).getByText(/REQUEST_LOG_STORE_BACKEND/)).toBeInTheDocument()
   })
 
   it('lists the newest events with the outcome each one reached', async () => {
@@ -385,7 +397,8 @@ describe('OverviewPage — panels', () => {
 
     arm(readyBody, { summary: { ...summary, request_logs: { enabled: false, total: 0 } } })
     renderPage()
-    expect(await screen.findByText('Enable request logging to populate this table.')).toBeInTheDocument()
+    const recent = await screen.findByRole('region', { name: 'Recent Requests' })
+    expect(within(recent).getByText('Request logging is disabled')).toBeInTheDocument()
     // Sending a request would change nothing while nothing is being written.
     expect(screen.queryByRole('button', { name: 'Open Playground' })).toBeNull()
   })

@@ -1905,6 +1905,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reached — and it followed the model picker after the result arrived. It now
   reads the `X-Gateway-Target` header the gateway sets on every routed
   response, and names no target when the gateway sent none.
+- The Analytics page no longer reports a request log holding only
+  `before_request` rows as an idle range. `summary.total_entries` counts
+  requests that reached an outcome, so a logger recording no terminal stage —
+  or a range whose requests are all still in flight — answers zero there while
+  `by_stage` counts every row, and the page read that zero alone: it replaced
+  every figure with "No activity in this range" and told the operator to send
+  a request, when every request they sent was in the log. Such a range now
+  shows the metrics, with the request count and failure rate withheld as "no
+  completed requests recorded", and the cost panel no longer states a
+  "0 tokens per request" average over requests none of which completed.
+- The Routing Strategies page and the Configuration page's Strategy tab show
+  the retry and queue the gateway applies when a target's block leaves them
+  unset. A retry block that only narrows `on_status_codes` is served with
+  `attempts: 0` and read "0 attempts", but the gateway runs anything below one
+  as a single attempt; and a `concurrency` block with no `queue_size` read only
+  "N in flight", as though the request past the bound were refused, when the
+  gateway queues up to 1,000 behind it. The two now read "1 attempt" and
+  "N in flight · 1,000 queued".
+- The Overview page names the setting that turns request logging on. With no
+  request-log store configured, its traffic chart said to enable the request
+  logger plugin, but the panel is empty because `REQUEST_LOG_STORE_BACKEND` is
+  unset — the plugin's `persist` has nothing to write to without it, so the
+  advice left both panels exactly as they were. The traffic chart and the
+  Recent Requests table now name `REQUEST_LOG_STORE_BACKEND` and the plugin's
+  `persist` setting.
 
 ## [1.5.9] — 2026-09-18
 

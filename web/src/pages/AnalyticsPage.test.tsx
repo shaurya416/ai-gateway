@@ -281,6 +281,30 @@ describe('AnalyticsPage', () => {
     expect(await screen.findAllByText('no completed requests recorded')).toHaveLength(2)
   })
 
+  it('does not call a log holding only before_request rows idle', async () => {
+    // What the gateway sends for it: `total_entries` counts requests that
+    // reached an outcome, so it is zero, while `by_stage` still counts every
+    // row. A logger recording no terminal stage — or every request still in
+    // flight — looks exactly like this.
+    request.mockResolvedValue(
+      stats({
+        summary: { total_entries: 0, error_entries: 0, total_tokens: 0, cost_usd: 0, unpriced_requests: 0 },
+        by_stage: { before_request: { count: 4, errors: 0, tokens: 0 } },
+        by_provider: {},
+        by_model: {},
+      }),
+    )
+    renderPage()
+
+    const requests = (await screen.findByText('Requests')).closest('div') as HTMLElement
+    expect(within(requests).getByText('no completed requests recorded')).toBeInTheDocument()
+    expect(screen.queryByText('No activity in this range')).not.toBeInTheDocument()
+    // No request completed, so there is no per-request average to state.
+    const cost = screen.getByText('Estimated cost').closest('div') as HTMLElement
+    expect(within(cost).getByText('no completed requests recorded')).toBeInTheDocument()
+    expect(screen.queryByText(/tokens per request/)).not.toBeInTheDocument()
+  })
+
   it('sends a chosen stage to the gateway, and puts it in the URL', async () => {
     const user = userEvent.setup()
     renderPage()

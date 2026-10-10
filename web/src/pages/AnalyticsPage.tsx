@@ -321,10 +321,18 @@ export default function AnalyticsPage() {
   const split = tokenSplit(stats)
   const cost = spend(stats)
   const totalTokens = stats?.summary.total_tokens ?? 0
-  // A stats object with zero recorded entries is a genuinely idle gateway, not
-  // a failure to derive numbers from — show that plainly rather than a metric
-  // strip of confident zeros, which reads as "0% errors" instead of "no data".
-  const isEmpty = stats != null && stats.summary.total_entries === 0
+  // A range with nothing recorded is a genuinely idle gateway, not a failure to
+  // derive numbers from — show that plainly rather than a metric strip of
+  // confident zeros, which reads as "0% errors" instead of "no data".
+  //
+  // `total_entries` alone cannot say so. It counts requests that reached an
+  // outcome, while `by_stage` counts every row, so a log holding only
+  // `before_request` rows — a logger recording no terminal stage, or requests
+  // still in flight — answers zero there beside rows it did record. Reading
+  // that as idle told an operator nothing was recorded, and to send a request,
+  // when every request they sent was in the log.
+  const recordedRows = Object.values(stats?.by_stage ?? {}).some((group) => group.count > 0)
+  const isEmpty = stats != null && stats.summary.total_entries === 0 && !recordedRows
 
   const tokensPerRequest = totals.completed > 0 ? Math.round(totalTokens / totals.completed) : null
   const topErrors = stats?.top_errors ?? []
@@ -460,7 +468,11 @@ export default function AnalyticsPage() {
                     ? // A floor, and the page has to say so: the difference is
                       // whatever those requests actually cost.
                       `at least — ${formatNumber(cost.unpriced)} requests unpriced`
-                    : `${formatNumber(tokensPerRequest ?? 0)} tokens per request`
+                    : tokensPerRequest == null
+                      ? // No request completed, so there is no average to
+                        // state — "0 tokens per request" would be one.
+                        'no completed requests recorded'
+                      : `${formatNumber(tokensPerRequest)} tokens per request`
               }
               label="Estimated cost"
               value={cost == null ? '—' : formatUSD(cost.usd)}

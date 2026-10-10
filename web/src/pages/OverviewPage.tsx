@@ -48,6 +48,17 @@ const SERIES_BUCKETS = 48
  */
 const REFRESH_MS = 30_000
 
+/**
+ * What turns request logging on, for the panels that are empty without it.
+ *
+ * `request_logs.enabled` reports whether REQUEST_LOG_STORE_BACKEND configured a
+ * store, so the store is what is missing whenever this shows. Advice naming
+ * only the request-logger plugin sent an operator to a setting that cannot
+ * change it: with no store, the plugin's `persist` has nothing to write to.
+ */
+const LOGGING_DISABLED_ADVICE =
+  'Set the REQUEST_LOG_STORE_BACKEND environment variable on the gateway, and persist: true on the request-logger plugin, to record traffic history and analytics.'
+
 async function loadOverview(hours: number, signal: AbortSignal): Promise<OverviewData> {
   const since = buildSince(hours)
   const [summary, health, statsResult, logsResult, readiness] = await Promise.all([
@@ -283,7 +294,7 @@ export default function OverviewPage() {
                 <p className="text-sm text-muted-foreground">Latest persisted activity in the selected range.</p>
               </div>
               {!data.summary.request_logs.enabled ? (
-                <EmptyState title="Request logging is disabled" description="Enable the request logger plugin to see traffic history and analytics." />
+                <EmptyState title="Request logging is disabled" description={LOGGING_DISABLED_ADVICE} />
               ) : !data.stats ? (
                 // The statistics query failed, which is not the same fact as a
                 // range with no traffic in it. Worded like the readiness panel's
@@ -355,7 +366,7 @@ export default function OverviewPage() {
             ) : data.logs === null || data.logs.length === 0 ? (
               <EmptyState
                 title={data.summary.request_logs.enabled ? 'No requests in this range' : 'Request logging is disabled'}
-                description={data.summary.request_logs.enabled ? 'Try a request in the Playground or choose a wider time range.' : 'Enable request logging to populate this table.'}
+                description={data.summary.request_logs.enabled ? 'Try a request in the Playground or choose a wider time range.' : LOGGING_DISABLED_ADVICE}
                 action={data.summary.request_logs.enabled ? <Button nativeButton={false} render={<Link to="/playground" />} variant="secondary">Open Playground</Button> : undefined}
               />
             ) : (

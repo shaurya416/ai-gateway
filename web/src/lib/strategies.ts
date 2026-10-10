@@ -122,8 +122,21 @@ export interface StrategyTarget {
    * load-balance, cost-optimized — reads undefined as 0.
    */
   weight?: number
+  /**
+   * Attempts per request as the gateway runs them, undefined when the target
+   * has no retry block. `retryPolicyFor` (gateway_retry.go) runs anything below
+   * one as a single attempt, and a block that sets only `on_status_codes` is
+   * served with `attempts: 0` — read verbatim, a target the gateway does try
+   * read as one it never tries.
+   */
   retryAttempts?: number
   maxConcurrency?: number
+  /**
+   * Requests that may wait for a slot, undefined when the target bounds no
+   * concurrency. A bound with no `queue_size` gets the limiter's default queue
+   * rather than none, so the first request past the bound waits instead of
+   * being refused with 429.
+   */
   queueSize?: number
   circuitBreaker: boolean
   /** `targets[].model_map`: visible model → the upstream model this target is sent. Empty when unset. */
@@ -161,16 +174,23 @@ export interface StrategyState {
   unpricedStrategy: string
 }
 
+/**
+ * The queue a concurrency bound gets when it sets no `queue_size` —
+ * `DefaultConcurrencyQueueSize` in gateway_concurrency.go.
+ */
+const DEFAULT_QUEUE_SIZE = 1000
+
 function readTargets(config: Record<string, unknown>): StrategyTarget[] {
   return records(config.targets).map((target) => {
     const concurrency = isRecord(target.concurrency) ? target.concurrency : undefined
     const retry = isRecord(target.retry) ? target.retry : undefined
+    const queue = typeof concurrency?.queue_size === 'number' ? concurrency.queue_size : 0
     return {
       virtualKey: text(target.virtual_key),
       weight: typeof target.weight === 'number' ? target.weight : undefined,
-      retryAttempts: typeof retry?.attempts === 'number' ? retry.attempts : undefined,
+      retryAttempts: retry ? Math.max(typeof retry.attempts === 'number' ? retry.attempts : 0, 1) : undefined,
       maxConcurrency: typeof concurrency?.max_concurrency === 'number' ? concurrency.max_concurrency : undefined,
-      queueSize: typeof concurrency?.queue_size === 'number' ? concurrency.queue_size : undefined,
+      queueSize: concurrency ? (queue > 0 ? queue : DEFAULT_QUEUE_SIZE) : undefined,
       circuitBreaker: isRecord(target.circuit_breaker),
       modelMap: readModelMap(target.model_map),
     }
