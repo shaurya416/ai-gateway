@@ -373,6 +373,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   content it could not read did, so the other three denials reached no
   `gateway.guardrail.match` consumer and a policy audited from that signal read
   as though the plugin never acted.
+- `/v1/embeddings` input sent as token ids is now served by `openai`, and
+  refused with a `400` by every other provider that validates its input. Token
+  ids — an array of integers, or an array of such arrays — are part of the
+  OpenAI embeddings contract, are what LangChain's `OpenAIEmbeddings` sends by
+  default, and the gateway passes them through when no content guardrail is
+  configured; but every provider's input check accepted text only and refused
+  them with an untyped error. The request answered `500` and was retried on
+  the target and failed over to every other one without any upstream being
+  asked, each attempt counting against the target's circuit breaker — so with
+  retries configured, one embeddings request could open the breaker on a
+  healthy target, taking its chat traffic out of rotation too. `openai` now
+  forwards token ids as the integers they were sent as. The refusal, and that
+  of any other malformed `input` (empty, `null`, a non-text element), is a
+  `400` that names the problem and is neither retried nor offered to another
+  target.
+- `/v1/audio/transcriptions` and `/v1/audio/translations` with
+  `response_format` `verbose_json` now answer with the segments, words,
+  duration and language the upstream returned. The JSON formats were decoded
+  into the transcript alone, so a `verbose_json` request got
+  `{"text": …}` under a `200`: openai-python, which types that format as
+  `TranscriptionVerbose` with a required `duration` and `language`, handed
+  back an object with no timestamps and no error. The upstream's JSON object
+  is now served with every member it carried — including the `usage` a `json`
+  response reports and the speaker segments of `diarized_json` — beside the
+  transcript.
 - A non-streaming chat completion that fails after the upstream answered `200`
   is now a failure instead of an empty success. OpenRouter documents that
   response as either a completion or an `{"error":{…}}` envelope, and other

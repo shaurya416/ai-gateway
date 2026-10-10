@@ -105,30 +105,30 @@ func normalizeEmbeddingInput(input any) (any, error) {
 	switch v := input.(type) {
 	case string:
 		if v == "" {
-			return nil, fmt.Errorf("embed: input string must not be empty")
+			return nil, core.EmbeddingInputError("embed: input string must not be empty")
 		}
 		return v, nil
 	case []string:
 		if len(v) == 0 {
-			return nil, fmt.Errorf("embed: Input must not be an empty array")
+			return nil, core.EmbeddingInputError("embed: Input must not be an empty array")
 		}
 		return v, nil
 	case []any:
 		if len(v) == 0 {
-			return nil, fmt.Errorf("embed: Input must not be an empty array")
+			return nil, core.EmbeddingInputError("embed: Input must not be an empty array")
 		}
 		strs := make([]string, 0, len(v))
 		for i, item := range v {
 			s, ok := item.(string)
 			if !ok {
-				return nil, fmt.Errorf("embed: Input[%d] is %T, want string", i, item)
+				return nil, core.EmbeddingInputError("embed: Input[%d] is %T, want string", i, item)
 			}
 			strs = append(strs, s)
 		}
 		return strs, nil
 	case nil:
-		return nil, fmt.Errorf("embed: Input must not be nil")
+		return nil, core.EmbeddingInputError("embed: Input must not be nil")
 	default:
-		return nil, fmt.Errorf("embed: unsupported Input type %T; want string or []string", input)
+		return nil, core.EmbeddingInputError("embed: unsupported Input type %T; want string or []string", input)
 	}
 }

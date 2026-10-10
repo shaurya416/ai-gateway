@@ -221,7 +221,9 @@ func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.
 		Model: req.Model,
 	}
 
-	normalized, err := core.NormalizeEmbeddingInput(req.Input)
+	// The OpenAI input union carries token ids as well as text, so token-id
+	// input is forwarded rather than refused as text-only.
+	normalized, err := core.NormalizeEmbeddingTokenInput(req.Input)
 	if err != nil {
 		return nil, err
 	}
@@ -230,6 +232,10 @@ func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.
 		params.Input = oai.EmbeddingNewParamsInputUnion{OfString: oai.String(v)}
 	case []string:
 		params.Input = oai.EmbeddingNewParamsInputUnion{OfArrayOfStrings: v}
+	case []int64:
+		params.Input = oai.EmbeddingNewParamsInputUnion{OfArrayOfTokens: v}
+	case [][]int64:
+		params.Input = oai.EmbeddingNewParamsInputUnion{OfArrayOfTokenArrays: v}
 	}
 
 	// base64 is refused rather than forwarded, even though OpenAI accepts it.

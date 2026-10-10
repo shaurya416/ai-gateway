@@ -22,9 +22,10 @@ type TranscriptionParams struct {
 }
 
 // PostTranscription sends an OpenAI-compatible multipart audio request and
-// decodes the transcript. The upstream returns {text} for json/verbose_json and
-// the raw transcript for text/srt/vtt; both resolve to
-// TranscriptionResponse.Text.
+// decodes the transcript. The upstream returns a JSON object for json,
+// verbose_json and diarized_json and the raw transcript for text/srt/vtt; both
+// resolve to TranscriptionResponse.Text, and the object's other members are
+// kept in TranscriptionResponse.Extra.
 func PostTranscription(ctx context.Context, p TranscriptionParams, req core.TranscriptionRequest) (*core.TranscriptionResponse, error) {
 	var buf bytes.Buffer
 	mw := multipart.NewWriter(&buf)
@@ -88,7 +89,8 @@ func PostTranscription(ctx context.Context, p TranscriptionParams, req core.Tran
 		// taken verbatim rather than unmarshalled, which would discard it.
 		decoded.Text = string(respBody)
 	default:
-		// json, verbose_json, and the empty/default case return a {text} envelope.
+		// json, verbose_json, diarized_json and the empty/default case return a
+		// JSON object carrying text.
 		if err := json.Unmarshal(respBody, &decoded); err != nil {
 			decoded.Text = string(respBody)
 		}

@@ -638,15 +638,15 @@ func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.
 		for i, item := range v {
 			s, ok := item.(string)
 			if !ok {
-				return nil, fmt.Errorf("unsupported input type at input[%d]: %T; expected string", i, item)
+				return nil, core.EmbeddingInputError("unsupported input type at input[%d]: %T; expected string", i, item)
 			}
 			texts = append(texts, s)
 		}
 	default:
-		return nil, fmt.Errorf("unsupported input type: %T", req.Input)
+		return nil, core.EmbeddingInputError("unsupported input type: %T", req.Input)
 	}
 	if len(texts) == 0 {
-		return nil, fmt.Errorf("embedding input must contain at least one text")
+		return nil, core.EmbeddingInputError("embedding input must contain at least one text")
 	}
 	// The shared validator accepts exactly the set this path serves ("" and
 	// "float") and returns the typed 400 the hand-rolled check did not: a bare
