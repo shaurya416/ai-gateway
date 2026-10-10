@@ -116,7 +116,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   now taken within the start deadline, before the provider is asked, so a
   stream whose deadline passes while queued is shed with `429` as a unary
   request is — not blamed on the provider, and no longer started later for
-  nobody — and the slot is released once, when the abandoned stream drains. A
+  nobody — and the slot is released once, when the abandoned start ends. A
   provider answering a stream start with neither a channel nor an error now
   counts as a failed start as well: it had left its half-open probe held,
   rejecting the target until restart, and behind a concurrency limit was served
@@ -195,6 +195,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `X-Gateway-Overhead-Ms` and `Retry-After` as null — the last leaving a `429`
   with no wait for the client's backoff to honour. All seven are now exposed to
   an allowed origin; a disallowed origin still receives no CORS headers at all.
+- A stream start that answers after the gateway abandoned its wait no longer
+  runs to completion for nobody. When `request_timeout` or `targets[].timeout`
+  elapsed before a streaming upstream answered, the request failed over or
+  failed, but the abandoned start kept running on the caller's context and,
+  once it answered, its stream was drained to the end: the upstream generated
+  — and billed — a whole answer no caller would read, and behind
+  `targets[].concurrency` it held the target's slot until that answer
+  finished, shedding the requests queued behind it with `429`. Over HTTP that
+  lasted as long as the request did; for an embedder whose context outlives
+  the request, until the generation ended. Each start now runs on its own
+  context, cancelled the moment its wait is abandoned, so the upstream is told
+  to stop and the slot comes back at once. A start that wins keeps that
+  context for the life of its stream, and it is released when the stream
+  ends.
+- A chat completion served by a provider registered under a routing alias
+  (`RegisterProviderAs`) is now recorded against its target. Every in-tree
+  provider stamps its own name on the responses it returns, and the gateway
+  filled in the target only when that field was empty, so a success was
+  recorded under the provider's name — on `gateway_requests_total`, the span's
+  target key, the lifecycle event and the request-log row — while every
+  failure was recorded under the target: per-target series showed the target
+  failing every request it took and serving none, and
+  `/admin/logs?provider=<target>` listed only its failures. The response's
+  `provider` now always names the target that served it, as the streaming path
+  and the other surfaces already did.
+- The per-turn plugin check in an agentic MCP tool loop now counts the turn
+  that started the loop. Each turn's `before_request` plugins are handed what
+  the request has already spent, so a `budget` cap can close mid-request, but
+  the running total began at zero after the opening provider call: the first
+  loop turn was checked as though the request had cost nothing and every later
+  turn against a total one turn short, so a key whose cap the opening turn
+  crossed was granted another full turn. The total now starts with the opening
+  turn's cost.
 
 ## [1.5.9] — 2026-09-18
 

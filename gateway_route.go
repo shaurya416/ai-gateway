@@ -510,10 +510,17 @@ func (g *Gateway) runMCPLoop(ctx context.Context, mcpExecutorSnapshot *mcp.Execu
 	// answered last.
 	attempts := initialTarget.attempts
 	// What this request has spent so far, fed to the per-turn budget check.
+	// Seeded with the turn the caller made before entering the loop: it is
+	// spent too, and leaving it out checked the first loop turn against a
+	// request that had cost nothing and every later turn against a total one
+	// turn short.
 	var (
 		spentUSD    float64
 		spentPriced bool
 	)
+	if openingCost := g.calculateCost(resp, initialTarget.priceProvider, initialTarget.upstreamModel); openingCost.Priced {
+		spentUSD, spentPriced = openingCost.TotalUSD, true
+	}
 
 	// Token usage accumulates across turns, exactly as the provider duration
 	// above already does. Each turn is a real provider call spending real

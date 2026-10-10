@@ -29,19 +29,15 @@ import (
 //
 // startCtx bounds this whole selection/retry phase only — it is what the
 // pipeline and strategies.WaitBeforeRetry check for expiry. streamCtx is the
-// context every CompleteStream call actually runs on and must stay free of that
-// deadline: a provider keeps reading its response body on whatever context it
+// context every CompleteStream call actually runs under — each on a child of
+// its own, see raceCompleteStream — and must stay free of that deadline: a
+// provider keeps reading its response body on whatever context it
 // was called with for as long as the returned channel is alive, so a
 // start-phase timeout attached to streamCtx would tear down an
 // already-successful stream the moment the clock ran out.
-// The third return is the breaker admission the successful start holds — taken
-// on the breaker INSTANCE the pipeline actually called, never re-fetched from
-// g.circuitBreakers by name, and tagged with the generation it was admitted
-// in. A ReloadConfig that retires and rebuilds a target's breaker while a
-// stream is mid-start would otherwise hand the stream's eventual outcome to a
-// fresh breaker whose state machine never admitted it. The zero Admission when
-// the target has no breaker configured.
-func (g *Gateway) startStreamWithStrategy(startCtx, streamCtx context.Context, req providers.Request) (routedTarget, <-chan providers.StreamChunk, circuitbreaker.Admission, error) {
+// The third return is what the successful start hands the end of its stream —
+// see streamStart. The zero streamStart on failure.
+func (g *Gateway) startStreamWithStrategy(startCtx, streamCtx context.Context, req providers.Request) (routedTarget, <-chan providers.StreamChunk, streamStart, error) {
 	g.mu.Lock()
 	g.ensureCircuitBreakersLocked()
 	g.ensureProviderLimitersLocked()
@@ -49,18 +45,36 @@ func (g *Gateway) startStreamWithStrategy(startCtx, streamCtx context.Context, r
 
 	keys, err := g.streamingTargetOrder(req)
 	if err != nil {
-		return routedTarget{}, nil, circuitbreaker.Admission{}, err
+		return routedTarget{}, nil, streamStart{}, err
 	}
 
 	plan := g.planFor(req.Model, keys)
 	plan.responseOutlivesCall = true
 
-	var admitted circuitbreaker.Admission
-	raw, target, err := routeTargets(startCtx, g, plan, req, streamCapable, startStreamOn(streamCtx, &admitted))
+	var started streamStart
+	raw, target, err := routeTargets(startCtx, g, plan, req, streamCapable, startStreamOn(streamCtx, &started))
 	if err != nil {
-		return target, nil, circuitbreaker.Admission{}, err
+		return target, nil, streamStart{}, err
 	}
-	return target, raw, admitted, nil
+	return target, raw, started, nil
+}
+
+// streamStart is what a successful stream start hands to whatever observes the
+// end of its stream, because both outlive the call that started it.
+type streamStart struct {
+	// admission is the breaker admission the start holds — taken on the breaker
+	// INSTANCE the pipeline actually called, never re-fetched from
+	// g.circuitBreakers by name, and tagged with the generation it was admitted
+	// in. A ReloadConfig that retires and rebuilds a target's breaker while a
+	// stream is mid-start would otherwise hand the stream's eventual outcome to
+	// a fresh breaker whose state machine never admitted it. The zero Admission
+	// when the target has no breaker configured.
+	admission circuitbreaker.Admission
+	// release ends the context the start ran on, which the stream keeps running
+	// on (see raceCompleteStream). It must be called once the stream has ended:
+	// the context is a child of the caller's, and a caller context that outlives
+	// many requests would otherwise keep one child per stream it ever served.
+	release context.CancelFunc
 }
 
 // streamCapable is streaming's candidacy gate: a target whose provider cannot
@@ -78,27 +92,27 @@ func streamCapable(p providers.Provider) bool {
 // to answer; streamCtx — captured here — is what the call itself runs on, and
 // must outlive the attempt because the channel it returns does.
 //
-// admitted receives the breaker admission each attempt's start holds — the zero
-// Admission when the attempt had no breaker or failed to start. The walk runs
-// attempts sequentially and returns on the one that succeeds, so after a
-// successful walk it holds the admission of the live stream, which is the only
-// one its outcome may resolve.
-func startStreamOn(streamCtx context.Context, admitted *circuitbreaker.Admission) targetCall[providers.Request, <-chan providers.StreamChunk] {
+// started receives what each attempt's start hands its stream — the zero
+// streamStart when the attempt failed to start. The walk runs attempts
+// sequentially and returns on the one that succeeds, so after a successful walk
+// it holds the admission and context of the live stream, which are the only
+// ones its end may resolve.
+func startStreamOn(streamCtx context.Context, started *streamStart) targetCall[providers.Request, <-chan providers.StreamChunk] {
 	return func(attemptCtx context.Context, p providers.Provider, req providers.Request, upstreamModel string) (<-chan providers.StreamChunk, error) {
 		req.Model = upstreamModel
-		*admitted = circuitbreaker.Admission{}
+		*started = streamStart{}
 		var (
 			raw      <-chan providers.StreamChunk
-			adm      circuitbreaker.Admission
+			attempt  streamStart
 			startErr error
 		)
 		trace.WithRegion(attemptCtx, "gateway.route_stream.provider.start", func() {
-			raw, adm, startErr = startStreamAttempt(attemptCtx, streamCtx, p, req)
+			raw, attempt, startErr = startStreamAttempt(attemptCtx, streamCtx, p, req)
 		})
 		if startErr != nil {
 			return nil, startErr
 		}
-		*admitted = adm
+		*started = attempt
 		return raw, nil
 	}
 }
@@ -129,30 +143,30 @@ var errNilStream = errors.New("provider returned a nil stream")
 // count, exactly as on the unary surfaces. It also leaves the queue rather than
 // starting, later, a stream nobody will read. Once taken, the slot belongs to
 // the start and then to the stream — streamHolding releases it once, whether
-// the start fails, the stream ends, or an abandoned start is drained.
-func startStreamAttempt(waitCtx, streamCtx context.Context, p providers.Provider, req providers.Request) (<-chan providers.StreamChunk, circuitbreaker.Admission, error) {
+// the start fails, the stream ends, or an abandoned start is cancelled.
+func startStreamAttempt(waitCtx, streamCtx context.Context, p providers.Provider, req providers.Request) (<-chan providers.StreamChunk, streamStart, error) {
 	inner, cb, lim := undecorate(p)
 	// streamCapable already proved this of the undecorated provider, so the
 	// assertion cannot fail.
 	sp, ok := providers.As[providers.StreamProvider](inner)
 	if !ok {
-		return nil, circuitbreaker.Admission{}, fmt.Errorf("provider %s does not support streaming", p.Name())
+		return nil, streamStart{}, fmt.Errorf("provider %s does not support streaming", p.Name())
 	}
 
 	var adm circuitbreaker.Admission
 	if cb != nil {
 		if adm, ok = cb.Admit(); !ok {
-			return nil, circuitbreaker.Admission{}, circuitbreaker.ErrCircuitOpen
+			return nil, streamStart{}, circuitbreaker.ErrCircuitOpen
 		}
 	}
 	if lim != nil {
 		if err := lim.acquire(waitCtx); err != nil {
 			recordCircuitBreakerOutcome(waitCtx, adm, err)
-			return nil, circuitbreaker.Admission{}, err
+			return nil, streamStart{}, err
 		}
 	}
 
-	raw, abandoned, err := raceCompleteStream(waitCtx, streamCtx, sp, lim, req)
+	raw, release, abandoned, err := raceCompleteStream(waitCtx, streamCtx, sp, lim, req)
 	if err != nil {
 		// Classified against the context whose bound produced the error: an
 		// abandoned wait against the wait context, a start that answered with
@@ -162,40 +176,50 @@ func startStreamAttempt(waitCtx, streamCtx context.Context, p providers.Provider
 			classifyCtx = waitCtx
 		}
 		recordCircuitBreakerOutcome(classifyCtx, adm, err)
-		return nil, circuitbreaker.Admission{}, err
+		return nil, streamStart{}, err
 	}
-	return raw, adm, nil
+	return raw, streamStart{admission: adm, release: release}, nil
 }
 
 // raceCompleteStream bounds only the wait for the stream start to return. The
-// call itself always runs on streamCtx; waitCtx is consulted solely to decide
-// how long to keep waiting for a result. If waitCtx expires first, the attempt
-// is abandoned and reported as a failure so the pipeline can retry or fall
-// back, while the abandoned call keeps running on streamCtx and resolves
-// independently. abandoned reports which of the two happened.
+// call itself runs on a child of streamCtx that belongs to this attempt alone;
+// waitCtx is consulted solely to decide how long to keep waiting for a result.
+// If waitCtx expires first, the attempt is abandoned and reported as a failure
+// so the pipeline can retry or fall back. abandoned reports which of the two
+// happened.
+//
+// A start that wins hands back release with its channel: the stream keeps
+// running on the attempt's context, which must therefore outlive the start,
+// and release ends it once the stream has. A start that fails has its context
+// ended here.
 //
 // When lim is non-nil the caller has already taken its slot, and the start
 // runs through lim.streamHolding, which owns it from then on.
 //
-// An abandoned attempt that later succeeds hands back a live channel no caller
-// will ever read. Its producer would then block forever on the first send,
-// holding the provider connection — and the concurrency slot — until streamCtx
-// is cancelled, so the abandoning path drains that channel to completion
-// instead of dropping it. It touches nothing else: the breaker admission was
-// resolved when the wait was abandoned, and resolving it again from the late
-// result would count one call twice.
-func raceCompleteStream(waitCtx, streamCtx context.Context, sp providers.StreamProvider, lim *providerLimiter, req providers.Request) (_ <-chan providers.StreamChunk, abandoned bool, _ error) {
+// An abandoned attempt has nobody left to answer, so its context is cancelled
+// the moment the wait ends, while the call may still be running. A start that
+// then answers anyway finds its context already ended: the upstream stops
+// generating — and billing — an answer nobody will read, and the concurrency
+// slot comes back now rather than when that answer would have finished. Left
+// running on streamCtx, it ran to completion for any caller whose context
+// outlives the request, holding the target's slot throughout. Whatever it has
+// already produced is still drained, so a producer that does not guard its
+// sends on ctx can reach its close. Nothing else is touched: the breaker
+// admission was resolved when the wait was abandoned, and resolving it again
+// from the late result would count one call twice.
+func raceCompleteStream(waitCtx, streamCtx context.Context, sp providers.StreamProvider, lim *providerLimiter, req providers.Request) (_ <-chan providers.StreamChunk, release context.CancelFunc, abandoned bool, _ error) {
 	type startResult struct {
 		ch  <-chan providers.StreamChunk
 		err error
 	}
+	callCtx, cancelCall := context.WithCancel(streamCtx)
 	done := make(chan startResult, 1)
 	go func() {
 		var r startResult
 		if lim != nil {
-			r.ch, r.err = lim.streamHolding(streamCtx, sp, req)
+			r.ch, r.err = lim.streamHolding(callCtx, sp, req)
 		} else {
-			r.ch, r.err = sp.CompleteStream(streamCtx, req)
+			r.ch, r.err = sp.CompleteStream(callCtx, req)
 			if r.err == nil && r.ch == nil {
 				r.err = errNilStream
 			}
@@ -204,8 +228,13 @@ func raceCompleteStream(waitCtx, streamCtx context.Context, sp providers.StreamP
 	}()
 	select {
 	case r := <-done:
-		return r.ch, false, r.err
+		if r.err != nil {
+			cancelCall()
+			return nil, nil, false, r.err
+		}
+		return r.ch, cancelCall, false, nil
 	case <-waitCtx.Done():
+		cancelCall()
 		go func() {
 			r := <-done
 			if r.ch != nil {
@@ -213,7 +242,7 @@ func raceCompleteStream(waitCtx, streamCtx context.Context, sp providers.StreamP
 				}
 			}
 		}()
-		return nil, true, context.Cause(waitCtx)
+		return nil, nil, true, context.Cause(waitCtx)
 	}
 }
 

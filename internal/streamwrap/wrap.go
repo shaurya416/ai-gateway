@@ -103,6 +103,13 @@ type MeterMeta struct {
 	// CircuitBreakerOutcome, if non-nil, is invoked once when the stream
 	// finishes. err is nil on success; non-nil on provider/stream failure.
 	CircuitBreakerOutcome func(err error)
+	// Release, if non-nil, is invoked exactly once when Meter has stopped
+	// reading src, after every other callback and on every path. The gateway
+	// uses it to end the context the upstream call runs on: nothing reads src
+	// any more, so a provider still producing — after an error chunk, which
+	// Meter does not drain past — is told to stop instead of being left blocked
+	// on a send.
+	Release func()
 	// SuppressUsageForClient, when true, means the client explicitly opted
 	// out of the usage chunk (stream_options.include_usage=false on the
 	// incoming request — see providers/core.Request.ClientStreamOptions).
@@ -234,6 +241,9 @@ func Meter(ctx context.Context, src <-chan providers.StreamChunk, start time.Tim
 
 	go func() {
 		defer close(out)
+		if meta.Release != nil {
+			defer meta.Release()
+		}
 
 		var usage providers.Usage
 		var streamErr error

@@ -156,7 +156,7 @@ func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-cha
 	// timer, deferred here purely so a panic can't leak it.
 	startCtx, cancelStart := withRequestDeadline(ctx, requestTimeout)
 	defer cancelStart()
-	target, rawCh, admission, err := g.startStreamWithStrategy(startCtx, ctx, req)
+	target, rawCh, started, err := g.startStreamWithStrategy(startCtx, ctx, req)
 	providerName := target.key
 	span.SetAttribute(observability.AttrGenAISystem, providerName)
 	// Stamp the resolved target key (virtual key = provider name in this routing layer).
@@ -207,11 +207,14 @@ func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-cha
 	// the same key while the start is in flight — and the generation it was
 	// admitted in, so a stream that outlives a state transition cannot resolve
 	// the new state's probes.
-	if admission.Breaker() != nil {
+	if admission := started.admission; admission.Breaker() != nil {
 		meta.CircuitBreakerOutcome = func(err error) {
 			recordCircuitBreakerOutcome(ctx, admission, err)
 		}
 	}
+	// The context the start ran on is the one the provider keeps reading the
+	// stream on, so it ends with the stream and not before.
+	meta.Release = started.release
 	if pctx != nil {
 		meta.CompletionFn = func(ctx context.Context, resp *providers.Response, m streamwrap.Measurements) error {
 			// The after stage runs from the metering goroutine, which outlives

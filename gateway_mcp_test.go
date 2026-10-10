@@ -1231,6 +1231,108 @@ func TestRoute_MCPLoopAccountsForEveryTurnsUsage(t *testing.T) {
 	}
 }
 
+// Every turn of the agentic loop faces the before_request plugins that bound a
+// provider call, handed what this request has already spent so a budget can
+// close mid-request. The turn the caller made before the loop began is spent
+// too, and it was left out: the first loop turn was checked against a request
+// that had cost nothing, and every later turn against a total one turn short,
+// so a key whose cap the opening turn crossed was granted another full turn.
+func TestRoute_MCPLoopTurnCheckCountsTheOpeningTurn(t *testing.T) {
+	mcpSrv := newMCPTestServer(t)
+	defer mcpSrv.Close()
+
+	final := &providers.Response{
+		ID:    "resp-final",
+		Model: "test-model",
+		Usage: mcpUsageTurns[2],
+		Choices: []providers.Choice{{
+			Message:      providers.Message{Role: "assistant", Content: "The answer is 42."},
+			FinishReason: "stop",
+		}},
+	}
+	mp := &multiCallProvider{
+		name:   "mcp-spend-provider",
+		models: []string{"test-model"},
+		responses: []*providers.Response{
+			mcpToolCallTurn("resp-1", "tc-1", mcpUsageTurns[0]),
+			mcpToolCallTurn("resp-2", "tc-2", mcpUsageTurns[1]),
+			final,
+		},
+	}
+
+	gw, err := newTestGateway(t, config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeSingle},
+		Targets:  []config.Target{{VirtualKey: "mcp-spend-provider"}},
+		MCPServers: []mcp.ServerConfig{{
+			Name:           "test-mcp",
+			URL:            mcpSrv.URL + "/mcp",
+			TimeoutSeconds: 5,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	gw.RegisterProvider(mp)
+	gw.catalog = models.Catalog{
+		"mcp-spend-provider/test-model": {
+			Provider: "mcp-spend-provider",
+			ModelID:  "test-model",
+			Mode:     models.ModeChat,
+			Pricing: models.Pricing{
+				InputPerMTokens:  ptrFloat64(3),
+				OutputPerMTokens: ptrFloat64(15),
+			},
+		},
+	}
+
+	// The spend each before_request run is handed. The first run is the
+	// ordinary stage, before anything was spent; each later one is a loop turn.
+	var seen []plugin.Measurements
+	if err := gw.RegisterPlugin(plugin.StageBeforeRequest, &testPlugin{
+		name: "spend-probe",
+		typ:  plugin.TypeGuardrail,
+		execFn: func(_ context.Context, pctx *plugin.Context) error {
+			seen = append(seen, pctx.Measurements)
+			return nil
+		},
+	}); err != nil {
+		t.Fatalf("RegisterPlugin: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	select {
+	case <-gw.MCPInitDone():
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for MCP initialization")
+	}
+
+	if _, err := gw.Route(ctx, providers.Request{
+		Model:    "test-model",
+		Messages: []providers.Message{{Role: "user", Content: "What is the answer?"}},
+	}); err != nil {
+		t.Fatalf("Route: %v", err)
+	}
+	if got := mp.callCount(); got != len(mcpUsageTurns) {
+		t.Fatalf("provider called %d times, want %d", got, len(mcpUsageTurns))
+	}
+	if len(seen) != len(mcpUsageTurns) {
+		t.Fatalf("before_request ran %d times, want %d: once for the request and once per loop turn", len(seen), len(mcpUsageTurns))
+	}
+
+	turnCost := func(u providers.Usage) float64 {
+		return gw.calculateCost(&providers.Response{Usage: u}, "mcp-spend-provider", "test-model").TotalUSD
+	}
+	spent := 0.0
+	for turn, m := range seen[1:] {
+		spent += turnCost(mcpUsageTurns[turn])
+		if !m.HasCost || math.Abs(m.CostUSD-spent) > 1e-12 {
+			t.Errorf("loop turn %d was checked against spend %v (priced %v), want %v: the turns already made, the opening one included",
+				turn+1, m.CostUSD, m.HasCost, spent)
+		}
+	}
+}
+
 // Configuring an MCP server must not switch the response cache off.
 //
 // The cache keys on tools, correctly, and computes that key twice: once to look

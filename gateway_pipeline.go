@@ -711,9 +711,13 @@ func (g *Gateway) routeChat(ctx context.Context, s strategies.Strategy, req prov
 	if err != nil {
 		return nil, target, err
 	}
-	if resp != nil && resp.Provider == "" {
-		resp.Provider = target.key
-	}
+	// The target that served the request, not the provider's own name for
+	// itself: every success record — the request counter, the span's target
+	// key, the request-log row — reads this field, and every failure record
+	// names the target. Kept when already set, it split one target in two for
+	// a provider registered under a routing alias (RegisterProviderAs), since
+	// every in-tree provider stamps its own name here.
+	resp.Provider = target.key
 	return resp, target, nil
 }
 

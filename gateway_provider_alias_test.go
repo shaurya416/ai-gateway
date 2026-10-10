@@ -8,6 +8,9 @@ import (
 
 	"github.com/ferro-labs/ai-gateway/config"
 	"github.com/ferro-labs/ai-gateway/models"
+	"github.com/ferro-labs/ai-gateway/observability"
+	"github.com/ferro-labs/ai-gateway/pkg/metrics"
+	"github.com/ferro-labs/ai-gateway/plugin"
 	"github.com/ferro-labs/ai-gateway/providers"
 )
 
@@ -218,5 +221,67 @@ func TestRegisterProviderAsPreservesCatalogIdentity(t *testing.T) {
 	if !slices.Equal(alias, canonical) {
 		t.Fatalf("alias catalog models (%d) != canonical (%d); alias lost catalog identity",
 			len(alias), len(canonical))
+	}
+}
+
+// TestRegisterProviderAs_SuccessIsAttributedToTheTarget covers a provider that
+// stamps its own name on the responses it returns, as every in-tree provider
+// does, registered under a routing alias — the multi-credential binding
+// RegisterProviderAs exists for. A failure was attributed to the target and a
+// success to the provider's own name, so every per-target series — the request
+// counter, the span's target key, the request-log row — showed that target
+// failing every request it took and serving none.
+func TestRegisterProviderAs_SuccessIsAttributedToTheTarget(t *testing.T) {
+	const alias = "mock::credential-attribution"
+	gw, err := newTestGateway(t, config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeSingle},
+		Targets:  []config.Target{{VirtualKey: alias}},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	fp := &fakeProvider{}
+	gw.SetObservability(fp)
+
+	var logged, target string
+	if err := gw.RegisterPlugin(plugin.StageAfterRequest, &testPlugin{
+		name: "attribution-probe",
+		typ:  plugin.TypeLogging,
+		execFn: func(_ context.Context, pctx *plugin.Context) error {
+			logged, target = pctx.Response.Provider, pctx.Target
+			return nil
+		},
+	}); err != nil {
+		t.Fatalf("RegisterPlugin: %v", err)
+	}
+	gw.RegisterProviderAs(alias, &mockProvider{
+		name:   "mock",
+		models: []string{testModel},
+		completeFn: func(context.Context, providers.Request) (*providers.Response, error) {
+			return &providers.Response{ID: "r1", Provider: "mock", Model: testModel}, nil
+		},
+	})
+
+	successes := metrics.RequestsTotal.WithLabelValues(alias, testModel, "success")
+	before := counterValue(t, successes)
+	resp, err := gw.Route(context.Background(), providers.Request{
+		Model:    testModel,
+		Messages: []providers.Message{{Role: "user", Content: "hi"}},
+	})
+	if err != nil {
+		t.Fatalf("Route: %v", err)
+	}
+
+	if resp.Provider != alias {
+		t.Errorf("resp.Provider = %q, want the target %q", resp.Provider, alias)
+	}
+	if logged != alias || target != alias {
+		t.Errorf("after_request saw Response.Provider %q and Target %q, want both %q", logged, target, alias)
+	}
+	if got := counterValue(t, successes) - before; got != 1 {
+		t.Errorf("successes counted under the target = %v, want 1", got)
+	}
+	if got := fp.rootSpan().attrs[observability.AttrFerroRoutingTargetKey]; got != alias {
+		t.Errorf("span target key = %v, want %q", got, alias)
 	}
 }
