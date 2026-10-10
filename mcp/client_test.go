@@ -309,3 +309,40 @@ func TestNewClient_UsesSharedTransport(t *testing.T) {
 		t.Fatalf("timeout = %v, want %v", c.httpClient.Timeout, 5*time.Second)
 	}
 }
+
+// JSON-RPC requires a result on success, and every MCP method answers with an
+// object. A "result": null decoded to the zero value of whatever the caller
+// expected, so a tools/call answered that way reached the model as an empty,
+// successful tool answer, and a tools/list as a ready server with no tools.
+func TestClientRefusesANullResult(t *testing.T) {
+	bodies := map[string]struct {
+		contentType string
+		body        func(id any) string
+	}{
+		"json": {"application/json", func(id any) string {
+			return fmt.Sprintf(`{"jsonrpc":"2.0","id":%s,"result":null}`, mustMarshal(id))
+		}},
+		"sse": {"text/event-stream", func(id any) string {
+			return fmt.Sprintf("event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":%s,\"result\":null}\n\n", mustMarshal(id))
+		}},
+	}
+	for name, answer := range bodies {
+		t.Run(name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var req JSONRPCRequest
+				_ = json.NewDecoder(r.Body).Decode(&req)
+				w.Header().Set("Content-Type", answer.contentType)
+				_, _ = io.WriteString(w, answer.body(req.ID))
+			}))
+			t.Cleanup(srv.Close)
+
+			c := NewClient(srv.URL, nil, 5*time.Second)
+			if result, err := c.CallTool(t.Context(), "read_file", json.RawMessage(`{}`)); err == nil {
+				t.Errorf("CallTool = %+v, nil error; want a null result refused", result)
+			}
+			if tools, err := c.ListTools(t.Context()); err == nil {
+				t.Errorf("ListTools = %v, nil error; want a null result refused", tools)
+			}
+		})
+	}
+}

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -30,6 +31,9 @@ type pingingServer struct {
 	// opens, as a proxy that drops it does, and serves the requests on the next.
 	breakFirstStream bool
 	streams          atomic.Int32
+	// refuseFirstStream, when set, answers the first stream the client opens
+	// with that status, and serves the requests on the next.
+	refuseFirstStream atomic.Int32
 }
 
 // postedReply is one JSON-RPC response the client posted, with the session it
@@ -99,7 +103,12 @@ func (s *pingingServer) serveStream(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "session not found", http.StatusNotFound)
 		return
 	}
-	if s.streams.Add(1) == 1 && s.breakFirstStream {
+	first := s.streams.Add(1) == 1
+	if status := int(s.refuseFirstStream.Load()); first && status != 0 {
+		http.Error(w, "stream unavailable", status)
+		return
+	}
+	if first && s.breakFirstStream {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
 		w.(http.Flusher).Flush()
@@ -221,6 +230,27 @@ func TestClientAcceptsAServerWithoutAnEventStream(t *testing.T) {
 	}
 }
 
+// A status that says "not now" — the official Go SDK's 409 while it still holds
+// the stream a dropped connection left behind, or a 503 from a proxy whose
+// backend is restarting — is retried like a stream that broke. Taking it as
+// final left the session with no stream for the rest of its life, so the next
+// keepalive ping went undelivered and the server closed the session.
+func TestClientReopensAnEventStreamRefusedForNow(t *testing.T) {
+	for _, status := range []int32{http.StatusConflict, http.StatusServiceUnavailable} {
+		t.Run(strconv.Itoa(int(status)), func(t *testing.T) {
+			srv := newPingingServer(t, false)
+			srv.refuseFirstStream.Store(status)
+			c := initializedClient(t, srv.URL)
+			t.Cleanup(func() { _ = c.Close() })
+
+			ping := srv.reply(t, "srv-ping")
+			if ping.Error != nil || string(ping.Result) != "{}" {
+				t.Errorf("ping answer = result %s, error %+v; want the empty result the spec requires", ping.Result, ping.Error)
+			}
+		})
+	}
+}
+
 // An event stream carrying more than the size bound is refused, not reopened:
 // the server would only send it again.
 func TestClientRefusesAnOversizedEventStream(t *testing.T) {
@@ -241,6 +271,32 @@ func TestClientRefusesAnOversizedEventStream(t *testing.T) {
 				t.Fatalf("readEvents error = %v, want it refused", err)
 			}
 		})
+	}
+}
+
+// The bound covers an event's data as it is dispatched, joining newlines
+// included. Only the text after each data: prefix was counted, so an event of
+// empty data: lines — which adds nothing to that count — accumulated one entry
+// per line for as long as the server kept sending them, and a server streaming
+// them without a blank line grew gateway memory without limit.
+func TestClientRefusesAnEventOfEmptyDataLines(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		chunk := []byte(strings.Repeat("data:\n", 64<<10))
+		// More lines than the bound has bytes, in whole chunks, and then the
+		// blank line that would dispatch the event.
+		for sent := 0; sent <= maxResponseBodyBytes; sent += 64 << 10 {
+			if _, err := w.Write(chunk); err != nil {
+				return
+			}
+		}
+		_, _ = fmt.Fprint(w, "\n")
+	}))
+	t.Cleanup(srv.Close)
+
+	c := NewClient(srv.URL, nil, 30*time.Second)
+	if _, _, err := c.readEvents(t.Context(), "session"); !errors.Is(err, errEventStreamRefused) {
+		t.Fatalf("readEvents error = %v, want the event refused once its data passed the bound", err)
 	}
 }
 

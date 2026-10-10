@@ -1276,10 +1276,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   included, answers `ping` on it with an empty result,
   refuses any other request the server sends as an unknown method, and reopens
   the stream when it ends or the connection drops. A server that answers the
-  `GET` with `405` (it offers no stream), or with anything else that is not a
-  stream, is not asked again for that session. A stream is never reopened
-  sooner than a second after the last, whatever `retry:` interval the server
-  names. Closing the client closes the stream.
+  `GET` with `405` (it offers no stream), or with any other refusal that is
+  not a temporary one, is not asked again for that session. A stream is never
+  reopened sooner than a second after the last, whatever `retry:` interval the
+  server names. Closing the client closes the stream.
+- An HTTP MCP server's event stream is reopened after a `GET` answered with a
+  status that means "not now" — `408`, `409`, `429`, or a `5xx` other than
+  `501` — instead of being given up for the session. The official Go SDK
+  answers `409` while it still holds a stream that a dropped connection left
+  behind, and a proxy answers `502` to `504` while the server behind it
+  restarts. Either left the session with no stream for the rest of its life,
+  so the server's next keepalive ping went undelivered and it closed the
+  session, failing any tool call in flight. Such an answer is now retried on
+  the stream's existing backoff; `404`, `405`, `501` and any other refusal
+  still end it for the session.
+- An HTTP MCP server can no longer grow gateway memory without limit through
+  its event stream. The bound on one event counted only the text after each
+  `data:` prefix, so an event made of empty `data:` lines added nothing to it,
+  and a server that sent them without the blank line ending the event had
+  every one held until it stopped: about 42 million of them, 240 MiB on the
+  wire, held more than 1.5 GiB. An event is now measured as it is assembled,
+  joining newlines included, and one past the 10 MiB bound refuses the
+  stream, as an oversized line already did.
+- An HTTP MCP server that answers a request with `"result": null` now fails
+  that request. JSON-RPC requires a result on success, and every MCP method
+  answers with an object, but a null one decoded to an empty answer: a
+  `tools/call` reached the model as a successful call that returned nothing
+  and was counted `ok` by the tool-call metric and the audit hook, and a
+  `tools/list` left the server ready with no tools. Such a response is now an
+  error naming the method, so the model is told the tool call failed and a
+  listing fails the server's initialization.
 - A stdio MCP tool call now reaches the server with its arguments as the model
   wrote them. They were decoded into an untyped value on the way to the
   transport, which holds every number as a 64-bit float, so an integer past

@@ -382,6 +382,13 @@ func (c *Client) send(ctx context.Context, method string, params any, sid string
 	if rpcResp.Error != nil {
 		return nil, fmt.Errorf("mcp rpc error %d: %s", rpcResp.Error.Code, rpcResp.Error.Message)
 	}
+	// JSON-RPC requires a result on success, and every MCP method answers with
+	// an object. A missing or null one decoded to the zero value of whatever the
+	// caller expected — an empty tool answer the model read as a successful
+	// call, or a tool listing with nothing in it — so it is refused instead.
+	if len(rpcResp.Result) == 0 || bytes.Equal(rpcResp.Result, []byte("null")) {
+		return nil, fmt.Errorf("mcp server answered %s with no result", method)
+	}
 	rpcResp.sessionID = issuedSID
 	return rpcResp, nil
 }
@@ -644,9 +651,10 @@ var errEventStreamRefused = errors.New("event stream refused")
 // A refusal ends the loop rather than being retried. 405 is how a server says
 // it offers no stream, and 404 that the session is over — the next request
 // meets the same 404 and starts a new session, and with it a new stream. A
-// stream that broke, or could not be reached, is reopened like one the server
-// ended: a proxy or load balancer dropping the connection says nothing about
-// the session.
+// stream that broke, could not be reached, or was answered with a status that
+// means "not now" (see eventStreamUnavailableForNow) is reopened like one the
+// server ended: a proxy or load balancer dropping the connection says nothing
+// about the session.
 func (c *Client) serveEvents(ctx context.Context, sid string, done chan<- struct{}) {
 	defer close(done)
 
@@ -689,7 +697,10 @@ func (c *Client) serveEvents(ctx context.Context, sid string, done chan<- struct
 // it; a stream the server ended cleanly returns nil.
 //
 // Each line, and each event's data, is bounded by maxResponseBodyBytes — the
-// same bound as a response body, for the same untrusted peer.
+// same bound as a response body, for the same untrusted peer. The data is
+// measured as it is assembled, with the newline that joins each line to the
+// one before it: counting only the text after each prefix let an event of empty
+// data: lines grow without limit, one line at a time.
 func (c *Client) readEvents(ctx context.Context, sid string) (retry time.Duration, delivered bool, err error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.endpoint, nil)
 	if err != nil {
@@ -705,6 +716,9 @@ func (c *Client) readEvents(ctx context.Context, sid string) (retry time.Duratio
 		return 0, false, err
 	}
 	defer func() { _ = resp.Body.Close() }()
+	if eventStreamUnavailableForNow(resp.StatusCode) {
+		return 0, false, fmt.Errorf("event stream unavailable: HTTP %d", resp.StatusCode)
+	}
 	if resp.StatusCode != http.StatusOK || !isEventStream(resp.Header.Get("Content-Type")) {
 		return 0, false, fmt.Errorf("%w: HTTP %d", errEventStreamRefused, resp.StatusCode)
 	}
@@ -712,17 +726,18 @@ func (c *Client) readEvents(ctx context.Context, sid string) (retry time.Duratio
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 0, 4096), maxResponseBodyBytes)
 	var (
-		data []string
-		size int
+		data    strings.Builder
+		hasData bool // an empty data: line still opens the event
 	)
 	for scanner.Scan() {
 		line := scanner.Text()
 		if line == "" { // a blank line dispatches the event
-			if len(data) > 0 {
+			if hasData {
 				delivered = true
-				c.answerServerMessage(ctx, sid, strings.Join(data, "\n"))
+				c.answerServerMessage(ctx, sid, data.String())
 			}
-			data, size = data[:0], 0
+			data.Reset()
+			hasData = false
 			continue
 		}
 		if value, ok := strings.CutPrefix(line, "retry:"); ok {
@@ -736,10 +751,18 @@ func (c *Client) readEvents(ctx context.Context, sid string) (retry time.Duratio
 			continue
 		}
 		value = strings.TrimPrefix(value, " ")
-		if size += len(value); size > maxResponseBodyBytes {
+		size := data.Len() + len(value)
+		if hasData {
+			size++ // the newline joining this line to the last
+		}
+		if size > maxResponseBodyBytes {
 			return retry, delivered, fmt.Errorf("%w: event exceeds %d byte limit", errEventStreamRefused, maxResponseBodyBytes)
 		}
-		data = append(data, value)
+		if hasData {
+			data.WriteByte('\n')
+		}
+		data.WriteString(value)
+		hasData = true
 	}
 	if err := scanner.Err(); errors.Is(err, bufio.ErrTooLong) {
 		return retry, delivered, fmt.Errorf("%w: line exceeds %d byte limit", errEventStreamRefused, maxResponseBodyBytes)
@@ -747,6 +770,26 @@ func (c *Client) readEvents(ctx context.Context, sid string) (retry time.Duratio
 		return retry, delivered, err
 	}
 	return retry, delivered, nil
+}
+
+// eventStreamUnavailableForNow reports whether a status answering the event
+// stream's GET says "not now" rather than "not at all", so the stream is
+// reopened like one that broke instead of given up for the session.
+//
+// The official Go SDK answers 409 while it still holds the stream a dropped
+// connection left behind, until it notices that connection is gone; a proxy
+// answers 502, 503 or 504 while the server behind it restarts. Taking either as
+// final left the session with no stream for the rest of its life, which is the
+// undelivered-ping session closure the stream exists to prevent. 501, like 405,
+// says the server offers no stream at all.
+func eventStreamUnavailableForNow(status int) bool {
+	switch status {
+	case http.StatusRequestTimeout, http.StatusConflict, http.StatusTooManyRequests:
+		return true
+	case http.StatusNotImplemented:
+		return false
+	}
+	return status >= 500
 }
 
 // answerServerMessage replies to a request the server sent on the event
