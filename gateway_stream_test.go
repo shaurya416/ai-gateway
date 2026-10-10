@@ -1668,6 +1668,66 @@ func TestGateway_RouteStream_LatencySampleIsTimeToFirstChunk(t *testing.T) {
 	}
 }
 
+// The least-latency sample for a stream is the time the serving target took to
+// begin answering, measured from when the walk asked it — as the unary path
+// measures it. Measured from the request's start, it charged the target that
+// rescued a request with the plugin stage and with the time a sibling took to
+// fail first, so least-latency ranked the healthy target as slow as the dead
+// one it covered for.
+func TestGateway_RouteStream_LatencySampleExcludesPluginsAndFailedSiblings(t *testing.T) {
+	gw, err := newTestGateway(t, config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeFallback},
+		Targets:  []config.Target{{VirtualKey: "dying"}, {VirtualKey: "rescue"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const elsewhere = 150 * time.Millisecond
+	gw.RegisterProvider(&mockStreamProvider{
+		mockProvider: mockProvider{name: "dying", models: []string{"gpt-4o"}},
+		streamFn: func(context.Context, providers.Request) (<-chan providers.StreamChunk, error) {
+			time.Sleep(elsewhere)
+			return nil, errors.New("dial tcp: connection refused")
+		},
+	})
+	gw.RegisterProvider(&mockStreamProvider{
+		mockProvider: mockProvider{name: "rescue", models: []string{"gpt-4o"}},
+		streamFn: func(context.Context, providers.Request) (<-chan providers.StreamChunk, error) {
+			ch := make(chan providers.StreamChunk, 1)
+			ch <- providers.StreamChunk{ID: "first"}
+			close(ch)
+			return ch, nil
+		},
+	})
+	if err := gw.RegisterPlugin(plugin.StageBeforeRequest, &testPlugin{
+		name: "slow-stage",
+		typ:  plugin.TypeLogging,
+		execFn: func(context.Context, *plugin.Context) error {
+			time.Sleep(elsewhere)
+			return nil
+		},
+	}); err != nil {
+		t.Fatalf("register plugin: %v", err)
+	}
+
+	ch, err := gw.RouteStream(context.Background(), providers.Request{
+		Model:    "gpt-4o",
+		Messages: []providers.Message{{Role: "user", Content: "hi"}},
+	})
+	if err != nil {
+		t.Fatalf("RouteStream error = %v", err)
+	}
+	drainStream(t, ch)
+
+	p50, ok := gw.latencyTracker.Stats("rescue", "gpt-4o")
+	if !ok {
+		t.Fatal("expected a latency sample for the target that served the stream")
+	}
+	if p50 >= elsewhere {
+		t.Fatalf("rescue sample = %v, want only its own time to first chunk — well under the %v spent in the plugin stage and the %v the failed sibling took", p50, elsewhere, elsewhere)
+	}
+}
+
 // targets[].timeout bounds a stream only until the provider answers. A stream
 // that started inside the timeout must not be cut off by it mid-stream, since
 // there is no replaying a half-delivered stream on another target.

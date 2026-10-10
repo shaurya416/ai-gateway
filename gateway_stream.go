@@ -69,6 +69,41 @@ func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-cha
 	releasePluginManager := func() {
 		releasePluginsOnce.Do(releasePlugins)
 	}
+
+	// MCP redirect: when tool servers have advertised tools, the agentic loop
+	// must run to completion before any response is sent. Route() handles this
+	// entirely; we wrap its non-streaming result into a channel here.
+	//
+	// Gate on discovered tools, not on registration. HasServers() is true from
+	// the moment a server is registered — before the handshake, and forever
+	// after one that failed — so gating on it let a single unreachable or
+	// typo'd MCP server silently collapse streaming into one buffered chunk for
+	// every caller on the gateway.
+	//
+	// The caller-tools condition mirrors Route's mcpActive: when the caller
+	// supplied its own tools MCP does not participate at all, so there is no
+	// agentic loop to buffer for and the stream must be left alone. Both paths
+	// must agree, or a request would be diverted here and then pass straight
+	// through Route as an ordinary non-streaming call.
+	//
+	// It is decided before this function opens a request span, because Route
+	// opens the request's span itself and finishes it with the outcome.
+	// Diverting after opening one gave every diverted stream two
+	// gateway.request spans, and the outer one, which nothing told how the
+	// request ended, read a failed request as a success. Route resolves the
+	// alias and seeds the trace ID and identity on its own.
+	if mcpRegistrySnapshot != nil && len(req.Tools) == 0 && len(mcpRegistrySnapshot.AllTools()) > 0 {
+		releasePluginManager()
+		// Do not force req.Stream = false here: let Route() capture the
+		// original stream flag via its own originalStream variable so that
+		// emitted events correctly reflect stream: true for RouteStream callers.
+		resp, err := g.Route(ctx, req)
+		if err != nil {
+			return nil, err
+		}
+		return responseStream(resp), nil
+	}
+
 	// See Route: this entry point is exported too, and the trace ID read here is
 	// the one every later read in this function (the meter meta, the span
 	// finisher, the failure path) inherits from ctx.
@@ -95,34 +130,6 @@ func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-cha
 	trace.WithRegion(ctx, "gateway.route_stream.resolve_alias", func() {
 		req = g.resolveAlias(req)
 	})
-
-	// MCP redirect: when tool servers have advertised tools, the agentic loop
-	// must run to completion before any response is sent. Route() handles this
-	// entirely; we wrap its non-streaming result into a channel here.
-	//
-	// Gate on discovered tools, not on registration. HasServers() is true from
-	// the moment a server is registered — before the handshake, and forever
-	// after one that failed — so gating on it let a single unreachable or
-	// typo'd MCP server silently collapse streaming into one buffered chunk for
-	// every caller on the gateway.
-	//
-	// The caller-tools condition mirrors Route's mcpActive: when the caller
-	// supplied its own tools MCP does not participate at all, so there is no
-	// agentic loop to buffer for and the stream must be left alone. Both paths
-	// must agree, or a request would be diverted here and then pass straight
-	// through Route as an ordinary non-streaming call.
-	if mcpRegistrySnapshot != nil && len(req.Tools) == 0 && len(mcpRegistrySnapshot.AllTools()) > 0 {
-		releasePluginManager()
-		// Do not force req.Stream = false here: let Route() capture the
-		// original stream flag via its own originalStream variable so that
-		// emitted events correctly reflect stream: true for RouteStream callers.
-		resp, err := g.Route(ctx, req)
-		if err != nil {
-			return nil, err
-		}
-		_ = start // latency already recorded inside Route()
-		return responseStream(resp), nil
-	}
 
 	// Admission before the plugin stage, so a model no target can stream cannot
 	// spend a rate-limit token or a budget on the way to its 404. The on_error
@@ -190,6 +197,12 @@ func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-cha
 		Catalog:         catalog,
 		TraceID:         logger.TraceIDFromContext(ctx),
 		LatencyRecorder: g.latencyTracker.Record,
+		// The sample is the time THIS target took to begin answering, so it is
+		// measured from when the walk first asked it. start would also count the
+		// plugin stage and every target that failed before this one, ranking
+		// the target that rescued the request on the time it took somebody
+		// else to fail.
+		LatencyStart: target.startedAt,
 		// Usage is always requested upstream so metering, cost, and the budget
 		// plugin see real numbers; a caller that asked not to receive it just
 		// does not get the chunk forwarded.
@@ -420,12 +433,11 @@ func (g *Gateway) runBeforePluginsStream(ctx context.Context, span observability
 	if err != nil {
 		plugin.PutContext(pctx)
 		releasePluginManager()
-		// Same accounting the non-streaming path does for a rejected request:
-		// it took time too, and the histogram is meant to answer "how fast is
-		// the gateway", not "how fast are the requests that worked".
-		h := metrics.ForRequest("", g.metricModel(req.Model))
-		h.Duration.Observe(time.Since(start).Seconds())
-		recordPluginAbort(h, err)
+		// The same record the non-streaming path keeps for a rejected request:
+		// its duration, its counter, the failure on the root span and the failed
+		// lifecycle event. Counting it alone left the span of a stream a
+		// guardrail had blocked reading as a success.
+		g.recordBeforePluginAbort(ctx, span, obs, req.Model, start, err, true, hooksEnabled, obsEventsActive)
 		return nil, nil, err
 	}
 	if early != nil {

@@ -66,3 +66,60 @@ func TestGateway_FailedEventCarriesTheCallerStatus(t *testing.T) {
 		})
 	}
 }
+
+// A chat request a plugin denies is recorded like a denial on every other
+// surface: one failed lifecycle event carrying the caller's status, and the
+// failure on the root span. Chat sent no event at all — on either path — so a
+// throttled or blocked chat request never reached an exporter or an event hook,
+// and a denied stream's span read as a success.
+func TestGateway_ChatDenialIsRecordedAsAFailedRequest(t *testing.T) {
+	for _, stream := range []bool{false, true} {
+		t.Run(map[bool]string{false: "route", true: "stream"}[stream], func(t *testing.T) {
+			gw, _ := newTestGateway(t, config.Config{
+				Strategy: config.StrategyConfig{Mode: config.ModeSingle},
+				Targets:  []config.Target{{VirtualKey: mockProviderName}},
+			})
+
+			ep := &eventCapturingProvider{recordingActive: true}
+			gw.SetObservability(ep)
+
+			gw.RegisterProvider(&mockStreamProvider{
+				mockProvider: mockProvider{name: mockProviderName, models: []string{testModel}, resp: &providers.Response{ID: "unreached"}},
+			})
+			_ = gw.RegisterPlugin(plugin.StageBeforeRequest, &testPlugin{
+				name: "limiter",
+				typ:  plugin.TypeRateLimit,
+				execFn: func(_ context.Context, pctx *plugin.Context) error {
+					pctx.Reject = true
+					pctx.Reason = "over the limit"
+					return nil
+				},
+			})
+
+			req := providers.Request{Model: testModel, Stream: stream, Messages: []providers.Message{{Role: "user", Content: "hi"}}}
+			var err error
+			if stream {
+				_, err = gw.RouteStream(context.Background(), req)
+			} else {
+				_, err = gw.Route(context.Background(), req)
+			}
+			if err == nil {
+				t.Fatal("expected the plugin denial to abort the request")
+			}
+
+			if span := ep.rootSpan(); span == nil || span.err == nil {
+				t.Error("the denied request's root span carries no error, so the trace reads as a success")
+			}
+			failed := eventsWithSubject(ep.capturedEvents(), "gateway.request.failed")
+			if len(failed) != 1 {
+				t.Fatalf("failed events = %d, want 1 for the denied request", len(failed))
+			}
+			if got := failed[0].Status; got != http.StatusTooManyRequests {
+				t.Errorf("failed event Status = %d, want %d — the status the caller was given", got, http.StatusTooManyRequests)
+			}
+			if failed[0].Stream != stream {
+				t.Errorf("failed event Stream = %v, want %v", failed[0].Stream, stream)
+			}
+		})
+	}
+}

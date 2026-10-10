@@ -512,3 +512,32 @@ func TestMeter_RecordsLatencyAtFirstChunkAgainstTheModel(t *testing.T) {
 		}
 	}
 }
+
+// The routing sample is measured from LatencyStart when the caller supplies
+// one, and from start otherwise; the request's own timings stay on start.
+func TestMeter_LatencySampleIsMeasuredFromLatencyStart(t *testing.T) {
+	requestStart := time.Now().Add(-time.Hour)
+	measure := func(latencyStart time.Time) time.Duration {
+		var got time.Duration
+		meta := MeterMeta{
+			Provider:     "t",
+			Model:        "m",
+			MetricModel:  "m",
+			Catalog:      models.Catalog{},
+			LatencyStart: latencyStart,
+			LatencyRecorder: func(_, _ string, d time.Duration) {
+				got = d
+			},
+		}
+		for range Meter(context.Background(), feed(providers.StreamChunk{ID: "1"}), requestStart, meta) { //nolint:revive // drain to completion
+		}
+		return got
+	}
+
+	if got := measure(time.Now()); got >= time.Minute {
+		t.Errorf("sample with LatencyStart = %v, want it measured from LatencyStart, not the request's start an hour ago", got)
+	}
+	if got := measure(time.Time{}); got < time.Hour {
+		t.Errorf("sample without LatencyStart = %v, want it measured from start", got)
+	}
+}

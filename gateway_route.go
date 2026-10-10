@@ -111,22 +111,34 @@ func recordPluginAbort(h *metrics.RequestMetricHandles, err error) {
 // import this one.
 var ErrRequestTimeout = fmt.Errorf("gateway request timeout: %w", context.DeadlineExceeded)
 
-// noopCancel is the CancelFunc returned when no per-request deadline applies. It
-// is a package-level func, not a closure, so the default path allocates nothing.
-// recordBeforePluginAbort records a request the before_request stage refused.
+// recordBeforePluginAbort records a chat request the before_request stage
+// refused, streamed or not.
 //
 // A rejected request took time too, and the duration histogram is meant to
 // answer "how fast is the gateway", not "how fast are the requests that
 // worked". The root span has to carry the failure as well: a request a plugin
 // denied never reaches the provider call that would otherwise mark it, so
 // without this the trace shows a request that simply ended.
-func (g *Gateway) recordBeforePluginAbort(span observability.Span, model string, start time.Time, err error) {
+//
+// So does the failed lifecycle event, which every other surface already sends
+// for a denial and which carries the status the caller was given (see
+// events.FailedRequest). Without it a chat request a guardrail blocked or a
+// rate limiter throttled reached no exporter and no event hook at all, so an
+// exporter's view of chat traffic left out every request policy refused.
+func (g *Gateway) recordBeforePluginAbort(ctx context.Context, span observability.Span, obs observability.Provider, model string, start time.Time, err error, stream, hooksEnabled, obsEventsActive bool) {
+	latency := time.Since(start)
 	h := metrics.ForRequest("", g.metricModel(model))
-	h.Duration.Observe(time.Since(start).Seconds())
+	h.Duration.Observe(latency.Seconds())
 	recordPluginAbort(h, err)
 	span.SetError(err)
+	if hooksEnabled || obsEventsActive {
+		he := failedEventData(logger.TraceIDFromContext(ctx), "", model, err, latency, stream)
+		g.dispatchRequestEventWithABVariant(ctx, obs, hooksEnabled, obsEventsActive, he, "", false)
+	}
 }
 
+// noopCancel is the CancelFunc returned when no per-request deadline applies. It
+// is a package-level func, not a closure, so the default path allocates nothing.
 func noopCancel() {}
 
 // requestDeadline returns the configured per-request timeout, or 0 when none is
@@ -271,7 +283,7 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 			early, err = g.runBeforePlugins(ctx, plugins, pctx, &req, start)
 		})
 		if err != nil {
-			g.recordBeforePluginAbort(span, req.Model, start, err)
+			g.recordBeforePluginAbort(ctx, span, obs, req.Model, start, err, originalStream, hooksEnabled, obsEventsActive)
 			return nil, err
 		}
 		if early != nil {

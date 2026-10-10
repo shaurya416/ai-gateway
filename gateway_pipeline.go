@@ -133,6 +133,12 @@ type routedTarget struct {
 	// attempts is the routing-layer attempt count when the walk ended: the
 	// value X-Gateway-Attempts and ferro.routing.attempt report.
 	attempts int
+	// startedAt is when the walk began asking the target that answered — the
+	// origin of its least-latency sample. A unary surface records that sample
+	// inside the walk; a stream records it at its first chunk, measured from
+	// here rather than from the request's start, which also covers the plugin
+	// stage and every target that failed before this one. Zero on failure.
+	startedAt time.Time
 }
 
 // routeTargets walks plan and returns the first target's answer.
@@ -218,6 +224,7 @@ func routeTargets[Req, Resp any](
 			// plugin and alias time would rank targets on work no target did.
 			g.latencyTracker.Record(key, upstreamModel, time.Since(started))
 			target.attempts = attemptSequence
+			target.startedAt = started
 			recordAttribution(ctx, target, attemptSequence)
 			return resp, target, nil
 		}

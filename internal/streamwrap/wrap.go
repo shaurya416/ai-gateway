@@ -79,6 +79,13 @@ type MeterMeta struct {
 	// not drain: the routing sample measures how quickly a target begins
 	// answering, so a long answer does not read as a slow provider.
 	LatencyRecorder func(provider, model string, latency time.Duration)
+	// LatencyStart, if non-zero, is when the serving target was first asked,
+	// and the LatencyRecorder sample is measured from it rather than from
+	// Meter's start. start is when the request began, which also covers work
+	// no target did — the plugin stage, and every target that failed before
+	// this one answered — so a sample taken from it ranks the target that
+	// served the request on time spent elsewhere. Zero falls back to start.
+	LatencyStart time.Time
 	// SpanFinisher, if non-nil, is invoked exactly once when the stream
 	// completes (with final usage + cost + timings) or fails. The
 	// gateway uses this to stamp the observability root span with the
@@ -147,6 +154,15 @@ func (m MeterMeta) priceProviderName() string {
 		return m.PriceProvider
 	}
 	return m.Provider
+}
+
+// latencyOrigin is the instant the routing latency sample is measured from:
+// LatencyStart when the caller resolved one, start otherwise.
+func (m MeterMeta) latencyOrigin(start time.Time) time.Time {
+	if m.LatencyStart.IsZero() {
+		return start
+	}
+	return m.LatencyStart
 }
 
 func (m MeterMeta) priceModelName() string {
@@ -234,8 +250,9 @@ func (f SpanFinisherFunc) Finish(o StreamOutcome) { f(o) }
 // provider stream directly and stopping early would deadlock that provider
 // goroutine.
 //
-// start should be the time.Now() captured immediately before the upstream
-// CompleteStream call so that latency includes provider connection time.
+// start is when the request began: the request duration and the time to first
+// token are measured from it, so both include provider connection time. The
+// routing latency sample is measured from MeterMeta.LatencyStart when set.
 func Meter(ctx context.Context, src <-chan providers.StreamChunk, start time.Time, meta MeterMeta) <-chan providers.StreamChunk {
 	out := make(chan providers.StreamChunk)
 
@@ -296,7 +313,7 @@ func Meter(ctx context.Context, src <-chan providers.StreamChunk, start time.Tim
 				firstChunkAt = now
 				// An error chunk is not the provider beginning to answer.
 				if chunk.Error == nil && meta.LatencyRecorder != nil && meta.Provider != "" {
-					meta.LatencyRecorder(meta.Provider, cmp.Or(meta.PriceModel, meta.Model), now.Sub(start))
+					meta.LatencyRecorder(meta.Provider, cmp.Or(meta.PriceModel, meta.Model), now.Sub(meta.latencyOrigin(start)))
 				}
 			}
 			lastChunkAt = now

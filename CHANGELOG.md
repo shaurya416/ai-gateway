@@ -35,6 +35,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   copied every inbound header upstream and stripped only the identity headers,
   so a client that set it once as a default header handed its routing metadata
   to the provider on every forwarded call. It is now removed with them.
+- Under `mode: least-latency`, a streaming target is no longer ranked on time
+  it did not spend. A stream's latency sample was measured from the moment the
+  request arrived, so it also counted the `before_request` plugin stage and
+  every target that failed before this one answered: the target that rescued a
+  request from a sibling hanging for ten seconds was recorded as taking ten
+  seconds itself, and was ranked as slow as the dead target it covered for —
+  which, having recorded no sample for its failures, kept its old low median.
+  The sample is now measured from when the walk first asked the serving target,
+  as it already is for non-streaming requests.
+- A chat request a `before_request` plugin denies is now recorded as a failed
+  request everywhere the other surfaces record one. Neither the streaming nor
+  the non-streaming chat path sent a `gateway.request.failed` event for it, so
+  a request a guardrail blocked or a rate limiter throttled reached no
+  observability exporter and no event hook — an exporter's view of chat traffic
+  left out every request policy refused, while a denial on embeddings, images
+  or the pass-through was reported. The streaming path also left the failure
+  off the request span, so the trace of a blocked stream read as a success. A
+  denied chat request now sends one failed event carrying the status the
+  caller was given, and its span carries the error on both paths.
+- A streaming request diverted into the MCP agentic loop now produces one
+  `gateway.request` span instead of two. `RouteStream` opened its own request
+  span and then handed the request to `Route`, which opened another and
+  finished it with the outcome; the outer span was never told how the request
+  ended, so a failed request read as a successful one there, and trace-derived
+  request counts saw every diverted stream twice. The divert is now decided
+  before `RouteStream` opens a span, and `Route`'s span is the request's.
 - A retry wait that cannot end before the request's deadline is no longer
   slept. With `request_timeout` set, a target answering `429` with a
   `Retry-After` inside the 30-second cap but beyond the time left held the

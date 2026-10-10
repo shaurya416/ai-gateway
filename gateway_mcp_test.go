@@ -1057,6 +1057,86 @@ func TestGateway_RouteStream_MCPRedirect(t *testing.T) {
 	}
 }
 
+// A stream diverted into the agentic loop is one request, so it opens one
+// request span — Route's, which ends with the request's outcome. RouteStream
+// used to open its own first and then call Route, so every diverted stream
+// produced two gateway.request spans, and the outer one never learned how the
+// request ended: a failed request read as a success there.
+func TestGateway_RouteStream_MCPRedirectOpensOneRequestSpan(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		failure error
+	}{
+		{name: "completed"},
+		{name: "failed", failure: errors.New("upstream unavailable")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mcpSrv := newMCPTestServer(t)
+			defer mcpSrv.Close()
+
+			gw, err := newTestGateway(t, config.Config{
+				Strategy: config.StrategyConfig{Mode: config.ModeSingle},
+				Targets:  []config.Target{{VirtualKey: "mock-mcp-span"}},
+				MCPServers: []mcp.ServerConfig{{
+					Name:           "test-mcp-span",
+					URL:            mcpSrv.URL,
+					TimeoutSeconds: 10,
+				}},
+			})
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			fp := &fakeProvider{}
+			gw.SetObservability(fp)
+			gw.RegisterProvider(&mockProvider{
+				name:   "mock-mcp-span",
+				models: []string{"gpt-4o"},
+				resp: &providers.Response{ID: "final", Model: "gpt-4o", Choices: []providers.Choice{{
+					Message:      providers.Message{Role: "assistant", Content: "done"},
+					FinishReason: "stop",
+				}}},
+				err: tc.failure,
+			})
+			select {
+			case <-gw.MCPInitDone():
+			case <-time.After(5 * time.Second):
+				t.Fatal("MCP init timeout")
+			}
+
+			ch, err := gw.RouteStream(context.Background(), providers.Request{
+				Model:    "gpt-4o",
+				Stream:   true,
+				Messages: []providers.Message{{Role: "user", Content: "hi"}},
+			})
+			if tc.failure == nil {
+				if err != nil {
+					t.Fatalf("RouteStream: %v", err)
+				}
+				drainStream(t, ch)
+			} else if err == nil {
+				t.Fatal("RouteStream succeeded; want the provider's failure")
+			}
+
+			fp.mu.Lock()
+			spans := append([]*fakeSpan(nil), fp.spans...)
+			isStream := fp.attrs.IsStream
+			fp.mu.Unlock()
+			if len(spans) != 1 {
+				t.Fatalf("request spans = %d, want 1 for one diverted request", len(spans))
+			}
+			if !spans[0].ended {
+				t.Error("the request span was never ended")
+			}
+			if !isStream {
+				t.Error("the request span does not record that the caller asked for a stream")
+			}
+			if gotErr := spans[0].err != nil; gotErr != (tc.failure != nil) {
+				t.Errorf("request span error = %v, want an error only for the failed request", spans[0].err)
+			}
+		})
+	}
+}
+
 // mcpUsageTurns are the per-turn usages the agentic loop below spends. Three
 // turns, all different, so a total that happens to equal one turn cannot be the
 // sum of the others.
