@@ -33,9 +33,18 @@ type CostResult struct {
 	// Priced is false when the catalog entry carries no price for the field its
 	// mode bills off: input tokens for chat and responses, embedding tokens for
 	// embeddings, per-tile or (failing that, and only against reported usage)
-	// per-token for images, per-minute or per-character for audio — the audio
-	// rates only against a reported duration or character count.
+	// per-token for images, per-minute or per-character for audio. Every rate
+	// but the per-tile one prices only a reported measurement — token usage, a
+	// duration or a character count — so a request that reported none is
+	// unpriced rather than a priced $0.00. An image priced per token is priced
+	// only when the row carries a rate for every token count reported.
 	Priced bool
+}
+
+// reportsTokens reports whether the usage carries any token count at all.
+func (u Usage) reportsTokens() bool {
+	return u.PromptTokens > 0 || u.CompletionTokens > 0 || u.CacheReadTokens > 0 ||
+		u.CacheWriteTokens > 0 || u.ReasoningTokens > 0
 }
 
 // perM converts a nullable price-per-million-tokens to a cost for n tokens.
@@ -72,7 +81,13 @@ func Calculate(catalog Catalog, modelKey string, usage Usage) CostResult {
 	// with the same per-token rates under the same inclusive-prompt convention.
 	// Without this arm every /v1/responses request to one was recorded unpriced.
 	case ModeChat, ModeResponses:
-		r.Priced = p.InputPerMTokens != nil
+		// Priced only against reported usage, for the reason the image token arm
+		// and the audio arms are: a completion has at least one prompt token, so
+		// a usage block with no token count at all is one the provider did not
+		// send — a Replicate model that reports no metrics, a stream whose
+		// upstream ignored include_usage — and pricing it recorded a priced
+		// $0.00 as though it were the real figure.
+		r.Priced = p.InputPerMTokens != nil && usage.reportsTokens()
 		// PromptTokens is INCLUSIVE of CacheReadTokens on every provider: that
 		// is the OpenAI convention, and providers/core/anthropicwire folds
 		// Anthropic's exclusive count into it at decode so exactly one
@@ -96,7 +111,9 @@ func Calculate(catalog Catalog, modelKey string, usage Usage) CostResult {
 		r.ReasoningUSD = perM(p.ReasoningPerMTokens, usage.ReasoningTokens)
 
 	case ModeEmbedding:
-		r.Priced = p.EmbeddingPerMTokens != nil
+		// Embedded input is never empty, so no input-token count means none was
+		// reported — every Gemini embedding, whose endpoint sends no usage.
+		r.Priced = p.EmbeddingPerMTokens != nil && usage.PromptTokens > 0
 		r.EmbeddingUSD = perM(p.EmbeddingPerMTokens, usage.PromptTokens)
 
 	case ModeImage:
@@ -112,6 +129,12 @@ func Calculate(catalog Catalog, modelKey string, usage Usage) CostResult {
 		// figure while flagging the request priced: the known-zero this
 		// mode-aware flag exists to prevent. No usage means unpriced, which is
 		// the true answer.
+		//
+		// Reported usage is priced only when the row carries a rate for every
+		// count it reports. The gpt-image-1 and gpt-image-1-mini rows carry an
+		// input rate and no output rate, and billing the image's output tokens
+		// at nothing recorded a generation at the cost of its prompt alone —
+		// a fraction of a cent — while flagging that figure complete.
 		switch {
 		case p.ImagePerTile != nil:
 			r.Priced = true
@@ -119,7 +142,9 @@ func Calculate(catalog Catalog, modelKey string, usage Usage) CostResult {
 				r.ImageUSD = *p.ImagePerTile * float64(usage.ImageCount)
 			}
 		case usage.PromptTokens > 0 || usage.CompletionTokens > 0:
-			r.Priced = p.InputPerMTokens != nil || p.OutputPerMTokens != nil
+			// A nil rate is unknown, not free (see Pricing).
+			r.Priced = (usage.PromptTokens == 0 || p.InputPerMTokens != nil) &&
+				(usage.CompletionTokens == 0 || p.OutputPerMTokens != nil)
 			r.InputUSD = perM(p.InputPerMTokens, usage.PromptTokens)
 			r.OutputUSD = perM(p.OutputPerMTokens, usage.CompletionTokens)
 		}

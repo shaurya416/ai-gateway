@@ -93,6 +93,14 @@ func runKeysCreate(cmd *cobra.Command, _ []string) error {
 		if err != nil {
 			return fmt.Errorf("invalid --expires-in duration: %w", err)
 		}
+		// expires_at travels at whole-second precision, so an expiry under a
+		// second is already past by the time the key is stored. "0" and a
+		// negative duration created a key that could never authenticate while
+		// the command printed it as created — and "0" reads as "never expires"
+		// to anyone who has used a CLI that spells it that way.
+		if d < time.Second {
+			return fmt.Errorf("invalid --expires-in %q: a key's expiry must be at least 1s away; omit --expires-in for a key that does not expire", expiresIn)
+		}
 		body["expires_at"] = time.Now().UTC().Add(d).Format(time.RFC3339)
 	}
 

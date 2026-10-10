@@ -353,6 +353,62 @@ func TestCalculateEmbeddedWhisperWithoutDurationIsUnpriced(t *testing.T) {
 	}
 }
 
+// The Gemini provider's Embed reports zero usage on every request, because
+// batchEmbedContents sends none (providers/gemini/embed.go). Against the
+// embedded catalog's priced gemini-embedding-001 row that read as a priced
+// $0.00 on the request-log row.
+func TestCalculateEmbeddedGeminiEmbeddingWithoutUsageIsUnpriced(t *testing.T) {
+	c, err := loadEmbedded()
+	if err != nil {
+		t.Fatalf("loadEmbedded: %v", err)
+	}
+	m, ok := c.GetForPricing("gemini/gemini-embedding-001")
+	if !ok || m.Mode != ModeEmbedding || m.Pricing.EmbeddingPerMTokens == nil {
+		t.Fatalf("embedded gemini/gemini-embedding-001 = %+v, %v; want an embedding row with a per-token rate", m, ok)
+	}
+
+	got := Calculate(c, "gemini/gemini-embedding-001", Usage{})
+	if !got.ModelFound {
+		t.Fatal("ModelFound should be true")
+	}
+	if got.Priced {
+		t.Errorf("Priced = true with TotalUSD = %v for an embedding whose usage the provider never reported; want unpriced", got.TotalUSD)
+	}
+
+	// Reported usage is still billed at the row's rate.
+	billed := Calculate(c, "gemini/gemini-embedding-001", Usage{PromptTokens: 1_000_000})
+	if !billed.Priced || !approxEqual(billed.TotalUSD, *m.Pricing.EmbeddingPerMTokens, 1e-12) {
+		t.Errorf("one million reported tokens = %+v; want priced at %v", billed, *m.Pricing.EmbeddingPerMTokens)
+	}
+}
+
+// OpenAI reports a gpt-image-1 generation's usage as input and output tokens
+// (providers/openai maps them onto PromptTokens and CompletionTokens), and the
+// embedded catalog's gpt-image-1 row carries an input rate with no output rate
+// and no per-tile price. The output tokens — the image itself — were billed at
+// nothing and the prompt's fraction of a cent recorded as the generation's
+// complete cost.
+func TestCalculateEmbeddedGPTImageWithoutOutputRateIsUnpriced(t *testing.T) {
+	c, err := loadEmbedded()
+	if err != nil {
+		t.Fatalf("loadEmbedded: %v", err)
+	}
+	m, ok := c.GetForPricing("openai/gpt-image-1")
+	if !ok || m.Mode != ModeImage || m.Pricing.ImagePerTile != nil ||
+		m.Pricing.InputPerMTokens == nil || m.Pricing.OutputPerMTokens != nil {
+		t.Fatalf("embedded openai/gpt-image-1 = %+v, %v; want an image row with an input rate and no output or per-tile rate", m, ok)
+	}
+
+	// The figures from providers/openai's usage-mapping test.
+	got := Calculate(c, "openai/gpt-image-1", Usage{ImageCount: 1, PromptTokens: 1500, CompletionTokens: 4200})
+	if !got.ModelFound {
+		t.Fatal("ModelFound should be true")
+	}
+	if got.Priced {
+		t.Errorf("Priced = true with TotalUSD = %v for 4200 output tokens the row has no rate for; want unpriced", got.TotalUSD)
+	}
+}
+
 // ---- Model not found -----------------------------------------------------
 
 func TestCalculateModelNotFound(t *testing.T) {
@@ -693,6 +749,57 @@ func TestCalculatePricedFollowsTheModesOwnPriceField(t *testing.T) {
 			usage:      Usage{PromptTokens: 1_000_000},
 			wantPriced: true,
 			wantTotal:  3.0,
+		},
+		{
+			// A completion has at least one prompt token, so a usage block
+			// carrying no count is one the provider never sent — a Replicate
+			// model that reports no metrics, a stream whose upstream ignored
+			// include_usage. Pricing it recorded a priced $0.00.
+			name:    "chat with an input price but no reported usage",
+			mode:    ModeChat,
+			pricing: Pricing{InputPerMTokens: ptr(3.0), OutputPerMTokens: ptr(15.0)},
+			usage:   Usage{},
+		},
+		{
+			name:    "responses with an input price but no reported usage",
+			mode:    ModeResponses,
+			pricing: Pricing{InputPerMTokens: ptr(3.0), OutputPerMTokens: ptr(15.0)},
+			usage:   Usage{},
+		},
+		{
+			// Any reported token class is reported usage, not only the prompt
+			// count, so a figure the catalog can price is still priced.
+			name:       "chat reporting only cache-read tokens is priced",
+			mode:       ModeChat,
+			pricing:    Pricing{InputPerMTokens: ptr(3.0), CacheReadPerMTokens: ptr(0.3)},
+			usage:      Usage{CacheReadTokens: 1_000_000},
+			wantPriced: true,
+			wantTotal:  0.3,
+		},
+		{
+			// The gpt-image-1 shape: an input rate, no output rate, no per-tile
+			// price — and OpenAI reports the image's output tokens. A nil rate
+			// is unknown, not free; the input component is still reported.
+			name:      "image priced per input token only, output tokens reported",
+			mode:      ModeImage,
+			pricing:   Pricing{InputPerMTokens: ptr(5.0)},
+			usage:     Usage{ImageCount: 1, PromptTokens: 1_000_000, CompletionTokens: 1_000_000},
+			wantTotal: 5.0,
+		},
+		{
+			name:       "image priced per input token only, only input tokens reported",
+			mode:       ModeImage,
+			pricing:    Pricing{InputPerMTokens: ptr(5.0)},
+			usage:      Usage{ImageCount: 1, PromptTokens: 1_000_000},
+			wantPriced: true,
+			wantTotal:  5.0,
+		},
+		{
+			// Every Gemini embedding: the endpoint sends no usage at all.
+			name:    "embedding with an embedding price but no reported usage",
+			mode:    ModeEmbedding,
+			pricing: Pricing{EmbeddingPerMTokens: ptr(0.15)},
+			usage:   Usage{},
 		},
 	}
 

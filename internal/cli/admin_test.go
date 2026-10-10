@@ -348,6 +348,36 @@ func TestRunKeysCreate(t *testing.T) {
 	})
 }
 
+// An expiry that is not in the future yields a key that can never
+// authenticate, so it is refused before the Admin API is called: "0" in
+// particular reads as "never expires", and was answered with a printed key
+// that was already expired.
+func TestRunKeysCreateRefusesAnExpiryNotInTheFuture(t *testing.T) {
+	for _, expiresIn := range []string{"0", "0s", "-24h", "500ms"} {
+		t.Run(expiresIn, func(t *testing.T) {
+			calls := 0
+			srv := stubGateway(t, map[string]http.HandlerFunc{
+				"/admin/keys": func(w http.ResponseWriter, r *http.Request) {
+					calls++
+					jsonHandler(http.StatusCreated, `{"id":"new","key":"fgw_secret"}`)(w, r)
+				},
+			})
+			cmd, out := newHandlerCmd(t, srv.URL, "table")
+			cmd.Flags().String("name", "ci", "")
+			cmd.Flags().String("scope", "read_only", "")
+			cmd.Flags().String("expires-in", expiresIn, "")
+
+			err := runKeysCreate(cmd, nil)
+			if err == nil || !strings.Contains(err.Error(), "invalid --expires-in") {
+				t.Fatalf("runKeysCreate = %v, want an --expires-in error; output:\n%s", err, out.String())
+			}
+			if calls != 0 {
+				t.Errorf("POST /admin/keys called %d times; an expired key must not be created", calls)
+			}
+		})
+	}
+}
+
 func TestRunKeysRevoke(t *testing.T) {
 	srv := stubGateway(t, map[string]http.HandlerFunc{
 		"/admin/keys/k1/revoke": jsonHandler(http.StatusOK, `{}`),

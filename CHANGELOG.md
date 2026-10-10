@@ -901,6 +901,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that answers `405` (it does not let clients end sessions) or `404` (the
   session already ended) is treated as done; any other answer is reported with
   the rest of the teardown errors. The request is bounded at 2 seconds.
+- A chat, Responses or embeddings request whose provider reported no token
+  usage is recorded unpriced instead of as a priced $0.00. Cost calculation
+  marked such a request priced whenever the catalog carried the model's rate,
+  whatever the usage, so every Gemini embedding — `batchEmbedContents` sends no
+  usage — and every completion from a Replicate model that reports no metrics,
+  or from a stream whose upstream sent no usage block, wrote a known cost of
+  zero to the request-log row for a request the provider bills. The row's cost
+  is now empty, as it is for any request the catalog cannot price. Token rates
+  now price only reported usage, as the image token rates and the audio rates
+  already do; a request that reported any token count is priced as before.
+- A `gpt-image-1` or `gpt-image-1-mini` generation on `openai` or
+  `azure-openai`, a `chatgpt-image-latest` one on `openai` and a
+  `gpt-image-1.5` one on `azure-openai` are recorded unpriced instead of at the
+  cost of their prompt alone. These catalog rows carry an input-token rate and
+  no output-token or per-image rate, and cost calculation billed the output
+  tokens OpenAI reports for the image at nothing while marking the figure
+  priced, so a generation reporting 1,500 input and 4,200 output tokens was
+  recorded at $0.0075 on the request-log row, and `cost-optimized` ranked such
+  a model on its prompt cost alone. An image priced per token is now priced
+  only when the row carries a rate for every token count the provider reports.
+  Such a generation leaves the row's cost empty, and `cost-optimized` treats
+  the model as unpriced: it ranks after priced targets, and
+  `unpriced_strategy: skip` no longer serves it when no target prices it.
+- `ferrogw admin keys create --expires-in` refuses an expiry that is not in the
+  future. `0`, a negative duration or one under a second was turned into an
+  `expires_at` at or before the moment the key was stored, and the Admin API
+  accepted it, so the command printed a key that could never authenticate and
+  exited 0 — and `--expires-in 0` reads as "never expires". It now fails
+  without creating a key; omitting the flag is how a key that does not expire
+  is created.
 
 ## [1.5.9] — 2026-09-18
 
