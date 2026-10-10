@@ -217,6 +217,44 @@ func TestRegisterSecretValues_IgnoresDegenerateValues(t *testing.T) {
 	}
 }
 
+// TestValueRedaction_SecretExtendingAnotherIsRedactedWhole covers two
+// registered credentials where one is a prefix of the other. strings.Replacer
+// takes the first registered pattern that matches at a position, so when the
+// shorter one was registered first it replaced only its own length of the
+// longer one and left the rest of that credential in the text.
+func TestValueRedaction_SecretExtendingAnotherIsRedactedWhole(t *testing.T) {
+	short := mistralShaped
+	tail := "Rq5Lw2Nx8Tz4"
+	long := short + tail
+
+	orders := map[string][]string{
+		"shorter registered first": {short, "[REDACTED:SHORT_KEY]", long, "[REDACTED:LONG_KEY]"},
+		"longer registered first":  {long, "[REDACTED:LONG_KEY]", short, "[REDACTED:SHORT_KEY]"},
+	}
+	for name, pairs := range orders {
+		t.Run(name, func(t *testing.T) {
+			withSecrets(t, pairs...)
+			in := "upstream rejected " + long + " and " + short + "."
+			want := "upstream rejected [REDACTED:LONG_KEY] and [REDACTED:SHORT_KEY]."
+			if got := Values(in); got != want {
+				t.Fatalf("Values()\n got: %q\nwant: %q", got, want)
+			}
+			if got := String(in); strings.Contains(got, tail) {
+				t.Fatalf("String() left part of the longer credential in the text: %q", got)
+			}
+		})
+	}
+
+	t.Run("registered at runtime", func(t *testing.T) {
+		withSecrets(t)
+		RegisterSecretValues(short)
+		RegisterSecretValues(long)
+		if got := Values("key " + long); got != "key "+genericSecretToken {
+			t.Fatalf("Values() = %q, want the whole credential replaced", got)
+		}
+	})
+}
+
 // TestValues_AllocationFreeWhenClean pins the hot-path property the logging
 // sink depends on: a line carrying no secret must not allocate.
 func TestValues_AllocationFreeWhenClean(t *testing.T) {

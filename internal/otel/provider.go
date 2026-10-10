@@ -309,10 +309,16 @@ func exportEvent(ctx context.Context, ex observability.Exporter, evt observabili
 // exporter Export is bounded by the shutdown deadline (ctx-aware exporters
 // will return; exporters that ignore ctx may still outlive shutdown).
 // After Shutdown returns, RecordEvent becomes a clean no-op.
+//
+// A drain the deadline cuts short is returned as an error wrapping ctx's,
+// ahead of any exporter Shutdown error: the events still buffered then reach
+// no exporter, and returning nil reported a clean shutdown that had dropped
+// them.
 func (p *otelProvider) Shutdown(ctx context.Context) error {
 	p.mu.Lock()
 	done := p.done
 	workerDone := p.workerDone
+	queue := p.eventQ
 	exporters := p.exporters
 	// Set drainCtx before closing done so the worker's drain branch reads the
 	// correct context (happens-before via the mutex).
@@ -324,6 +330,7 @@ func (p *otelProvider) Shutdown(ctx context.Context) error {
 	p.eventQ = nil
 	p.mu.Unlock()
 
+	var firstErr error
 	if done != nil {
 		// Signal the worker to drain and exit.
 		close(done)
@@ -331,11 +338,19 @@ func (p *otelProvider) Shutdown(ctx context.Context) error {
 		select {
 		case <-workerDone:
 		case <-ctx.Done():
-			// Deadline exceeded — best-effort; proceed to exporter shutdown anyway.
+			// Deadline exceeded — proceed to exporter shutdown anyway, but report
+			// it: an Export is still running and the events queued behind it
+			// will not be delivered. The second look covers a select that picked
+			// this case while the worker had in fact already finished.
+			select {
+			case <-workerDone:
+			default:
+				firstErr = fmt.Errorf("otel: exporter event drain did not finish before the shutdown deadline (%d event(s) still queued): %w",
+					len(queue), ctx.Err())
+			}
 		}
 	}
 
-	var firstErr error
 	for _, ex := range exporters {
 		if err := shutdownExporter(ctx, ex); err != nil && firstErr == nil {
 			firstErr = err

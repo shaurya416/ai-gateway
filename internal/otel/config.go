@@ -15,8 +15,11 @@ type Config struct {
 	// Provider regardless of other settings.
 	Enabled bool `yaml:"enabled" json:"enabled"`
 
-	// Endpoint overrides OTEL_EXPORTER_OTLP_ENDPOINT. When both are
-	// empty and no exporters are configured, Init falls back to NoOp.
+	// Endpoint is the OTLP collector base endpoint, a URL or a bare
+	// host:port. OTEL_EXPORTER_OTLP_TRACES_ENDPOINT and
+	// OTEL_EXPORTER_OTLP_ENDPOINT take precedence over it (see
+	// effectiveEndpoint). When all three are empty and no exporters are
+	// configured, Init falls back to NoOp.
 	Endpoint string `yaml:"endpoint" json:"endpoint"`
 
 	// Protocol selects the OTLP transport: "grpc" or "http/protobuf".
@@ -31,8 +34,10 @@ type Config struct {
 	// sets them alone samples at whatever this says.
 	SampleRatio float64 `yaml:"sample_ratio" json:"sample_ratio"`
 
-	// PrivacyLevel controls whether prompt/response content is exported.
-	// One of: "none", "metadata" (default), "full".
+	// PrivacyLevel controls how much of an error message a span records:
+	// "none" records none of it, "metadata" (default) records it redacted,
+	// "full" records it raw. No prompt or response content is exported at
+	// any level.
 	PrivacyLevel string `yaml:"privacy_level" json:"privacy_level"`
 
 	// ShutdownGrace is the maximum time each shutdown stage will block waiting

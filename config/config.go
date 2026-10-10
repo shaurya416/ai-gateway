@@ -197,7 +197,9 @@ type TracingConfig struct {
 	//   true  — force on.
 	// The pipeline still short-circuits to NoOp when nothing is configured.
 	Enabled *bool `json:"enabled,omitempty" yaml:"enabled,omitempty"`
-	// Endpoint overrides OTEL_EXPORTER_OTLP_ENDPOINT (host:port form).
+	// Endpoint is the OTLP collector base endpoint, a URL or a bare
+	// host:port. OTEL_EXPORTER_OTLP_TRACES_ENDPOINT and
+	// OTEL_EXPORTER_OTLP_ENDPOINT take precedence over it when set.
 	Endpoint string `json:"endpoint,omitempty" yaml:"endpoint,omitempty"`
 	// Protocol selects the OTLP transport: "grpc" (default) or "http/protobuf".
 	Protocol string `json:"protocol,omitempty" yaml:"protocol,omitempty"`
@@ -207,8 +209,10 @@ type TracingConfig struct {
 	// explicit 0.0 (sample nothing) is distinguishable from an omitted
 	// field; nil falls back to the default of 1.0 (sample everything).
 	SampleRatio *float64 `json:"sample_ratio,omitempty" yaml:"sample_ratio,omitempty"`
-	// PrivacyLevel controls whether prompt/response content is exported.
-	// One of: "none", "metadata" (default), "full".
+	// PrivacyLevel controls how much of an error message a span records:
+	// "none" records none of it, "metadata" (default) records it redacted,
+	// "full" records it raw. No prompt or response content is exported at
+	// any level.
 	PrivacyLevel string `json:"privacy_level,omitempty" yaml:"privacy_level,omitempty"`
 	// ShutdownGrace is the maximum time each OTel shutdown stage waits.
 	// Exporter shutdown and TracerProvider shutdown each receive this
@@ -221,13 +225,14 @@ type TracingConfig struct {
 	// Datadog, New Relic, Honeycomb, or Grafana Cloud.
 	//
 	// SECURITY: prefer ${ENV_VAR} references for secret values — only the
-	// template (e.g. "${DATADOG_API_KEY}") is persisted in config and returned
-	// by the admin config API; the secret is resolved from the environment at
-	// export time and never stored. A literal value IS persisted verbatim and
-	// exposed via /admin/config, so do not hard-code raw secrets here. The
-	// standard OTEL_EXPORTER_OTLP_HEADERS environment variable applies only
-	// while this map is empty: a configured map replaces it rather than adding
-	// to it.
+	// template (e.g. "${DATADOG_API_KEY}") is persisted in config; the secret
+	// is resolved from the environment at export time and never stored. A
+	// literal value IS persisted verbatim in the stored config and its
+	// history, so do not hard-code raw secrets here. GET /admin/config
+	// withholds this map's header names and literal values, serving a
+	// ${VAR} reference as written. The standard OTEL_EXPORTER_OTLP_HEADERS
+	// environment variable applies only while this map is empty: a
+	// configured map replaces it rather than adding to it.
 	Headers map[string]string `json:"headers,omitempty" yaml:"headers,omitempty"`
 	// AttemptSpans opens one CLIENT child span, gateway.routing.attempt, per
 	// routing-layer attempt — retries and failovers included — carrying

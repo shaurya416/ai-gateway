@@ -5,10 +5,10 @@
 // public observability package, which exposes the OTel-independent
 // Provider, Span, and Exporter interfaces.
 //
-// Scaffolding revision (v1.1.0-observability branch): Init always
-// returns observability.NoOp. Subsequent PRs add the actual OTel SDK
-// initialisation, OTLP exporters, slog handler bridge, and HTTP
-// middleware.
+// Init returns observability.NoOp only when tracing is disabled or when
+// neither an OTLP endpoint nor an enabled exporter is configured; otherwise
+// it returns the OTel-backed provider, with an OTLP span pipeline when an
+// endpoint is set.
 //
 // Callers MUST always invoke the ShutdownFunc returned by Init from
 // the gateway's graceful-shutdown sequence.

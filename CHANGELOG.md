@@ -198,6 +198,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reached the upstream as no count at all and was generated, billed and
   answered `200` at the upstream's default count; a negative `n` was forwarded
   for the upstream to refuse.
+- A configured credential that begins with another configured credential is
+  now removed whole from log lines, span errors, request-log rows and exporter
+  events. Value redaction takes the first registered secret that matches at a
+  position, so when the shorter one came first — earlier in the environment,
+  or registered first through `RegisterSecretValues` — it replaced only its own
+  length and left the rest of the longer credential in the text. Secrets are
+  now matched longest first.
+- Shutdown now reports an observability exporter drain that
+  `observability.tracing.shutdown_grace` cut short. When an exporter's
+  `Export` was still running at the deadline, the events buffered behind it
+  never reached any exporter, yet the provider's `Shutdown` returned `nil` and
+  the gateway logged a clean stop. It now returns an error wrapping the
+  deadline and naming how many events were still queued, logged as a shutdown
+  cleanup error and ending the process with a non-zero exit status, the way an
+  OTLP span flush that runs out of time already does.
+- The `observability.tracing` godoc no longer contradicts the gateway.
+  `TracingConfig.Endpoint` said it overrides `OTEL_EXPORTER_OTLP_ENDPOINT`
+  and takes the `host:port` form; the environment variables take precedence
+  over it, and a URL is accepted. `PrivacyLevel` said it controls whether
+  prompt and response content is exported; it governs only the error text a
+  span records, and no prompt or response content is exported at any level.
+  `Headers` said a literal value is exposed via `/admin/config`; that map's
+  header names and literal values are withheld there. The internal `otel`
+  package doc no longer says `Init` always returns the no-op provider.
 - An observability exporter whose `Export` returns an error is now reported.
   The gateway discarded that error, so an exporter whose backend refused every
   event — a revoked API key, a moved endpoint — stayed attached and lost all of

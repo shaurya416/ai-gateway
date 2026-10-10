@@ -586,6 +586,50 @@ func TestShutdown_DrainsBufferedEventsBeforeReturning(t *testing.T) {
 	}
 }
 
+// TestShutdown_ReportsADrainCutShortByTheDeadline covers an exporter whose
+// Export is still running when the shutdown grace runs out. The buffered events
+// behind it never reach any exporter, and Shutdown used to return nil all the
+// same, so the gateway reported a clean shutdown having dropped them.
+func TestShutdown_ReportsADrainCutShortByTheDeadline(t *testing.T) {
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
+	t.Setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "")
+
+	exporterName := uniqueExporterName(t, "stalled")
+	blk := newBlockingExporter(exporterName)
+	observability.RegisterExporter(exporterName, func() observability.Exporter { return blk })
+	// Released last, so the abandoned worker can finish once the test is done.
+	t.Cleanup(func() { close(blk.block) })
+
+	cfg := DefaultConfig()
+	cfg.Enabled = true
+	cfg.Endpoint = ""
+	cfg.ShutdownGrace = 50 * time.Millisecond
+	cfg.Exporters = []ExporterConfig{{Name: exporterName, Enabled: true}}
+
+	prov, shutdown, err := Init(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("Init returned error: %v", err)
+	}
+	for range 3 {
+		prov.RecordEvent(context.Background(), observability.Event{Subject: "gateway.request.completed"})
+	}
+
+	err = shutdown(context.Background())
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("shutdown error = %v, want one wrapping context.DeadlineExceeded for the unfinished drain", err)
+	}
+	if !strings.Contains(err.Error(), "drain") {
+		t.Errorf("shutdown error %q does not say the event drain was cut short", err)
+	}
+
+	blk.mu.Lock()
+	shutdownCalled := blk.shutdownCalled
+	blk.mu.Unlock()
+	if !shutdownCalled {
+		t.Error("exporter.Shutdown was not called after the drain deadline")
+	}
+}
+
 // TestRecordEvent_DropOnFull verifies that when the event queue is full,
 // RecordEvent drops new events instead of blocking, and that at least
 // eventQueueCapacity events are still successfully delivered.

@@ -3,6 +3,7 @@ package redact
 import (
 	"net/url"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -162,6 +163,11 @@ func urlPassword(dsn string) string {
 
 // valueMatcher replaces a fixed set of literal secrets.
 //
+// The pairs are held longest secret first. strings.Replacer takes the first
+// pattern, in argument order, that matches at a position, so with one secret a
+// prefix of another the shorter one, registered first, replaced only its own
+// length of the longer and left that credential's remainder in the text.
+//
 // Cost note. replacer is built once; scanning is guarded by strings.Contains
 // per secret, which is SIMD-accelerated and allocates nothing, because
 // strings.Replacer's multi-pattern implementation allocates an output buffer
@@ -179,6 +185,7 @@ func newValueMatcher(pairs []string) *valueMatcher {
 	if len(pairs) == 0 {
 		return &valueMatcher{}
 	}
+	pairs = longestSecretFirst(pairs)
 	minLen := len(pairs[0])
 	for i := 0; i < len(pairs); i += 2 {
 		if l := len(pairs[i]); l < minLen {
@@ -186,6 +193,22 @@ func newValueMatcher(pairs []string) *valueMatcher {
 		}
 	}
 	return &valueMatcher{pairs: pairs, minLen: minLen, replacer: strings.NewReplacer(pairs...)}
+}
+
+// longestSecretFirst returns a copy of the old/new pairs ordered by secret
+// length, longest first; secrets of equal length keep their order.
+func longestSecretFirst(pairs []string) []string {
+	type pair struct{ secret, token string }
+	sorted := make([]pair, 0, len(pairs)/2)
+	for i := 0; i+1 < len(pairs); i += 2 {
+		sorted = append(sorted, pair{pairs[i], pairs[i+1]})
+	}
+	slices.SortStableFunc(sorted, func(a, b pair) int { return len(b.secret) - len(a.secret) })
+	out := make([]string, 0, len(pairs))
+	for _, p := range sorted {
+		out = append(out, p.secret, p.token)
+	}
+	return out
 }
 
 func (m *valueMatcher) redact(s string) string {
