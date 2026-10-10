@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
 import {
+  ApiError,
   clearSession,
   endSession,
   exchangeCredentialForSession,
@@ -128,7 +129,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       })
       .catch((error: unknown) => {
         if (error instanceof DOMException && error.name === 'AbortError') return
-        forceLogout()
+        // Only a 401 says this token is no longer accepted. An unreachable
+        // gateway, a timeout, a 429 or a 5xx says nothing about the token, and
+        // signing out over one deleted the tab's only copy of a session that
+        // was still valid — a reload during a restart or an outage sent the
+        // operator back to re-enter a key at exactly the moment they needed
+        // the console. The session is kept with the scopes the gateway last
+        // confirmed, and each page reports the failure from its own request;
+        // a later 401 still signs the tab out through its own event.
+        if (error instanceof ApiError && error.status === 401) {
+          forceLogout()
+          return
+        }
+        setStatus('authenticated')
       })
     return () => controller.abort()
   }, [forceLogout, session, status])

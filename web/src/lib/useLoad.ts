@@ -23,6 +23,11 @@ export interface LoadOptions {
   refetchOnWindowFocus?: boolean
 }
 
+/** Whether two `deps` lists name the same query, compared as React compares them. */
+function sameDeps(left: readonly unknown[], right: readonly unknown[]): boolean {
+  return left.length === right.length && left.every((value, index) => Object.is(value, right[index]))
+}
+
 /**
  * Runs an async loader on mount and whenever `deps` change.
  *
@@ -63,6 +68,15 @@ export function useLoad<T>(
   const inFlight = useRef(false)
   const activeRequest = useRef(0)
   const lastSettledAt = useRef(Date.now())
+  /*
+   * The `deps` the data on screen was loaded for. A failed refresh of the same
+   * query keeps that data beside the error — it is still the answer to the
+   * question being shown, only older. A failed run for different deps must not:
+   * the previous filter, page or time range's rows would stand under the new
+   * one's labels, and a caption reading "last hour" would sit over a day's
+   * numbers.
+   */
+  const dataDeps = useRef<readonly unknown[] | null>(null)
 
   const refresh = useCallback(() => {
     background.current = false
@@ -74,6 +88,7 @@ export function useLoad<T>(
     background.current = false
     const controller = new AbortController()
     const requestID = ++activeRequest.current
+    const runDeps = deps
     inFlight.current = true
     if (!quiet) {
       setLoading(true)
@@ -83,12 +98,17 @@ export function useLoad<T>(
       .then((result) => {
         if (controller.signal.aborted) return
         setData(result)
+        dataDeps.current = runDeps
         // A poll that succeeds retires the banner the previous one raised.
         setError('')
       })
       .catch((loadError: unknown) => {
         // An abort is this effect being cleaned up, not a failure to report.
         if (loadError instanceof DOMException && loadError.name === 'AbortError') return
+        if (!controller.signal.aborted && dataDeps.current && !sameDeps(dataDeps.current, runDeps)) {
+          setData(null)
+          dataDeps.current = null
+        }
         setError(errorMessage(loadError, failureMessage))
       })
       .finally(() => {

@@ -541,6 +541,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   content beside `"error": ""` was dropped the same way. It now reads the field
   with the shared OpenAI-compatible stream decoder's rule: either shape, and
   only a non-empty message is a failure.
+- Reloading the dashboard while the gateway is restarting, unreachable,
+  rate-limiting or answering `5xx` no longer signs the operator out. The
+  reload re-checks the stored session against `/admin/health`, and any failure
+  of that check deleted the session token, so a transient error during an
+  incident sent the operator back to re-enter a key — often the master key —
+  at the moment they needed the console. Only a `401`, the gateway refusing the
+  token, now ends the session; any other failure keeps it with the scopes the
+  gateway last confirmed, and each page reports the error from its own request.
+- The dashboard Overview no longer reports a request log it could not read as
+  a quiet gateway. A failed recent-requests query rendered "No requests in this
+  range" with an offer to send one, and a failed statistics query rendered "No
+  traffic history", because both failures were folded into the same empty
+  value a working, idle store returns. Each panel now says its data could not
+  be loaded.
+- A dashboard page whose filter, page or time range changed no longer keeps
+  showing the previous query's data when the new query fails. The shared
+  loader kept the last result on any failure, so the Request Logs, Audit,
+  Analytics and Overview pages displayed the old rows and totals under the new
+  controls — a day's figures captioned as the last hour's — with only a banner
+  to say they did not answer the new query. A failed refresh of the same query
+  still keeps its data beside the error; a failed change of query now clears
+  it.
 
 ## [1.5.9] — 2026-09-18
 

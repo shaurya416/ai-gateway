@@ -346,6 +346,36 @@ describe('OverviewPage — panels', () => {
     expect(screen.getByText('openai')).toBeInTheDocument()
   })
 
+  it('says the recent requests could not be read rather than calling the range quiet', async () => {
+    // A request-log store answering 500 rendered as "No requests in this range"
+    // beside an offer to send one: a broken log reported as an idle gateway.
+    arm(readyBody, { stats: statsBody() })
+    const served = request.getMockImplementation() as (path: string) => Promise<unknown>
+    request.mockImplementation((path: string) =>
+      path.startsWith('/admin/logs?') ? Promise.reject(new Error('failed to list request logs')) : served(path),
+    )
+    renderPage()
+
+    // One panel lost its answer; the rest of the page still stands.
+    await waitFor(() => expect(within(metric('Requests')).getByText('6')).toBeInTheDocument())
+    expect(screen.queryByText('No requests in this range')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Open Playground' })).toBeNull()
+    expect(screen.getByText(/Recent requests could not be loaded/)).toBeInTheDocument()
+  })
+
+  it('says the traffic history could not be read rather than that none was reported', async () => {
+    arm()
+    const served = request.getMockImplementation() as (path: string) => Promise<unknown>
+    request.mockImplementation((path: string) =>
+      path.startsWith('/admin/logs/stats') ? Promise.reject(new Error('failed to aggregate request logs')) : served(path),
+    )
+    renderPage()
+
+    expect(await screen.findByText('key store')).toBeInTheDocument()
+    expect(screen.queryByText('No traffic history')).not.toBeInTheDocument()
+    expect(screen.getByText(/Traffic history could not be loaded/)).toBeInTheDocument()
+  })
+
   it('offers the Playground when the range is quiet, and does not when nothing is being recorded', async () => {
     arm()
     const { unmount } = renderPage()

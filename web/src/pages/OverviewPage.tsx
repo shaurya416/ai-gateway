@@ -15,7 +15,11 @@ import type { AdminHealth, DashboardSummary, LogsResponse, LogsStats, MCPServerH
 interface OverviewData {
   summary: DashboardSummary
   stats: LogsStats | null
-  logs: RequestLog[]
+  /**
+   * Null when the recent rows could not be read. Kept apart from an empty list,
+   * which is the gateway answering that nothing happened in the range.
+   */
+  logs: RequestLog[] | null
   health: AdminHealth
   /** Null when /readyz itself could not be reached — see `loadOverview`. */
   readiness: Readiness | null
@@ -63,7 +67,10 @@ async function loadOverview(hours: number, signal: AbortSignal): Promise<Overvie
     summary,
     health,
     stats: statsResult,
-    logs: logsResult?.data ?? [],
+    // A failed read stays null. Folding it into an empty list rendered a
+    // request-log store answering 500 as "No requests in this range", with an
+    // invitation to send one — a broken log reported as a quiet gateway.
+    logs: logsResult ? logsResult.data ?? [] : null,
     readiness,
   }
 }
@@ -277,7 +284,14 @@ export default function OverviewPage() {
               </div>
               {!data.summary.request_logs.enabled ? (
                 <EmptyState title="Request logging is disabled" description="Enable the request logger plugin to see traffic history and analytics." />
-              ) : data.stats?.series ? (
+              ) : !data.stats ? (
+                // The statistics query failed, which is not the same fact as a
+                // range with no traffic in it. Worded like the readiness panel's
+                // own lost answer: one panel failed, not the dashboard.
+                <p className="rounded-md border border-border px-3 py-2 text-sm text-muted-foreground">
+                  Traffic history could not be loaded, so whether this range saw any requests is unknown.
+                </p>
+              ) : data.stats.series ? (
                 <SeriesChart
                   bands={TRAFFIC_BANDS}
                   emptyLabel="No completed requests in this range."
@@ -334,7 +348,11 @@ export default function OverviewPage() {
               </div>
               <Link className="text-sm font-medium text-primary hover:underline" to="/logs">View all requests</Link>
             </div>
-            {data.logs.length === 0 ? (
+            {data.logs === null && data.summary.request_logs.enabled ? (
+              <p className="rounded-md border border-border px-3 py-2 text-sm text-muted-foreground">
+                Recent requests could not be loaded, so whether any were made in this range is unknown.
+              </p>
+            ) : data.logs === null || data.logs.length === 0 ? (
               <EmptyState
                 title={data.summary.request_logs.enabled ? 'No requests in this range' : 'Request logging is disabled'}
                 description={data.summary.request_logs.enabled ? 'Try a request in the Playground or choose a wider time range.' : 'Enable request logging to populate this table.'}

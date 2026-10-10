@@ -2,7 +2,7 @@ import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { AuthProvider, useAuth } from './AuthProvider'
-import { clearSession, configureGateway, request, saveSession } from '../lib/api'
+import { clearSession, configureGateway, loadSession, request, saveSession } from '../lib/api'
 import { resetPluginCatalog, usePluginCatalog } from '../lib/plugins'
 import type { Call } from '../test/stubs'
 import { memoryStorage, stubGateway } from '../test/stubs'
@@ -79,6 +79,38 @@ describe('AuthProvider session state', () => {
     render(<AuthProvider><CatalogConsumer /></AuthProvider>)
     await waitFor(() => expect(callsTo(calls, CATALOG_PATH)).toHaveLength(2))
     expect(callsTo(calls, CATALOG_PATH)[1]?.authorization).toBe('Bearer fgws_second')
+  })
+
+  it('keeps a restored session when the gateway cannot answer for it', async () => {
+    // A reload while the gateway restarts, sheds load or sits behind a proxy
+    // answering 502 used to delete the tab's only copy of a session that was
+    // still valid, and send the operator back to re-enter a key mid-outage.
+    // None of these is the gateway saying the token is no longer accepted.
+    for (const failure of [{ status: 500 }, { status: 502 }, { status: 429 }, 'unreachable'] as const) {
+      stubGateway(() => {
+        if (failure === 'unreachable') throw new TypeError('Failed to fetch')
+        return { status: failure.status, body: { error: { message: 'unavailable' } } }
+      })
+      saveSession({ token: 'fgws_kept', scopes: ['admin'] })
+      const view = render(<AuthProvider><ScopeConsumer /></AuthProvider>)
+
+      // Anchored: the bare word is also a substring of "unauthenticated".
+      await waitFor(() => expect(screen.getByTestId('status')).toHaveTextContent(/^authenticated$/))
+      // The scopes the gateway last confirmed stand until it says otherwise.
+      expect(screen.getByTestId('admin')).toHaveTextContent('true')
+      expect(loadSession()?.token).toBe('fgws_kept')
+      view.unmount()
+      clearSession()
+    }
+  })
+
+  it('signs a restored session out when the gateway refuses its token', async () => {
+    stubGateway(() => ({ status: 401, body: { error: { message: 'session expired or invalid', code: 'invalid_session' } } }))
+    saveSession({ token: 'fgws_revoked', scopes: ['admin'] })
+    render(<AuthProvider><ScopeConsumer /></AuthProvider>)
+
+    await waitFor(() => expect(screen.getByTestId('status')).toHaveTextContent(/^unauthenticated$/))
+    expect(loadSession()).toBeNull()
   })
 
   it('re-derives scopes when a call is refused for lacking them', async () => {

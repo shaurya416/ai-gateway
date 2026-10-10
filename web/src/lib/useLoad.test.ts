@@ -29,6 +29,32 @@ describe('useLoad', () => {
     expect(result.current.loading).toBe(false)
   })
 
+  it('does not leave one query\'s data standing as the answer to the query that replaced it', async () => {
+    // A page whose filter, page or range changed kept the previous rows when the
+    // new read failed: a day's figures sat under a "last hour" caption, with
+    // only a banner to say none of it answered what the controls now named.
+    const { result, rerender } = renderHook(
+      ({ hours }) =>
+        useLoad(
+          () => (hours === 24 ? Promise.resolve('last day') : Promise.reject(new Error('boom'))),
+          [hours],
+          'could not load',
+        ),
+      { initialProps: { hours: 24 } },
+    )
+    await waitFor(() => expect(result.current.data).toBe('last day'))
+
+    rerender({ hours: 1 })
+    await waitFor(() => expect(result.current.error).toBe('boom'))
+    expect(result.current.data).toBeNull()
+    expect(result.current.loading).toBe(false)
+
+    // Going back to a query that does answer recovers as before.
+    rerender({ hours: 24 })
+    await waitFor(() => expect(result.current.data).toBe('last day'))
+    expect(result.current.error).toBe('')
+  })
+
   it('clears a previous error when a retry succeeds', async () => {
     let attempt = 0
     const { result } = renderHook(() =>
