@@ -53,7 +53,12 @@ type Tool struct {
 // ToolCallResult holds the result of a single tools/call invocation.
 type ToolCallResult struct {
 	Content []ContentBlock `json:"content"`
-	IsError bool           `json:"isError,omitempty"`
+	// StructuredContent is the tool's answer as a JSON object, for a tool that
+	// declares an output schema. The spec only asks such a tool to repeat it as
+	// a text block, so it may be the whole answer. Kept raw, as the server wrote
+	// it.
+	StructuredContent json.RawMessage `json:"structuredContent,omitempty"`
+	IsError           bool            `json:"isError,omitempty"`
 }
 
 // ContentBlock is a single piece of content returned by a tool call.

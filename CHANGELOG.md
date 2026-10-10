@@ -642,6 +642,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to say they did not answer the new query. A failed refresh of the same query
   still keeps its data beside the error; a failed change of query now clears
   it.
+- An HTTP MCP server that waits for `notifications/initialized` before serving
+  requests — a stateful one, that SDK's default, built on the official Python
+  SDK before 1.18 — now becomes ready. The gateway posted that notification
+  without the `Accept` header the Streamable HTTP transport requires on every
+  POST, so conformant servers refused it (`406` from the Python SDK, `400`
+  from the Go SDK) and the gateway discarded the refusal: the server never
+  left initialization, answered every `tools/list` with
+  `-32602 Invalid request parameters`, and none of its tools were ever
+  offered. Notifications now carry the same headers as requests, and a server
+  that still refuses the notification is logged at WARN with the status it
+  answered; the handshake continues, as before, for a server that does not
+  depend on it.
+- A tool that answers in `structuredContent` with an empty `content` array now
+  reaches the model with its answer. Only the content blocks were decoded, so
+  such a result — the shape the official TypeScript SDK sends for a tool with
+  an output schema — was handed to the model as an empty string and recorded
+  as a successful call, on both transports. The structured object is now
+  forwarded, compacted, when the result has no content blocks; a result that
+  has both still forwards the blocks alone.
+- A tool that reports failure with `isError` and no content now reaches the
+  model as a failure. The empty content was forwarded as an empty string —
+  what a successful call returning nothing looks like — so the model was told
+  the tool had worked, while the audit record and span carried no reason. The
+  model now receives the fixed `{"error":"the tool call failed"}` payload, and
+  the audit record and span name the missing content.
 
 ## [1.5.9] — 2026-09-18
 

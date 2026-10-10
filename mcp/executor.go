@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -358,8 +359,8 @@ func (e *Executor) executeToolCall(ctx context.Context, tc core.ToolCall) core.M
 		}
 	}
 
-	// Convert MCP content blocks to a plain string for the LLM.
-	content, convErr := contentBlocksToString(result.Content)
+	// Convert the result to a plain string for the LLM.
+	content, convErr := toolResultContent(result)
 	if convErr != nil {
 		content = toolErrorContent(convErr)
 	}
@@ -371,9 +372,17 @@ func (e *Executor) executeToolCall(ctx context.Context, tc core.ToolCall) core.M
 	// content carries the reason and is what the LLM sees, so it is also the
 	// most useful thing to attach to the failure.
 	if result.IsError {
+		detail := content
+		if content == "" {
+			// A failure that gives no reason must still read as one. An empty
+			// tool message is what a successful call returning nothing looks
+			// like, so the model was told the tool had worked.
+			content = toolErrorContent(errToolErrorWithoutContent)
+			detail = errToolErrorWithoutContent.Error()
+		}
 		metricToolCallsTotal.WithLabelValues(serverName, toolName, "error").Inc()
-		e.callAuditFn(ctx, serverName, toolName, "error", latencyMs, truncateForSignal(content))
-		gwotel.RecordSpanError(span, errors.New(truncateForSignal(content)))
+		e.callAuditFn(ctx, serverName, toolName, "error", latencyMs, truncateForSignal(detail))
+		gwotel.RecordSpanError(span, errors.New(truncateForSignal(detail)))
 	} else {
 		metricToolCallsTotal.WithLabelValues(serverName, toolName, "ok").Inc()
 		// Relies on the non-blocking AuditFn contract: the per-call goroutine returns promptly.
@@ -422,6 +431,33 @@ func boundedToolLabel(serverName, toolName string) string {
 		return metrics.UnknownToolLabel
 	}
 	return toolName
+}
+
+// errToolErrorWithoutContent is the failure recorded for a tool that set
+// isError and said nothing else.
+var errToolErrorWithoutContent = errors.New("the tool reported an error with no content")
+
+// toolResultContent renders a tool result as the text handed to the model.
+//
+// Content blocks are the answer whenever there are any. A result can carry none
+// and still answer: structuredContent is a complete result on its own — the
+// spec only asks a tool to repeat it as text, and the official TypeScript SDK
+// sends a tool with an output schema exactly that way — so it is used when the
+// blocks are empty. Dropping it handed the model an empty string for a call
+// that had returned its data.
+func toolResultContent(result *ToolCallResult) (string, error) {
+	if len(result.Content) > 0 {
+		return contentBlocksToString(result.Content)
+	}
+	structured := bytes.TrimSpace(result.StructuredContent)
+	if len(structured) == 0 || bytes.Equal(structured, []byte("null")) {
+		return "", nil
+	}
+	var compact bytes.Buffer
+	if err := json.Compact(&compact, structured); err != nil {
+		return "", err
+	}
+	return compact.String(), nil
 }
 
 // contentBlocksToString serialises MCP content blocks into a string suitable

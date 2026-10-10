@@ -47,6 +47,9 @@ const (
 	// helperToolLink answers with a resource_link content block. It is not
 	// advertised, so it changes no listing; a test calls it by name.
 	helperToolLink = "helper_link"
+	// helperToolStructured answers in structuredContent alone, with an empty
+	// content array. Called by name, like helperToolLink.
+	helperToolStructured = "helper_structured"
 )
 
 // helperServerConfig returns a ServerConfig that launches this test binary as a
@@ -115,6 +118,9 @@ func runHelperMCPServer(mode string) {
 		if req.Method == "tools/call" && req.Params.Name == helperToolLink {
 			result = map[string]any{"content": []map[string]any{helperResourceLink}}
 		}
+		if req.Method == "tools/call" && req.Params.Name == helperToolStructured {
+			result = map[string]any{"content": []any{}, "structuredContent": helperStructured}
+		}
 		if err := writeHelperResponse(out, *req.ID, result); err != nil {
 			os.Exit(1)
 		}
@@ -165,6 +171,9 @@ var helperResourceLink = map[string]any{
 	"description": "Top-level documentation for the workspace",
 	"mimeType":    "text/markdown",
 }
+
+// helperStructured is the structuredContent helperToolStructured returns.
+var helperStructured = map[string]any{"city": "Oslo", "temp_c": 21.5}
 
 // helperToolsPage returns the tools/list page the paging modes answer with, or
 // nil when mode serves the ordinary single-page listing.

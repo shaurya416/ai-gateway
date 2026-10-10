@@ -393,7 +393,8 @@ func (c *stdioClient) CallTool(ctx context.Context, name string, arguments json.
 	}
 
 	// Convert via JSON: mark3labs content blocks share the same JSON structure
-	// as ferro-labs ContentBlock (type, text, data, mimeType, resource fields).
+	// as ferro-labs ContentBlock (type, text, data, mimeType, resource fields),
+	// and the library writes structuredContent back out as the server sent it.
 	resultJSON, err := json.Marshal(result)
 	if err != nil {
 		return nil, fmt.Errorf("mcp stdio tools/call %s: marshal result: %w", name, err)

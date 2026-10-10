@@ -137,9 +137,15 @@ func (c *Client) Initialize(ctx context.Context) (*ServerInfo, error) {
 			"known_versions", mcpgo.ValidProtocolVersions)
 	}
 
-	// Send the initialized notification. The MCP spec says no response is
-	// expected; errors here are non-fatal (server may still be usable).
-	_ = c.notify(ctx, "notifications/initialized", nil)
+	// Send the initialized notification. A refusal is non-fatal — a server that
+	// does not gate on it is still usable — but it is reported: one that does
+	// gate answers every request after it with an error that names nothing, and
+	// this line is what names the cause.
+	if err := c.notify(ctx, "notifications/initialized", nil); err != nil {
+		logger.Default().Warn("mcp server did not accept notifications/initialized; continuing",
+			"endpoint", c.endpoint,
+			"error", err)
+	}
 
 	return &info, nil
 }
@@ -291,17 +297,9 @@ func (c *Client) send(ctx context.Context, method string, params any, sid string
 		return nil, fmt.Errorf("mcp marshal request: %w", err)
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint, bytes.NewReader(body))
+	httpReq, err := c.newPost(ctx, body, sid)
 	if err != nil {
 		return nil, fmt.Errorf("mcp new http request: %w", err)
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Accept", "application/json, text/event-stream")
-	if sid != "" {
-		httpReq.Header.Set("Mcp-Session-Id", sid)
-	}
-	for k, v := range c.headers {
-		httpReq.Header.Set(k, v)
 	}
 
 	httpResp, err := c.httpClient.Do(httpReq)
@@ -446,7 +444,8 @@ func isEventStream(contentType string) bool {
 	return mediaType == "text/event-stream"
 }
 
-// notify sends a JSON-RPC 2.0 notification (no ID, no response expected).
+// notify sends a JSON-RPC 2.0 notification (no ID, no JSON-RPC response) and
+// reports an error when the server does not accept it.
 func (c *Client) notify(ctx context.Context, method string, params any) error {
 	var rawParams json.RawMessage
 	if params != nil {
@@ -471,24 +470,55 @@ func (c *Client) notify(ctx context.Context, method string, params any) error {
 		return err
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint, bytes.NewReader(body))
+	httpReq, err := c.newPost(ctx, body, c.getSessionID())
 	if err != nil {
 		return err
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	if sid := c.getSessionID(); sid != "" {
-		httpReq.Header.Set("Mcp-Session-Id", sid)
-	}
-	for k, v := range c.headers {
-		httpReq.Header.Set(k, v)
 	}
 
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
 		return err
 	}
-	_ = resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
+
+	// A server that accepts a notification answers 202 and one that cannot
+	// MUST answer with an error status, so the status is the delivery receipt.
+	// Discarding it is how a refused notification read as a sent one.
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		if hint := transport.RedirectTarget(resp); hint != "" {
+			return fmt.Errorf("mcp server refused %s: HTTP %d: %s", method, resp.StatusCode, hint)
+		}
+		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes))
+		return fmt.Errorf("mcp server refused %s: HTTP %d: %s", method, resp.StatusCode, errBody)
+	}
 	return nil
+}
+
+// newPost builds one POST of body to the endpoint, carrying the headers the
+// transport requires on every message plus the operator's own. sid is attached
+// as the session ID when it is non-empty.
+//
+// Requests and notifications share it so neither can drift from the other. The
+// spec requires every POST to offer both response media types, and the
+// notification path, which built its request separately, sent no Accept at all:
+// the official Python SDK refuses that 406 and the Go SDK 400, so
+// notifications/initialized never reached the server. One that gates requests on
+// it — the Python SDK before 1.18 — then answered every tools/list with an
+// error, and the server never became ready.
+func (c *Client) newPost(ctx context.Context, body []byte, sid string) (*http.Request, error) {
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Accept", "application/json, text/event-stream")
+	if sid != "" {
+		httpReq.Header.Set("Mcp-Session-Id", sid)
+	}
+	for k, v := range c.headers {
+		httpReq.Header.Set(k, v)
+	}
+	return httpReq, nil
 }
 
 // getSessionID reads the current session ID under a read lock.
