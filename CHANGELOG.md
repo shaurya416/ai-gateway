@@ -875,6 +875,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   walks the whole document, map keys included, and names every refused field
   at once. Where an entry's name was withheld it says so, since a `${VAR}`
   reference cannot restore a name the Admin API never served.
+- A stdio MCP server built on the official Go SDK before v1.6 with `KeepAlive`
+  set no longer exits one keepalive interval after its handshake. The gateway
+  refused every request a stdio server sent it with "No request handler
+  configured" — `ping` included, which the receiver must answer — and those
+  SDK versions close the session when a keepalive ping is refused, so the
+  server process ended and its tools were withdrawn, taking `/readyz` to `503`
+  when the server was `required`. Server pings are now answered with an empty
+  result; `sampling`, `elicitation` and `roots` requests are still refused, as
+  the gateway declares none of those capabilities.
+- `Gateway.Close` shortly after a configuration reload now waits for the
+  retired MCP registry's stdio servers to be terminated. While a request or an
+  unfinished handshake still held the retired registry, its teardown ran later
+  in a goroutine of its own, and the reload's tracked goroutine finished before
+  that teardown began — so `Close` waited on nothing, and the process could exit
+  mid-termination, orphaning a server that ignores its stdin closing. The
+  reload's goroutine now waits for the teardown, within `Close`'s existing
+  5-second shutdown bound.
+- Closing an HTTP MCP client — on every configuration reload and on shutdown —
+  now ends its session with the `DELETE` the Streamable HTTP transport defines
+  for it. Nothing was sent, so each reload and each restart left one session
+  per HTTP server open on the server: by default the official Python SDK 1.x
+  keeps such a session, and the task serving it, until the server restarts,
+  and 2.x holds it for 30 minutes, counted against its session limit. A server
+  that answers `405` (it does not let clients end sessions) or `404` (the
+  session already ended) is treated as done; any other answer is reported with
+  the rest of the teardown errors. The request is bounded at 2 seconds.
 
 ## [1.5.9] — 2026-09-18
 

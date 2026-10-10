@@ -111,6 +111,12 @@ func (g *Gateway) wireMCPLocked(cfg config.Config, failLogMsg string) {
 			if err := old.Close(); err != nil {
 				g.log.Error("mcp: failed to close previous registry after reload", "error", err)
 			}
+			// Close returns at once while a request or a handshake still holds
+			// the registry, and the teardown runs later in a goroutine of its
+			// own. Without this wait the group was done before that teardown had
+			// started, and Gateway.Close waited on nothing. Unbounded here
+			// because Gateway.Close bounds its own wait.
+			_ = old.WaitClosed(context.Background())
 		}()
 	}
 

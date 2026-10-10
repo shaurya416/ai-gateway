@@ -50,7 +50,15 @@ const (
 	// helperToolStructured answers in structuredContent alone, with an empty
 	// content array. Called by name, like helperToolLink.
 	helperToolStructured = "helper_structured"
+	// helperToolPingClient sends the client a ping before answering, and
+	// answers with how that ping was received. Called by name, like
+	// helperToolLink.
+	helperToolPingClient = "helper_ping_client"
 )
+
+// helperPingAnswered is helperToolPingClient's answer when the client replied
+// to its ping with a result.
+const helperPingAnswered = "ping answered"
 
 // helperServerConfig returns a ServerConfig that launches this test binary as a
 // real MCP stdio server. newStdioClient gives the subprocess a minimal
@@ -121,6 +129,9 @@ func runHelperMCPServer(mode string) {
 		if req.Method == "tools/call" && req.Params.Name == helperToolStructured {
 			result = map[string]any{"content": []any{}, "structuredContent": helperStructured}
 		}
+		if req.Method == "tools/call" && req.Params.Name == helperToolPingClient {
+			result = helperPingClient(dec, out)
+		}
 		if err := writeHelperResponse(out, *req.ID, result); err != nil {
 			os.Exit(1)
 		}
@@ -160,6 +171,37 @@ func helperResult(method string) any {
 		// Covers ping, whose result is an empty object.
 		return map[string]any{}
 	}
+}
+
+// helperPingClient pings the client, as any server may at any time, and
+// reports the reply as the tool's text: helperPingAnswered for a result, the
+// error's message otherwise.
+func helperPingClient(dec *json.Decoder, out *bufio.Writer) any {
+	ping := map[string]any{"jsonrpc": "2.0", "id": "helper-ping", "method": "ping"}
+	if err := json.NewEncoder(out).Encode(ping); err != nil {
+		os.Exit(1)
+	}
+	if err := out.Flush(); err != nil {
+		os.Exit(1)
+	}
+
+	var reply struct {
+		Result json.RawMessage `json:"result"`
+		Error  *struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := dec.Decode(&reply); err != nil {
+		os.Exit(0)
+	}
+	text := helperPingAnswered
+	switch {
+	case reply.Error != nil:
+		text = "ping refused: " + reply.Error.Message
+	case reply.Result == nil:
+		text = "ping reply carried no result"
+	}
+	return map[string]any{"content": []map[string]any{{"type": "text", "text": text}}}
 }
 
 // helperResourceLink is the resource_link block helperToolLink returns.

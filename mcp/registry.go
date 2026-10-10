@@ -184,7 +184,7 @@ func (r *Registry) RegisterConfig(cfg ServerConfig) {
 				delete(r.toolMap, t.Name)
 			}
 		}
-		// Close the old client (no-op for HTTP; terminates subprocess for stdio).
+		// Close the old client (ends the HTTP session; terminates subprocess for stdio).
 		// A failure here means a subprocess may have survived re-registration,
 		// which is the leak this call exists to prevent — never silent.
 		if old.client != nil {
@@ -738,7 +738,7 @@ func (r *Registry) closeWhenDrained() {
 }
 
 // Close shuts down all registered MCP server clients. For stdio servers this
-// terminates the subprocess; for HTTP servers it is a no-op. Errors from
+// terminates the subprocess; for HTTP servers it ends the session. Errors from
 // individual clients are joined and returned together.
 // Close is idempotent. When requests still hold the registry it returns
 // immediately and teardown completes in the background once they release.

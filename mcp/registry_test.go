@@ -14,6 +14,11 @@ import (
 func newMockServer(t *testing.T, tools []Tool) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodDelete {
+			// Ends the session issued below, which Close asks for.
+			w.WriteHeader(http.StatusOK)
+			return
+		}
 		var req JSONRPCRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, "bad req", http.StatusBadRequest)

@@ -538,7 +538,57 @@ func (c *Client) setSessionID(sid string) {
 	c.sessionMu.Unlock()
 }
 
-// Close is a no-op for the HTTP transport: the underlying http.Client has no
-// persistent connection state that requires explicit cleanup.
-// It exists so that *Client satisfies the mcpClient interface.
-func (c *Client) Close() error { return nil }
+// sessionCloseTimeout bounds the DELETE that ends a session on Close. Teardown
+// shares Gateway.Close's few seconds with every other server, and a session the
+// server never hears about ends on its own schedule anyway.
+const sessionCloseTimeout = 2 * time.Second
+
+// Close ends the server-side session, when the server issued one, with the
+// DELETE the transport defines for a client that no longer needs it. A server
+// that does not let clients end sessions answers 405, and one that already
+// ended it answers 404; neither is a failure.
+//
+// Without it every retired client left its session open on the server: one per
+// HTTP server on every configuration reload and every restart. By default a
+// server built on the official Python SDK before 2.0 keeps such a session, and
+// the task serving it, until the server itself restarts; later ones hold it for
+// half an hour, counted against their session limit.
+//
+// Safe to call more than once; only the first call sends anything.
+func (c *Client) Close() error {
+	c.sessionMu.Lock()
+	sid := c.sessionID
+	c.sessionID = ""
+	c.sessionMu.Unlock()
+	if sid == "" {
+		return nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), sessionCloseTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, c.endpoint, nil)
+	if err != nil {
+		return fmt.Errorf("mcp end session: %w", err)
+	}
+	req.Header.Set("Mcp-Session-Id", sid)
+	for k, v := range c.headers {
+		req.Header.Set(k, v)
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("mcp end session: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	switch {
+	case resp.StatusCode >= 200 && resp.StatusCode <= 299,
+		resp.StatusCode == http.StatusNotFound,
+		resp.StatusCode == http.StatusMethodNotAllowed:
+		return nil
+	}
+	if hint := transport.RedirectTarget(resp); hint != "" {
+		return fmt.Errorf("mcp server refused to end the session: HTTP %d: %s", resp.StatusCode, hint)
+	}
+	errBody, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes))
+	return fmt.Errorf("mcp server refused to end the session: HTTP %d: %s", resp.StatusCode, errBody)
+}

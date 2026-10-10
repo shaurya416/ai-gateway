@@ -157,16 +157,25 @@ func newStdioClient(name, command string, args []string, envOverrides map[string
 
 	bounded := &boundedLineReader{r: stdout, server: name, limit: maxStdioMessageBytes}
 	tr := transport.NewIO(bounded, stdin, stderr)
-	// Start cannot spawn anything here: a NewIO transport carries no command, and
-	// the transport returns early from spawning on that. All it does is launch
-	// the reader goroutine. Checked anyway rather than discarded — a future
-	// version that does more here must not fail silently.
-	if err := tr.Start(context.Background()); err != nil {
+	inner := mcpclient.NewClient(tr)
+	// Started through the client, not the transport. Start cannot spawn anything
+	// here: a NewIO transport carries no command, and the transport returns early
+	// from spawning on that, so either call launches the reader goroutine. Only
+	// the client's also installs the handler for requests the server sends.
+	// Without it every one was refused with "No request handler configured" —
+	// ping included, which the spec obliges the receiver to answer. The official
+	// Go SDK before v1.6 closes the session when a keepalive ping is refused, so
+	// a server built on it with KeepAlive set exited one interval after its
+	// handshake and had its tools withdrawn.
+	//
+	// Checked rather than discarded — a future version that does more here must
+	// not fail silently.
+	if err := inner.Start(context.Background()); err != nil {
 		_ = cmd.Process.Kill()
 		return &errClient{err: fmt.Errorf("mcp stdio: start transport for %q: %w", command, err)}
 	}
 
-	sc := &stdioClient{inner: mcpclient.NewClient(tr), cmd: cmd}
+	sc := &stdioClient{inner: inner, cmd: cmd}
 	if cmd.Process != nil {
 		// Setpgid made the child its own group leader, so pid == pgid.
 		sc.pgid = cmd.Process.Pid
