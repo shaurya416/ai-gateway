@@ -43,6 +43,7 @@ import (
 // must pass the error to reraiseAbort once it has recorded the outcome, so the
 // client connection is still dropped.
 func forwardFixedTarget(w http.ResponseWriter, r *http.Request, target *url.URL, authHeaders map[string]string, providerName string, propagateTrace bool, wrapBody func(*http.Response)) error {
+	authHeaders = withBaseURLUserinfo(target, authHeaders)
 	secrets := injectedSecrets(authHeaders)
 	var upstreamErr, forwardErr error
 

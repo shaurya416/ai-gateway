@@ -296,6 +296,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   from the example recorded all traffic as anonymous. The README and the
   `Exporter.Export` godoc now say to read `Event.User`, `Event.SessionID` and
   `Event.Metadata`, which the gateway fills from the request.
+- The `/v1/*` pass-through, `POST /v1/responses` and its id sub-routes,
+  `/v1/files` and `/v1/batches` now authenticate to a provider whose base URL
+  carries userinfo, as chat to the same base already did. A base such as
+  `OLLAMA_HOST=https://user:pass@ollama.example.com` is how a provider is put
+  behind a proxy that authenticates with HTTP Basic, and the provider's own
+  client sends that credential whenever it sets no `Authorization` of its own;
+  the forwards rebuilt the request on the base URL's scheme, host and path
+  alone and handed it to a transport that never reads userinfo, so every
+  forward reached the proxy anonymous and was answered `401`. They now send
+  the same Basic credential under the same rule — a provider that sends an
+  `Authorization` header keeps it — and redact it from a response that quotes
+  it back.
+- A `/v1/*` pass-through, `/v1/responses`, `/v1/files` or `/v1/batches`
+  request sent with `Expect: 100-continue` — as curl sends a large upload — now
+  keeps the response headers the gateway sets: the security headers,
+  `X-Request-ID` and the CORS grant. The expectation travelled upstream, the
+  upstream answered it with a `100`, and the reverse proxy relayed that `100`
+  by writing it from the response's header map and then clearing the map, so
+  the final response carried only what the upstream sent. The gateway's
+  headers are now restored after any informational response is relayed.
+- The `/v1/*` pass-through now answers a body that runs past the request-body
+  limit before its `model` with `413 request body too large`, and one whose
+  framing breaks there with `400 invalid request body`, as it already did when
+  the failure came after the model. The search for the model is the body's
+  first read, and a failure there ended it the way a body naming no model
+  does, so a caller whose body names its model after a large field was told
+  `400` to "include a \"model\" field" its body carried. `POST
+  /v1/responses` answered the same failures "model is required", and now
+  answers them the same way.
 - `POST /v1/responses` now answers `400` for a `max_output_tokens` that is
   not an integer — `100000.0`, `1e5`, `"100000"` — before anything is
   forwarded. The field was read into an integer and a value that did not

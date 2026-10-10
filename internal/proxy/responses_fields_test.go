@@ -35,7 +35,7 @@ func TestPeekResponsesFields_ReadsExactKeys(t *testing.T) {
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/responses", strings.NewReader(tc.body))
-			model, maxOut, unreadable := peekResponsesFields(r)
+			model, maxOut, unreadable, _ := peekResponsesFields(r)
 			if ambiguous := unreadable != ""; model != tc.wantModel || maxOut != tc.wantMax || ambiguous != tc.wantAmbiguous {
 				t.Errorf("peekResponsesFields(%s) = (%q, %d, %v), want (%q, %d, %v)",
 					tc.body, model, maxOut, ambiguous, tc.wantModel, tc.wantMax, tc.wantAmbiguous)

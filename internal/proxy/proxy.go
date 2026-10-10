@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,7 +14,9 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"slices"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/ferro-labs/ai-gateway/internal/apierror"
@@ -71,6 +74,40 @@ func buildRewrite(target *url.URL, authHeaders map[string]string, propagateTrace
 		pr.SetXForwarded()
 		injectTraceContext(propagateTrace, pr)
 	}
+}
+
+// withBaseURLUserinfo returns the headers a forward to target installs: the
+// provider's own, plus the HTTP Basic credential target's userinfo carries when
+// they set no Authorization of their own.
+//
+// Userinfo is how a base URL points at a proxy that authenticates with Basic,
+// and a provider's own client honours it: http.Client turns a request URL's
+// userinfo into Basic auth whenever no Authorization header is set. A forward
+// does not go through http.Client. ProxyRequest.SetURL copies only target's
+// scheme, host and path, and the transport never reads userinfo, so every
+// forward to such a base reached the proxy anonymous while chat to the same
+// base was authenticated. The rule here is http.Client's, so the two cannot
+// disagree: a provider that sends an Authorization header keeps it.
+//
+// Returned among the auth headers, the credential is enrolled for redaction
+// with them, so an upstream that quotes it back does not hand it to the caller.
+func withBaseURLUserinfo(target *url.URL, authHeaders map[string]string) map[string]string {
+	if target.User == nil {
+		return authHeaders
+	}
+	headers := make(map[string]string, len(authHeaders)+1)
+	for name, value := range authHeaders {
+		if http.CanonicalHeaderKey(name) == "Authorization" {
+			if value != "" {
+				return authHeaders
+			}
+			continue
+		}
+		headers[name] = value
+	}
+	password, _ := target.User.Password()
+	headers["Authorization"] = "Basic " + base64.StdEncoding.EncodeToString([]byte(target.User.Username()+":"+password))
+	return headers
 }
 
 // proxyFlushInterval forces the reverse proxy to flush buffered bytes to the
@@ -172,37 +209,9 @@ func passThroughHandler(src providers.ProviderSource) http.HandlerFunc {
 		// ReloadConfig flip of observability.tracing.propagate_passthrough
 		// takes effect on the next request rather than needing a restart.
 		propagateTrace := propagatesTrace(src)
-		p, model, ok := ResolveProvider(r, src)
+		p, model, ok, bodyErr := resolveProvider(r, src)
 		if !ok {
-			// The caller named a provider explicitly. Telling them to set the
-			// header they just set answers a question they did not ask. Whether
-			// the name is unknown to this build or merely absent from the
-			// config is deliberately one answer: the pass-through can be
-			// unauthenticated, and the difference describes the deployment.
-			if named := r.Header.Get("X-Provider"); named != "" {
-				apierror.WriteOpenAI(w, http.StatusNotFound,
-					"no configured target serves the requested provider",
-					"invalid_request_error",
-					"provider_not_found",
-				)
-				return
-			}
-			if model != "" {
-				// The caller named a model and no configured target serves it.
-				// Forwarding anyway is what sent the request body — prompt
-				// included — to a provider that does not own the name, decided
-				// by registration order rather than by anything the gateway
-				// knows. The answer is written by apierror rather than composed
-				// here, so this surface and the four routed ones report one
-				// condition one way.
-				apierror.WriteModelNotFound(w)
-				return
-			}
-			apierror.WriteOpenAI(w, http.StatusBadRequest,
-				`no provider resolved; set the X-Provider header (e.g. "X-Provider: openai") or include a "model" field in the request body`,
-				"invalid_request_error",
-				"provider_not_resolved",
-			)
+			writeUnresolved(w, r, model, bodyErr)
 			return
 		}
 
@@ -266,7 +275,7 @@ func passThroughHandler(src providers.ProviderSource) http.HandlerFunc {
 		// pathless root — read one operator value two ways with nothing to tell
 		// them apart, since both shapes are a scheme and a host.
 
-		authHeaders := pp.AuthHeaders()
+		authHeaders := withBaseURLUserinfo(target, pp.AuthHeaders())
 		// The credential values this request will carry upstream, so a response
 		// echoing one can be scanned for it before it reaches the client.
 		secrets := injectedSecrets(authHeaders)
@@ -384,7 +393,7 @@ func passThroughHandler(src providers.ProviderSource) http.HandlerFunc {
 			// A source with no lifecycle to run — a bare *providers.Registry —
 			// holds no plugins, no breakers and no limiters, so there is nothing
 			// here to apply and nothing being skipped.
-			proxy.ServeHTTP(streamio.WrapResponseWriter(w), r)
+			proxy.ServeHTTP(keepGatewayHeaders(streamio.WrapResponseWriter(w)), r)
 			return
 		}
 
@@ -417,6 +426,47 @@ func passThroughHandler(src providers.ProviderSource) http.HandlerFunc {
 			apierror.WriteRouteError(w, err)
 		}
 	}
+}
+
+// writeUnresolved answers a pass-through request no provider was resolved for:
+// model is the one its body named, if any, and bodyErr the failure reading the
+// body when that is what kept the scan from finding one.
+func writeUnresolved(w http.ResponseWriter, r *http.Request, model string, bodyErr error) {
+	// The caller named a provider explicitly. Telling them to set the
+	// header they just set answers a question they did not ask. Whether
+	// the name is unknown to this build or merely absent from the
+	// config is deliberately one answer: the pass-through can be
+	// unauthenticated, and the difference describes the deployment.
+	if named := r.Header.Get("X-Provider"); named != "" {
+		apierror.WriteOpenAI(w, http.StatusNotFound,
+			"no configured target serves the requested provider",
+			"invalid_request_error",
+			"provider_not_found",
+		)
+		return
+	}
+	// A body that failed before the scan reached its model is answered
+	// as the forward answers it, not as a body naming no model.
+	if bodyErr != nil {
+		writeCallerBodyError(w, bodyErr)
+		return
+	}
+	if model != "" {
+		// The caller named a model and no configured target serves it.
+		// Forwarding anyway is what sent the request body — prompt
+		// included — to a provider that does not own the name, decided
+		// by registration order rather than by anything the gateway
+		// knows. The answer is written by apierror rather than composed
+		// here, so this surface and the four routed ones report one
+		// condition one way.
+		apierror.WriteModelNotFound(w)
+		return
+	}
+	apierror.WriteOpenAI(w, http.StatusBadRequest,
+		`no provider resolved; set the X-Provider header (e.g. "X-Provider: openai") or include a "model" field in the request body`,
+		"invalid_request_error",
+		"provider_not_resolved",
+	)
 }
 
 // relayedStatusError is the failure a forward reports to the gateway lifecycle
@@ -474,9 +524,58 @@ func serveForward(proxy *httputil.ReverseProxy, w http.ResponseWriter, r *http.R
 			err = fmt.Errorf("%w: %w", errResponseAborted, cause)
 		}
 	}()
-	proxy.ServeHTTP(w, r)
+	proxy.ServeHTTP(keepGatewayHeaders(w), r)
 	return nil
 }
+
+// gatewayHeaderKeeper restores the response headers the gateway set before a
+// forward — the security headers, X-Request-ID, the CORS grant — after the
+// reverse proxy relays an informational response.
+//
+// httputil.ReverseProxy relays a 1xx by writing the upstream's 1xx headers into
+// the writer's header map, sending the 1xx, and then clearing that map, so the
+// final response carried only what the upstream sent. A client sending
+// "Expect: 100-continue" reaches that on every forward, because the expectation
+// travels upstream and the upstream answers it with a 100: curl does for a
+// large upload to /v1/files, and the gateway's own headers vanished from the
+// answer.
+//
+// relayed is set from the transport's goroutine while RoundTrip runs and read
+// from the handler's afterwards; ReverseProxy orders the two, and the atomic
+// keeps that from depending on it.
+type gatewayHeaderKeeper struct {
+	http.ResponseWriter
+	kept    http.Header
+	relayed atomic.Bool
+}
+
+// keepGatewayHeaders returns w wrapped so the headers already set on it survive
+// an informational response relayed through it.
+func keepGatewayHeaders(w http.ResponseWriter) http.ResponseWriter {
+	return &gatewayHeaderKeeper{ResponseWriter: w, kept: w.Header().Clone()}
+}
+
+func (k *gatewayHeaderKeeper) Header() http.Header {
+	h := k.ResponseWriter.Header()
+	if k.relayed.Swap(false) {
+		for name, values := range k.kept {
+			if _, set := h[name]; !set {
+				h[name] = slices.Clone(values)
+			}
+		}
+	}
+	return h
+}
+
+func (k *gatewayHeaderKeeper) WriteHeader(code int) {
+	if code >= 100 && code < 200 && code != http.StatusSwitchingProtocols {
+		k.relayed.Store(true)
+	}
+	k.ResponseWriter.WriteHeader(code)
+}
+
+// Unwrap lets http.ResponseController reach the writer's flush and hijack.
+func (k *gatewayHeaderKeeper) Unwrap() http.ResponseWriter { return k.ResponseWriter }
 
 // reraiseAbort re-raises the abort serveForward recovered, so net/http drops
 // the client connection exactly as the reverse proxy meant it to. A nil error,
@@ -686,26 +785,33 @@ func providerIsAllowed(src providers.ProviderSource, name string) bool {
 // whole — an unenumerable model still resolves — while refusing to send a body
 // somewhere the config never named.
 func ResolveProvider(r *http.Request, src providers.ProviderSource) (providers.Provider, string, bool) {
+	p, model, ok, _ := resolveProvider(r, src)
+	return p, model, ok
+}
+
+// resolveProvider is ResolveProvider, also returning the failure reading the
+// body when that is what kept the scan from reaching a model.
+func resolveProvider(r *http.Request, src providers.ProviderSource) (providers.Provider, string, bool, error) {
 	// 1. Explicit header takes precedence.
 	if name := r.Header.Get("X-Provider"); name != "" {
 		p, ok := src.Get(name)
 		if ok && !providerIsAllowed(src, p.Name()) {
-			return nil, "", false
+			return nil, "", false, nil
 		}
-		return p, "", ok
+		return p, "", ok, nil
 	}
 
 	// 2. Try to extract "model" from the request body.
 	if r.Body == nil || r.ContentLength == 0 {
-		return nil, "", false
+		return nil, "", false, nil
 	}
 
-	model, err := ExtractTopLevelModel(r)
+	model, bodyErr, err := extractTopLevelModel(r)
 	if err != nil || model == "" {
-		return nil, "", false
+		return nil, "", false, bodyErr
 	}
 	p, ok := findModelOwner(src, model)
-	return p, model, ok
+	return p, model, ok, nil
 }
 
 // targetModelSource is a ProviderSource that can place a model among the
@@ -747,17 +853,28 @@ func findModelOwner(src providers.ProviderSource, model string) (providers.Provi
 // ExtractTopLevelModel peeks at the JSON body to find the top-level "model"
 // field, then restores the body so it can be read again by downstream handlers.
 func ExtractTopLevelModel(r *http.Request) (string, error) {
+	model, _, err := extractTopLevelModel(r)
+	return model, err
+}
+
+// extractTopLevelModel is ExtractTopLevelModel, also returning the failure
+// reading the body when that is what ended the scan — a body the caller could
+// not deliver, as distinct from one it delivered that is not the JSON the scan
+// looks for.
+func extractTopLevelModel(r *http.Request) (model string, bodyErr, err error) {
 	if r.Body == nil {
-		return "", io.EOF
+		return "", nil, io.EOF
 	}
 
-	scanner := newTopLevelModelScanner(r.Body)
-	model, err := scanner.extract()
-	r.Body = io.NopCloser(io.MultiReader(bytes.NewReader(scanner.captured.Bytes()), r.Body))
+	body := r.Body
+	read := &callerBody{ReadCloser: body}
+	scanner := newTopLevelModelScanner(read)
+	model, err = scanner.extract()
+	r.Body = io.NopCloser(io.MultiReader(bytes.NewReader(scanner.captured.Bytes()), body))
 	if err != nil {
-		return "", err
+		return "", read.failure(), err
 	}
-	return model, nil
+	return model, nil, nil
 }
 
 // topLevelModelScanner is a low-allocation JSON scanner that reads only the

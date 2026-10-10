@@ -39,7 +39,7 @@ func ResponsesCreate(src ResponsesSource) http.HandlerFunc {
 			return
 		}
 
-		model, maxOutputTokens, unreadable := peekResponsesFields(r)
+		model, maxOutputTokens, unreadable, bodyErr := peekResponsesFields(r)
 		if unreadable != "" {
 			apierror.WriteOpenAI(w, http.StatusBadRequest, unreadable, "invalid_request_error", "invalid_request")
 			return
@@ -49,6 +49,13 @@ func ResponsesCreate(src ResponsesSource) http.HandlerFunc {
 		if !ok {
 			if r.Header.Get("X-Provider") != "" {
 				apierror.WriteOpenAI(w, http.StatusNotFound, "no configured target serves the requested provider", "invalid_request_error", "provider_not_found")
+				return
+			}
+			// A body that broke off before the peek reached its model named
+			// none the gateway could read; "model is required" told a caller
+			// who sent one to add it.
+			if bodyErr != nil {
+				writeCallerBodyError(w, bodyErr)
 				return
 			}
 			if model == "" {
@@ -213,29 +220,33 @@ func resolveResponsesProvider(r *http.Request, src providers.ProviderSource, mod
 // when it decodes the body. A JSON null is absent, as it is on chat.
 //
 // unreadable is the refusal to answer with, empty when both fields were read.
-func peekResponsesFields(r *http.Request) (model string, maxOutputTokens int, unreadable string) {
+// bodyErr is the failure reading the body, when the peek could not read it.
+func peekResponsesFields(r *http.Request) (model string, maxOutputTokens int, unreadable string, bodyErr error) {
 	if r.Body == nil || r.ContentLength == 0 {
-		return "", 0, ""
+		return "", 0, "", nil
 	}
 	buf, err := io.ReadAll(io.LimitReader(r.Body, projectionCap+1))
 	r.Body = io.NopCloser(io.MultiReader(bytes.NewReader(buf), r.Body))
-	if err != nil || len(buf) > projectionCap {
-		return "", 0, ""
+	if err != nil {
+		return "", 0, "", err
+	}
+	if len(buf) > projectionCap {
+		return "", 0, "", nil
 	}
 	var fields map[string]json.RawMessage
 	if json.Unmarshal(buf, &fields) != nil {
-		return "", 0, ""
+		return "", 0, "", nil
 	}
 	for key := range fields {
 		for _, governed := range [...]string{"model", "max_output_tokens"} {
 			if key != governed && strings.EqualFold(key, governed) {
-				return "", 0, "model and max_output_tokens must be spelled exactly as named; the body carries another spelling of one"
+				return "", 0, "model and max_output_tokens must be spelled exactly as named; the body carries another spelling of one", nil
 			}
 		}
 	}
 	_ = json.Unmarshal(fields["model"], &model)
 	if ceiling, present := fields["max_output_tokens"]; present && json.Unmarshal(ceiling, &maxOutputTokens) != nil {
-		return "", 0, "max_output_tokens must be an integer"
+		return "", 0, "max_output_tokens must be an integer", nil
 	}
-	return model, maxOutputTokens, ""
+	return model, maxOutputTokens, "", nil
 }
