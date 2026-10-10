@@ -253,9 +253,15 @@ func (s *SQLSessionStore) DeleteSession(ctx context.Context, id string) error {
 	return nil
 }
 
-// DeleteAllSessions removes every session and returns how many were removed.
-// It is the "sign everyone out" control.
+// DeleteAllSessions removes every session and returns how many live ones it
+// ended. It is the "sign everyone out" control.
+//
+// Rows past either bound are swept first, so the count is of the sessions
+// ListSessions would have listed: a dead row is stored until the next sign-in
+// sweeps it, and counting it reported operators signed out who were not signed
+// in.
 func (s *SQLSessionStore) DeleteAllSessions(ctx context.Context) (int, error) {
+	s.sweepExpiredSessions(ctx, time.Now().UTC())
 	res, err := s.db.ExecContext(ctx, "DELETE FROM sessions")
 	if err != nil {
 		return 0, fmt.Errorf("delete all sessions: %w", err)

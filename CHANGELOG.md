@@ -10,6 +10,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 
+- Reading the config through the Admin API no longer writes to the running
+  config. `GET /admin/config` and `GET /admin/config/history` redact a copy of
+  it, but the copy shared the gateway's own retry, circuit-breaker and sticky
+  settings by pointer, and redaction rewrote what those pointers reached: every
+  read replaced the live retry policy's `on_status_codes` and re-set the
+  breaker timeout and sticky strings, with no lock, while requests were reading
+  them — a data race between the dashboard's config page and the request path.
+  Each pointer is now copied before anything beneath it is redacted, so a read
+  leaves the running config untouched.
+- `DELETE /admin/sessions` now reports the sessions it actually signed out. A
+  session past its idle or absolute bound stays stored until the next sign-in
+  sweeps it, and it was counted too: with one operator signed in and another
+  who had closed the tab an hour earlier, `GET /admin/sessions` listed one
+  session while signing everyone out answered `{"revoked": 2}` — shown by the
+  dashboard as two sessions signed out and audited as `count: 2`. The count is
+  now of live sessions only, on both the in-memory and the SQL session stores.
+- `GET /admin/logs/stats` now refuses `buckets` without `since` with `400`. A
+  series divides the window from `since` to now, so without one the store
+  computes none, and the endpoint answered `200` echoing the bucket count
+  beside a series of zero points marked not truncated — a log holding traffic
+  read as a window that had held none. A series with `since`, and stats asked
+  for no series, are unchanged.
 - `POST /admin/config/rollback/{version}` now restores any version the config
   store holds. It looked for the version only in the window
   `GET /admin/config/history` reads — the newest 200 — although the trail is

@@ -161,6 +161,14 @@ func (h *Handlers) logsStats(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// A series divides the window from since to now, so without since there is
+	// no window and the store computes none. Answering 200 echoed the bucket
+	// count beside an empty series marked not truncated, which reads as a
+	// window that held no traffic.
+	if buckets > 0 && since == nil {
+		writeError(w, http.StatusBadRequest, "buckets requires since: a series divides the window from since to now", "invalid_request_error", "invalid_request")
+		return
+	}
 
 	query := requestlog.Query{
 		Stage:         stageFilter(r),

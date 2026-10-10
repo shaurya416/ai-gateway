@@ -85,8 +85,9 @@ type SessionStore interface {
 	AuthenticateSession(ctx context.Context, token string) (*model.Session, error)
 	ListSessions(ctx context.Context) ([]*model.Session, error)
 	DeleteSession(ctx context.Context, id string) error
-	// DeleteAllSessions removes every session and returns how many were
-	// removed. It is the "sign everyone out" control.
+	// DeleteAllSessions removes every session and returns how many live
+	// sessions — the ones ListSessions lists — it ended. It is the "sign
+	// everyone out" control.
 	DeleteAllSessions(ctx context.Context) (int, error)
 }
 
@@ -308,12 +309,22 @@ func (s *MemorySessionStore) DeleteSession(_ context.Context, id string) error {
 	return nil
 }
 
-// DeleteAllSessions removes every session and reports how many were removed.
+// DeleteAllSessions removes every session and reports how many live ones it
+// ended.
 func (s *MemorySessionStore) DeleteAllSessions(_ context.Context) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	n := len(s.byID)
+	// Counted by the definition ListSessions serves. A session past either bound
+	// is stored until the next sign-in sweeps it, but it had already ended, and
+	// counting it reported operators signed out who were not signed in.
+	now := time.Now().UTC()
+	n := 0
+	for _, stored := range s.byID {
+		if isLive(stored, now) {
+			n++
+		}
+	}
 	s.byID = make(map[string]*model.Session)
 	s.byHash = make(map[string]string)
 	return n, nil

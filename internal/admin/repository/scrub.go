@@ -560,7 +560,9 @@ func ScrubConfigSecrets(cfg config.Config) config.Config {
 // of the struct field that produced v, used only for the Args special case.
 //
 // Maps and slices are replaced with fresh containers rather than written
-// through, so the returned Config never aliases the live one.
+// through, and a pointer is re-pointed at a private copy of what it points at
+// before anything beneath it is rewritten, so the returned Config never aliases
+// the live one.
 func scrubValue(v reflect.Value, field string) {
 	switch v.Kind() {
 	case reflect.String:
@@ -589,9 +591,20 @@ func scrubValue(v reflect.Value, field string) {
 		// unknown, and unknown is not served.
 		scrubFreeFormMap(v, noKey)
 	case reflect.Pointer, reflect.Interface:
-		if !v.IsNil() {
-			scrubValue(v.Elem(), field)
+		if v.IsNil() {
+			return
 		}
+		// The Config handed to ScrubConfigSecrets is a copy of the live one by
+		// value only: its pointers still reach the gateway's own retry,
+		// circuit-breaker and sticky settings. Recursing through one rewrote
+		// those in place on every read, with no lock, while requests read them.
+		private := reflect.New(v.Elem().Type()).Elem()
+		private.Set(v.Elem())
+		scrubValue(private, field)
+		if v.Kind() == reflect.Pointer {
+			private = private.Addr()
+		}
+		v.Set(private)
 	}
 }
 
