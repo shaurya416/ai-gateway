@@ -33,6 +33,14 @@ const (
 	// drive gateway memory exhaustion. The per-request HTTP timeout bounds time,
 	// not memory.
 	maxResponseBodyBytes = 10 << 20 // 10 MiB
+	// maxToolListPages bounds how many tools/list pages one discovery follows,
+	// so a server that hands out cursors forever fails its initialization
+	// instead of holding the handshake open until it times out. Page size is
+	// the server's choice, so the bound sits far above any real listing: a
+	// server paging a few hundred tools five at a time is a legitimate
+	// configuration, and refusing it loses every tool. Memory is bounded
+	// separately, by the listing's total size (see ListTools).
+	maxToolListPages = 1024
 )
 
 // Client communicates with a single MCP server over Streamable HTTP transport.
@@ -42,11 +50,16 @@ type Client struct {
 	headers    map[string]string
 	httpClient *http.Client
 
-	// sessionMu protects sessionID. Written once during Initialize(), read on
-	// every subsequent call. RWMutex ensures concurrent CallTool invocations
-	// only contend for a read lock after the session is established.
+	// sessionMu protects sessionID. Written during Initialize(), read on every
+	// subsequent call. RWMutex ensures concurrent CallTool invocations only
+	// contend for a read lock after the session is established.
 	sessionMu sync.RWMutex
 	sessionID string
+
+	// renewMu serialises session renewal, so concurrent calls that all meet the
+	// same expired session start one replacement between them rather than one
+	// each.
+	renewMu sync.Mutex
 
 	// nextID is incremented atomically to produce unique JSON-RPC request IDs.
 	nextID atomic.Int64
@@ -67,7 +80,7 @@ func NewClient(endpoint string, headers map[string]string, timeout time.Duration
 
 // Initialize performs the MCP initialization handshake (initialize +
 // notifications/initialized) and stores the Mcp-Session-Id for subsequent
-// requests. Safe to call again — it will re-initialize the session.
+// requests. Safe to call again — it starts a new session.
 func (c *Client) Initialize(ctx context.Context) (*ServerInfo, error) {
 	params := map[string]any{
 		// The revision this build speaks, taken from the same library constant the
@@ -132,19 +145,46 @@ func (c *Client) Initialize(ctx context.Context) (*ServerInfo, error) {
 }
 
 // ListTools retrieves the full list of tools from the MCP server.
+//
+// tools/list is paginated: a page that carries a nextCursor has more after it,
+// fetched by sending that cursor back. Reading only the first page dropped every
+// tool past it with nothing to say so — the server reported ready, an
+// allowed_tools entry naming a later tool matched nothing, and the stdio
+// transport, whose library follows the cursor, discovered the same server's
+// tools in full.
 func (c *Client) ListTools(ctx context.Context) ([]Tool, error) {
-	resp, err := c.call(ctx, mcpMethodToolsList, nil)
-	if err != nil {
-		return nil, fmt.Errorf("mcp tools/list: %w", err)
-	}
+	var (
+		tools  []Tool
+		params any
+		listed int
+	)
+	for range maxToolListPages {
+		resp, err := c.call(ctx, mcpMethodToolsList, params)
+		if err != nil {
+			return nil, fmt.Errorf("mcp tools/list: %w", err)
+		}
+		// Each page is capped by maxResponseBodyBytes; the listing as a whole is
+		// held to the same bound, so following cursors cannot hold more tool
+		// definitions in memory than one unpaginated answer could.
+		listed += len(resp.Result)
+		if listed > maxResponseBodyBytes {
+			return nil, fmt.Errorf("mcp tools/list: listing exceeds %d byte limit", maxResponseBodyBytes)
+		}
 
-	var result struct {
-		Tools []Tool `json:"tools"`
+		var result struct {
+			Tools      []Tool `json:"tools"`
+			NextCursor string `json:"nextCursor"`
+		}
+		if err := json.Unmarshal(resp.Result, &result); err != nil {
+			return nil, fmt.Errorf("mcp tools/list unmarshal: %w", err)
+		}
+		tools = append(tools, result.Tools...)
+		if result.NextCursor == "" {
+			return tools, nil
+		}
+		params = map[string]string{"cursor": result.NextCursor}
 	}
-	if err := json.Unmarshal(resp.Result, &result); err != nil {
-		return nil, fmt.Errorf("mcp tools/list unmarshal: %w", err)
-	}
-	return result.Tools, nil
+	return nil, fmt.Errorf("mcp tools/list: server returned more than %d pages", maxToolListPages)
 }
 
 // CallTool invokes a named tool on the MCP server with the given JSON-encoded
@@ -167,9 +207,68 @@ func (c *Client) CallTool(ctx context.Context, name string, arguments json.RawMe
 	return &result, nil
 }
 
+// errSessionExpired reports a 404 to a request that carried a session ID: the
+// server has terminated that session and no longer recognises it.
+var errSessionExpired = errors.New("mcp server no longer recognises the session")
+
 // call sends a JSON-RPC 2.0 request and returns the decoded response.
 // It sets all required headers including the session ID once established.
+//
+// A server that terminates a session answers every later request carrying it
+// with 404, and the spec obliges the client to start a new session when it sees
+// one. Without that, a server restart — which drops every in-memory session —
+// left the gateway presenting the dead session ID for the rest of the process:
+// each tool call failed with 404 while the server was up and answering, and
+// nothing short of a configuration reload recovered it. The request is retried
+// once on the new session; a 404 means the server never processed it, so the
+// retry cannot repeat a tool's side effects.
 func (c *Client) call(ctx context.Context, method string, params any) (*JSONRPCResponse, error) {
+	// An InitializeRequest starts a session, so it never carries one.
+	if method == mcpMethodInitialize {
+		return c.send(ctx, method, params, "")
+	}
+	sid := c.getSessionID()
+	resp, err := c.send(ctx, method, params, sid)
+	if !errors.Is(err, errSessionExpired) {
+		return resp, err
+	}
+	if renewErr := c.renewSession(ctx, sid); renewErr != nil {
+		return nil, fmt.Errorf("%w; starting a new session failed: %w", err, renewErr)
+	}
+	return c.send(ctx, method, params, c.getSessionID())
+}
+
+// renewSession replaces the expired session stale with a new one, unless a
+// concurrent call has already done so.
+//
+// The stale ID is kept until a handshake succeeds, so a renewal that fails
+// leaves the next call to meet the same 404 and try again, rather than sending
+// no session at all — which a session-requiring server refuses with a 400 that
+// never triggers a renewal.
+func (c *Client) renewSession(ctx context.Context, stale string) error {
+	c.renewMu.Lock()
+	defer c.renewMu.Unlock()
+	if c.getSessionID() != stale {
+		return nil
+	}
+	if _, err := c.Initialize(ctx); err != nil {
+		return err
+	}
+	// A server that issued no ID this time runs without sessions now, and the
+	// stale one must not keep being presented to it.
+	c.sessionMu.Lock()
+	if c.sessionID == stale {
+		c.sessionID = ""
+	}
+	c.sessionMu.Unlock()
+	logger.Default().Info("mcp server no longer recognised the session; started a new one",
+		"endpoint", c.endpoint)
+	return nil
+}
+
+// send performs one JSON-RPC exchange, attaching sid as the session ID when it
+// is non-empty.
+func (c *Client) send(ctx context.Context, method string, params any, sid string) (*JSONRPCResponse, error) {
 	id := c.nextID.Add(1)
 
 	var rawParams json.RawMessage
@@ -198,7 +297,7 @@ func (c *Client) call(ctx context.Context, method string, params any) (*JSONRPCR
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "application/json, text/event-stream")
-	if sid := c.getSessionID(); sid != "" {
+	if sid != "" {
 		httpReq.Header.Set("Mcp-Session-Id", sid)
 	}
 	for k, v := range c.headers {
@@ -210,6 +309,12 @@ func (c *Client) call(ctx context.Context, method string, params any) (*JSONRPCR
 		return nil, fmt.Errorf("mcp http do: %w", err)
 	}
 	defer func() { _ = httpResp.Body.Close() }()
+
+	// Checked before the session header is read: a refusal names a session that
+	// is over, and adopting one echoed on it would undo the renewal it triggers.
+	if httpResp.StatusCode == http.StatusNotFound && sid != "" {
+		return nil, fmt.Errorf("mcp server %s returned HTTP %d: %w", method, httpResp.StatusCode, errSessionExpired)
+	}
 
 	// Persist the session ID returned by the server (set on initialize).
 	c.setSessionID(httpResp.Header.Get("Mcp-Session-Id"))

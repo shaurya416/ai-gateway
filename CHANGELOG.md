@@ -253,6 +253,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the entry loaded, reported itself enabled and enforced nothing. Both now
   declare the stages they act at, `before_request` and `after_request`, as
   `pii-redact`, `prompt-shield`, `regex-guard` and `schema-guard` already do.
+- An HTTP MCP server that restarts no longer breaks its tools until the
+  gateway reloads. A restart drops the server's sessions, and a server answers
+  a request carrying a session it no longer holds with `404`; the gateway kept
+  presenting the dead `Mcp-Session-Id`, so every tool call to that server
+  failed for the rest of the process while the server was up and its tools
+  stayed advertised. A `404` to a request that carried a session now starts a
+  new session, as the MCP specification requires, and the request is retried
+  once on it — the server never processed the refused request, so the retry
+  cannot repeat a tool's side effects. An initialize request no longer carries
+  the previous session ID.
+- An HTTP MCP server that paginates `tools/list` now has all of its tools
+  discovered. Only the first page was read and its `nextCursor` ignored, so
+  every later tool was silently missing — the server reported ready, an
+  `allowed_tools` entry naming one matched nothing, and the same server run
+  over stdio, whose library follows the cursor, exposed them all. The cursor is
+  now followed to the last page. A listing that never ends — more than 1024
+  pages, or more than the 10 MiB one response may carry in all — fails the
+  server's initialization instead of holding the handshake open.
 
 ## [1.5.9] — 2026-09-18
 
