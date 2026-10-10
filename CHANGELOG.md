@@ -99,6 +99,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   which the target refused every request on every surface, chat included, with
   `503` until the breaker's timeout — a caller's malformed body took the target
   down for everyone.
+- `ferrogw init` now writes a config file the gateway can load. The encoding
+  came from `--config-format` alone, which defaults to YAML, while the gateway
+  chooses a config file's decoder by its extension: `ferrogw init -o
+  config.json` wrote YAML into a `.json` file, and a name such as
+  `gateway.conf` got a file no loader reads. init reported the file created,
+  printed a master key and told the operator to export `GATEWAY_CONFIG` for
+  it, and `ferrogw validate` and `serve` then refused it. An unknown
+  `--config-format` became YAML without a word. The `--output` extension now
+  chooses the encoding when `--config-format` is not given; a format the
+  extension contradicts (YAML under a `.json` name), an extension other than
+  `.yaml`, `.yml` or `.json`, and an unknown `--config-format` are refused
+  before anything is written.
+- The startup banner and the `plugins loaded` log line now count enabled
+  plugins only. They counted every `plugins[]` entry, so a config with one
+  guardrail enabled and two disabled reported `3 plugins` and `plugins loaded
+  count=3` while the gateway ran one, which reads as two guardrails in force
+  that were not. Both now agree with the `active config resolved` line, which
+  already counted enabled plugins.
+- The admin CLI now accepts a gateway URL written with a trailing slash and a
+  key written with surrounding whitespace. `--gateway-url` or `FERROGW_URL`
+  set to `http://gw:8080/` sent every request to `//health` or `//admin/...`,
+  which the gateway answers `404`, so `ferrogw status` reported a running
+  gateway unreachable and every `admin` command failed with `HTTP 404`. A
+  `MASTER_KEY` carrying the trailing newline a Secret or env file leaves on it
+  failed every command with `invalid header field value`, though `serve` trims
+  the same variable and accepts the key. The URL is now read without
+  surrounding whitespace or a trailing slash, and the key without surrounding
+  whitespace.
 - A `CORS_ORIGINS` entry written with a trailing slash now allows its origin.
   A browser sends `Origin` as `scheme://host[:port]` with no path, so
   `https://app.example.com/` — the form an address bar shows — matched no

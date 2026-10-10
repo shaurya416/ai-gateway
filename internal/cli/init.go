@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/ferro-labs/ai-gateway/providers"
@@ -23,7 +24,7 @@ for authenticating with the Admin API and standalone web application.`,
 }
 
 func init() {
-	InitCmd.Flags().String("config-format", "yaml", "Config file format: yaml or json")
+	InitCmd.Flags().String("config-format", "yaml", "Config file format: yaml or json (when omitted, the --output extension decides)")
 	InitCmd.Flags().StringP("output", "o", "", "Config file path (default: config.yaml or config.json)")
 	InitCmd.Flags().Bool("non-interactive", false, "Skip prompts, use defaults")
 }
@@ -171,6 +172,49 @@ func WriteDefaultConfig(path, format string) error {
 	return os.WriteFile(path, data, 0600)
 }
 
+// configFileFormat resolves the encoding init writes to output.
+//
+// The gateway chooses a config file's decoder by its extension
+// (config.LoadConfig), so the encoding has to agree with the name the file is
+// written under. Taken from --config-format alone, `init -o config.json` wrote
+// YAML into a .json file and a name such as gateway.conf got a file no loader
+// reads, while init reported the file created and printed a master key and the
+// next steps for it; `validate` and `serve` then refused the file. An unknown
+// --config-format became YAML with nothing said.
+//
+// The extension now decides when --config-format is not given. A format the
+// extension would make the gateway misread, an extension it does not read, and
+// an unknown format are refused before anything is written. JSON under a .yaml
+// name stays allowed: JSON is valid YAML, so that file loads.
+func configFileFormat(flagFormat string, explicit bool, output string) (string, error) {
+	format := strings.ToLower(strings.TrimSpace(flagFormat))
+	switch format {
+	case FormatJSON, FormatYAML:
+	case "yml":
+		format = FormatYAML
+	default:
+		return "", fmt.Errorf("unsupported --config-format %q: want yaml or json", flagFormat)
+	}
+	if output == "" {
+		return format, nil
+	}
+
+	switch strings.ToLower(filepath.Ext(output)) {
+	case ".json":
+		if explicit && format != FormatJSON {
+			return "", fmt.Errorf("--output %s is read as JSON by the gateway, so it cannot hold %s: omit --config-format, or name a .yaml file", output, format)
+		}
+		return FormatJSON, nil
+	case ".yaml", ".yml":
+		if !explicit {
+			return FormatYAML, nil
+		}
+		return format, nil
+	default:
+		return "", fmt.Errorf("--output %s: the gateway reads a config file by its extension, so the name must end in .yaml, .yml or .json", output)
+	}
+}
+
 func runInit(cmd *cobra.Command, _ []string) error {
 	if err := requireDefaultFormat(cmd); err != nil {
 		return err
@@ -178,17 +222,16 @@ func runInit(cmd *cobra.Command, _ []string) error {
 	format, _ := cmd.Flags().GetString("config-format")
 	output, _ := cmd.Flags().GetString("output")
 	nonInteractive, _ := cmd.Flags().GetBool("non-interactive")
+	format, err := configFileFormat(format, cmd.Flags().Changed("config-format"), output)
+	if err != nil {
+		return err
+	}
 
 	out := cmd.ErrOrStderr()
 	eprintf := func(format string, a ...any) { _, _ = fmt.Fprintf(out, format, a...) }
 
 	if !nonInteractive {
 		eprintf("\n  Ferro Labs AI Gateway -- Setup\n\n")
-	}
-
-	format = strings.ToLower(format)
-	if format != FormatJSON {
-		format = FormatYAML
 	}
 
 	if output == "" {

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/ferro-labs/ai-gateway/internal/transport"
@@ -23,21 +24,30 @@ type AdminClient struct {
 }
 
 // NewAdminClient creates a client, resolving URL and key from flags then env.
+//
+// Both are read with surrounding whitespace trimmed, as serve reads MASTER_KEY,
+// and the URL without a trailing slash. Every path the client appends starts
+// with "/", so a base written http://gw:8080/ asked for //health and
+// //admin/keys, which the gateway answers 404: `ferrogw status` reported a
+// running gateway unreachable and every admin command failed. A key carrying
+// the trailing newline a Secret or env file leaves on it was refused by the
+// HTTP client before any request was sent, while serve accepted the same key.
 func NewAdminClient(flagURL, flagKey string) *AdminClient {
-	url := flagURL
+	url := strings.TrimSpace(flagURL)
 	if url == "" {
-		url = os.Getenv("FERROGW_URL")
+		url = strings.TrimSpace(os.Getenv("FERROGW_URL"))
 	}
+	url = strings.TrimRight(url, "/")
 	if url == "" {
 		url = "http://localhost:8080"
 	}
 
-	key := flagKey
+	key := strings.TrimSpace(flagKey)
 	if key == "" {
-		key = os.Getenv("FERROGW_API_KEY")
+		key = strings.TrimSpace(os.Getenv("FERROGW_API_KEY"))
 	}
 	if key == "" {
-		key = os.Getenv("MASTER_KEY")
+		key = strings.TrimSpace(os.Getenv("MASTER_KEY"))
 	}
 
 	return &AdminClient{

@@ -701,7 +701,9 @@ func BuildGateway(ctx context.Context, cfg *config.Config, registry *providers.R
 			_ = gw.Close()
 			return nil, err
 		}
-		logger.Default().Info("plugins loaded", "count", len(cfg.Plugins))
+		// Enabled entries only: LoadPlugins builds nothing for a disabled one,
+		// and counting it reported guardrails the gateway was not running.
+		logger.Default().Info("plugins loaded", "count", enabledPluginCount(cfg.Plugins))
 	}
 	return gw, nil
 }
@@ -815,7 +817,7 @@ func PrintStartupBanner(addr string, registry *providers.Registry, cfg *config.C
 	pluginCount := 0
 	if cfg != nil {
 		strategy = string(cfg.Strategy.Mode)
-		pluginCount = len(cfg.Plugins)
+		pluginCount = enabledPluginCount(cfg.Plugins)
 	}
 
 	providerCount := len(registry.List())
