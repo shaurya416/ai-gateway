@@ -704,13 +704,44 @@ func ResolveProvider(r *http.Request, src providers.ProviderSource) (providers.P
 	if err != nil || model == "" {
 		return nil, "", false
 	}
-	p, ok := src.FindByModel(model)
+	p, ok := findModelOwner(src, model)
+	return p, model, ok
+}
+
+// targetModelSource is a ProviderSource that can place a model among the
+// configured targets rather than among the registered providers. *Gateway
+// implements it; a bare *providers.Registry holds no config and cannot.
+//
+// Declared here for the same reason targetGatedSource is: this package is the
+// only caller that needs the answer.
+type targetModelSource interface {
+	FindTargetByModel(model string) (providers.Provider, bool)
+}
+
+// findModelOwner resolves the provider a body's model is forwarded to, gated on
+// target membership.
+//
+// A source that can answer among its targets is asked that, so the forward goes
+// where the routed surfaces would send the model. Asking FindByModel instead
+// placed the name among every REGISTERED provider and only then applied the
+// gate, so a provider no target names that registered first and owned the same
+// name turned a model a configured target serves into a 404.
+func findModelOwner(src providers.ProviderSource, model string) (providers.Provider, bool) {
+	var (
+		p  providers.Provider
+		ok bool
+	)
+	if targets, placesAmongTargets := src.(targetModelSource); placesAmongTargets {
+		p, ok = targets.FindTargetByModel(model)
+	} else {
+		p, ok = src.FindByModel(model)
+	}
 	// Ownership answers who serves the name; it does not answer whether this
 	// gateway is configured to send anything there.
 	if ok && !providerIsAllowed(src, p.Name()) {
-		return nil, model, false
+		return nil, false
 	}
-	return p, model, ok
+	return p, ok
 }
 
 // ExtractTopLevelModel peeks at the JSON body to find the top-level "model"

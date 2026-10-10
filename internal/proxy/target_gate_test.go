@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	aigateway "github.com/ferro-labs/ai-gateway"
+	"github.com/ferro-labs/ai-gateway/config"
 	"github.com/ferro-labs/ai-gateway/providers"
 	"github.com/ferro-labs/ai-gateway/providers/core"
 )
@@ -135,6 +137,54 @@ func TestResolveProvider_UngatedSourceIsUnchanged(t *testing.T) {
 	}
 	if p.Name() != "openai" {
 		t.Errorf("resolved to %q, want openai", p.Name())
+	}
+}
+
+// configuredStub is a proxiable provider whose model set comes from its own
+// config, so the routing index records it as an owner of those models.
+type configuredStub struct{ proxiableStub }
+
+func (p *configuredStub) ConfiguredModels() []string { return p.models }
+
+// A model a configured target serves is forwarded to that target even when a
+// provider no target names registered first and owns the same name. The
+// pass-through placed the model among every registered provider and only then
+// applied the targets allowlist, so it answered 404 model_not_found for a model
+// the target declared, /v1/models advertised and chat routed.
+func TestResolveProvider_TargetServesAModelAnUntargetedProviderAlsoOwns(t *testing.T) {
+	t.Setenv("FERRO_MODEL_CATALOG_TIMEOUT", "0")
+	untargeted := newCountingUpstream(t)
+	targeted := newCountingUpstream(t)
+	gw, err := aigateway.New(config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeFallback},
+		Targets:  []config.Target{{VirtualKey: "second", Models: []string{"shared-model"}}},
+	})
+	if err != nil {
+		t.Fatalf("aigateway.New: %v", err)
+	}
+	t.Cleanup(func() { _ = gw.Close() })
+	gw.RegisterProvider(&configuredStub{proxiableStub{name: "first", baseURL: untargeted.URL, models: []string{"shared-model", "first-only-model"}}})
+	gw.RegisterProvider(&proxiableStub{name: "second", baseURL: targeted.URL})
+
+	for name, h := range abortSurfaces(gw) {
+		t.Run(name, func(t *testing.T) {
+			before := targeted.hits.Load()
+			w := postResponsesBody(t, h, `{"model":"shared-model","input":"hi"}`)
+			if w.Code != http.StatusOK || w.Header().Get("X-Gateway-Provider") != "second" {
+				t.Fatalf("shared model: got %d from %q, want 200 from the configured target; body: %s", w.Code, w.Header().Get("X-Gateway-Provider"), w.Body.String())
+			}
+			if got := targeted.hits.Load() - before; got != 1 {
+				t.Errorf("configured target received %d requests, want 1", got)
+			}
+
+			// A model only the untargeted provider owns is still refused.
+			if w := postResponsesBody(t, h, `{"model":"first-only-model","input":"hi"}`); w.Code != http.StatusNotFound {
+				t.Errorf("untargeted provider's model: status = %d, want 404; body: %s", w.Code, w.Body.String())
+			}
+			if hits := untargeted.hits.Load(); hits != 0 {
+				t.Errorf("provider no target names received %d requests, want 0", hits)
+			}
+		})
 	}
 }
 

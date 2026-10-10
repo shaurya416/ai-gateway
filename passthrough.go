@@ -345,7 +345,15 @@ func (g *Gateway) runPassthroughGovernance(
 	// HasCost stays false for an unpriced pass-through: see RoutePassthrough on why
 	// it is unpriced rather than free. A plugin that persists this keeps the
 	// distinction, so a request-log row reads "cost unknown", not "cost 0".
-	pctx.Measurements = plugin.Measurements{DurationMs: elapsedMs(start)}
+	//
+	// A priced Responses forward carries its cost here, as the routed surfaces
+	// do. Leaving it out recorded every priced Responses row as cost unknown,
+	// while the span and the completed event carried the price.
+	pctx.Measurements = plugin.Measurements{
+		DurationMs: elapsedMs(start),
+		CostUSD:    record.cost.TotalUSD,
+		HasCost:    record.cost.Priced,
+	}
 	pctx.Metadata["completed"] = true
 	if err := plugins.RunAfter(ctx, pctx); err != nil {
 		pctx.Error = err
@@ -399,6 +407,32 @@ func (g *Gateway) forwardUnderResilience(ctx context.Context, key string, forwar
 		g.parkRateLimited(key, err)
 	}
 	return err
+}
+
+// FindTargetByModel returns the provider of the first configured target, in
+// target order, that serves model once a configured alias is resolved. It is
+// how the /v1/* pass-through and POST /v1/responses place a body's model.
+//
+// It asks the routed surfaces' own candidacy question (candidateLocked) of the
+// configured targets, the question admitModel asks, in the order /v1/models
+// takes a model's owner from. FindByModel answers a different one, the first
+// REGISTERED provider that owns the name, and registration follows the
+// credentials in the environment. Gated on target membership after the fact,
+// that answer refused a model a configured target serves whenever a provider no
+// target names had registered first and owned the same name: a targets[].models
+// declaration of a model the catalog also gives that provider was a 404 on those
+// two surfaces while chat served it.
+func (g *Gateway) FindTargetByModel(model string) (providers.Provider, bool) {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	model = g.resolveModelAliasLocked(model)
+	for _, t := range g.config.Targets {
+		p, registered := g.providers[t.VirtualKey]
+		if registered && g.candidateLocked(t.VirtualKey, p, model, nil) {
+			return p, true
+		}
+	}
+	return nil, false
 }
 
 // PropagatesPassthroughTrace reports observability.tracing.propagate_passthrough,

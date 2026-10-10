@@ -68,6 +68,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   from the example recorded all traffic as anonymous. The README and the
   `Exporter.Export` godoc now say to read `Event.User`, `Event.SessionID` and
   `Event.Metadata`, which the gateway fills from the request.
+- `POST /v1/responses` now answers `400` for a `max_output_tokens` that is
+  not an integer — `100000.0`, `1e5`, `"100000"` — before anything is
+  forwarded. The field was read into an integer and a value that did not
+  decode was dropped in silence, so the `max-token` guardrail saw no ceiling,
+  approved the request, and the body carrying the ceiling it never read was
+  forwarded verbatim to an upstream free to honour it. Chat already refuses
+  the same value in `max_tokens`. A `null` ceiling still declares none.
+- A priced `POST /v1/responses` request now records its cost in the request
+  log. The after_request stage was handed the request's duration and nothing
+  else, so the logger's cost column read "unknown" for every priced Responses
+  row, as did any plugin reading `Measurements`, while the span and the
+  completed event carried the price. Its cost now reaches the stage the way it
+  does on the routed surfaces; every other pass-through stays unpriced.
+- The `/v1/*` pass-through and `POST /v1/responses` now forward a body's model
+  to the configured target that serves it, even when a provider no target
+  names also owns the name. The model was placed among every *registered*
+  provider — registration follows the credentials in the environment — and the
+  targets allowlist applied only afterwards, so a provider registered earlier
+  and absent from `targets` turned a model a target declares in
+  `targets[].models`, and that `/v1/models` advertises and chat routes, into a
+  `404 model_not_found`. The model is now placed among the configured targets
+  with the routed surfaces' own candidacy test, in target order — the order
+  `/v1/models` takes a model's owner from.
 - `GET /admin/config` and `GET /admin/config/history` no longer serve the
   query of a URL Go's parser cannot decode. Every query value of a URL field —
   `mcp_servers[].url`, the tracing endpoint — was withheld only when

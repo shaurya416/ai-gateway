@@ -30,12 +30,13 @@ func TestPeekResponsesFields_ReadsExactKeys(t *testing.T) {
 		"folded ceiling only":  {body: `{"model":"m","MAX_OUTPUT_TOKENS":100000}`, wantAmbiguous: true},
 		"unicode fold":         {body: "{\"model\":\"m\",\"max_output_to\u212aens\":100000}", wantAmbiguous: true},
 		"unrelated keys":       {body: `{"model":"m","modelx":"y","Input":"hi"}`, wantModel: "m"},
+		"null ceiling":         {body: `{"model":"m","max_output_tokens":null}`, wantModel: "m"},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/responses", strings.NewReader(tc.body))
-			model, maxOut, ambiguous := peekResponsesFields(r)
-			if model != tc.wantModel || maxOut != tc.wantMax || ambiguous != tc.wantAmbiguous {
+			model, maxOut, unreadable := peekResponsesFields(r)
+			if ambiguous := unreadable != ""; model != tc.wantModel || maxOut != tc.wantMax || ambiguous != tc.wantAmbiguous {
 				t.Errorf("peekResponsesFields(%s) = (%q, %d, %v), want (%q, %d, %v)",
 					tc.body, model, maxOut, ambiguous, tc.wantModel, tc.wantMax, tc.wantAmbiguous)
 			}
@@ -65,6 +66,39 @@ func TestResponsesCreate_RefusesAmbiguousGovernedFields(t *testing.T) {
 
 	if w := postResponsesBody(t, h, `{"model":"stub-model","input":"hi","max_output_tokens":64}`); w.Code != http.StatusOK {
 		t.Errorf("exactly spelled body: status = %d, want 200; body: %s", w.Code, w.Body.String())
+	}
+}
+
+// A ceiling the gateway cannot read as an integer is refused, not read as
+// absent. Read as absent, 100000.0 reached the max-token guardrail as no
+// ceiling at all, which it approves, and the body carrying it was forwarded
+// verbatim to an upstream free to honour it. Chat refuses the same value in
+// max_tokens.
+func TestResponsesCreate_RefusesUnreadableCeiling(t *testing.T) {
+	up := newCountingUpstream(t)
+	gw := newGovernedGateway(t, up.URL, maxTokenConfig(0))
+	h := ResponsesCreate(gw)
+
+	for _, ceiling := range []string{`100000.0`, `1e5`, `"100000"`, `{"value":100000}`, `1e30`} {
+		w := postResponsesBody(t, h, `{"model":"stub-model","input":"hi","max_output_tokens":`+ceiling+`}`)
+		if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "max_output_tokens must be an integer") {
+			t.Errorf("max_output_tokens %s: got %d %s, want 400 naming the field", ceiling, w.Code, w.Body.String())
+		}
+	}
+	if hits := up.hits.Load(); hits != 0 {
+		t.Errorf("upstream received %d requests, want 0: a ceiling no guardrail read was forwarded", hits)
+	}
+
+	// An absent or null ceiling declares none, and an integer one is governed.
+	for body, want := range map[string]int{
+		`{"model":"stub-model","input":"hi"}`:                          http.StatusOK,
+		`{"model":"stub-model","input":"hi","max_output_tokens":null}`: http.StatusOK,
+		`{"model":"stub-model","input":"hi","max_output_tokens":64}`:   http.StatusOK,
+		`{"model":"stub-model","input":"hi","max_output_tokens":8192}`: http.StatusBadRequest,
+	} {
+		if w := postResponsesBody(t, h, body); w.Code != want {
+			t.Errorf("%s: status = %d, want %d; body: %s", body, w.Code, want, w.Body.String())
+		}
 	}
 }
 

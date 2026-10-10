@@ -39,11 +39,9 @@ func ResponsesCreate(src ResponsesSource) http.HandlerFunc {
 			return
 		}
 
-		model, maxOutputTokens, ambiguous := peekResponsesFields(r)
-		if ambiguous {
-			apierror.WriteOpenAI(w, http.StatusBadRequest,
-				"model and max_output_tokens must be spelled exactly as named; the body carries another spelling of one",
-				"invalid_request_error", "invalid_request")
+		model, maxOutputTokens, unreadable := peekResponsesFields(r)
+		if unreadable != "" {
+			apierror.WriteOpenAI(w, http.StatusBadRequest, unreadable, "invalid_request_error", "invalid_request")
 			return
 		}
 
@@ -188,11 +186,7 @@ func resolveResponsesProvider(r *http.Request, src providers.ProviderSource, mod
 	if model == "" {
 		return nil, false
 	}
-	p, ok := src.FindByModel(model)
-	if ok && !providerIsAllowed(src, p.Name()) {
-		return nil, false
-	}
-	return p, ok
+	return findModelOwner(src, model)
 }
 
 // peekResponsesFields reads the two schema-stable top-level fields the create
@@ -211,27 +205,37 @@ func resolveResponsesProvider(r *http.Request, src providers.ProviderSource, mod
 // only the exact key does not settle it either: an upstream that folds case as
 // encoding/json does honours the other spelling. Which one a given upstream
 // reads is not something the gateway can know, so it refuses to guess.
-func peekResponsesFields(r *http.Request) (model string, maxOutputTokens int, ambiguous bool) {
+//
+// A max_output_tokens the gateway cannot read as an integer is refused for the
+// same reason. Read as absent, 100000.0, 1e5 or "100000" reached the max-token
+// guardrail as no ceiling at all, which it approves, and was forwarded verbatim
+// to an upstream free to honour it. Chat refuses the same value in max_tokens
+// when it decodes the body. A JSON null is absent, as it is on chat.
+//
+// unreadable is the refusal to answer with, empty when both fields were read.
+func peekResponsesFields(r *http.Request) (model string, maxOutputTokens int, unreadable string) {
 	if r.Body == nil || r.ContentLength == 0 {
-		return "", 0, false
+		return "", 0, ""
 	}
 	buf, err := io.ReadAll(io.LimitReader(r.Body, projectionCap+1))
 	r.Body = io.NopCloser(io.MultiReader(bytes.NewReader(buf), r.Body))
 	if err != nil || len(buf) > projectionCap {
-		return "", 0, false
+		return "", 0, ""
 	}
 	var fields map[string]json.RawMessage
 	if json.Unmarshal(buf, &fields) != nil {
-		return "", 0, false
+		return "", 0, ""
 	}
 	for key := range fields {
 		for _, governed := range [...]string{"model", "max_output_tokens"} {
 			if key != governed && strings.EqualFold(key, governed) {
-				return "", 0, true
+				return "", 0, "model and max_output_tokens must be spelled exactly as named; the body carries another spelling of one"
 			}
 		}
 	}
 	_ = json.Unmarshal(fields["model"], &model)
-	_ = json.Unmarshal(fields["max_output_tokens"], &maxOutputTokens)
-	return model, maxOutputTokens, false
+	if ceiling, present := fields["max_output_tokens"]; present && json.Unmarshal(ceiling, &maxOutputTokens) != nil {
+		return "", 0, "max_output_tokens must be an integer"
+	}
+	return model, maxOutputTokens, ""
 }
