@@ -81,6 +81,73 @@ func TestLoadConfig_RejectsDuplicateModelMapKeys(t *testing.T) {
 	}
 }
 
+// TestDecodeJSONStrict_RejectsCaseVariantDuplicateKeys: encoding/json matches a
+// struct field's name case-insensitively, so "strategy" and "Strategy" both
+// decode into one field and the later silently replaced the earlier. The exact
+// duplicate-key check let it through because the two strings differ, and the
+// document loaded and routed on whichever block came last. Map keys stay exact:
+// "fast" and "Fast" are two aliases, not one.
+func TestDecodeJSONStrict_RejectsCaseVariantDuplicateKeys(t *testing.T) {
+	rejected := []struct {
+		name, data, key, first string
+	}{
+		{
+			name:  "top-level field",
+			data:  `{"strategy":{"mode":"fallback"},"targets":[{"virtual_key":"openai"},{"virtual_key":"groq"}],"Strategy":{"mode":"single"}}`,
+			key:   "Strategy",
+			first: "strategy",
+		},
+		{
+			name:  "field inside a target",
+			data:  `{"targets":[{"virtual_key":"openai","weight":1,"WEIGHT":0}]}`,
+			key:   "WEIGHT",
+			first: "weight",
+		},
+		{
+			name:  "field inside a circuit breaker",
+			data:  `{"targets":[{"virtual_key":"openai","circuit_breaker":{"failure_threshold":3,"Failure_Threshold":50}}]}`,
+			key:   "Failure_Threshold",
+			first: "failure_threshold",
+		},
+	}
+	for _, tt := range rejected {
+		t.Run(tt.name, func(t *testing.T) {
+			var cfg config.Config
+			err := config.DecodeJSONStrict([]byte(tt.data), &cfg)
+			if err == nil {
+				t.Fatalf("DecodeJSONStrict accepted two spellings of one field; decoded %+v", cfg)
+			}
+			for _, want := range []string{tt.key, tt.first} {
+				if !strings.Contains(err.Error(), fmt.Sprintf("%q", want)) {
+					t.Errorf("error %q should name %q", err, want)
+				}
+			}
+		})
+	}
+
+	accepted := []struct{ name, data string }{
+		{
+			name: "map keys differing only in case",
+			data: `{"targets":[{"virtual_key":"openai"}],"aliases":{"fast":"gpt-4o-mini","Fast":"gpt-4o"},` +
+				`"plugins":[{"name":"word-filter","type":"guardrail","stage":"before_request","enabled":true,` +
+				`"config":{"blocked_words":["x"],"Blocked_Words":["y"]}}]}`,
+		},
+		{
+			// One non-canonical spelling on its own decodes as it always has.
+			name: "a single case-variant key",
+			data: `{"Targets":[{"virtual_key":"openai"}]}`,
+		},
+	}
+	for _, tt := range accepted {
+		t.Run(tt.name, func(t *testing.T) {
+			var cfg config.Config
+			if err := config.DecodeJSONStrict([]byte(tt.data), &cfg); err != nil {
+				t.Fatalf("DecodeJSONStrict = %v, want nil", err)
+			}
+		})
+	}
+}
+
 func TestLoadConfig_CostOptimizedUnpricedStrategy(t *testing.T) {
 	data := `{
 		"strategy": {"mode": "cost-optimized", "unpriced_strategy": "skip"},
@@ -1075,6 +1142,70 @@ func TestLoadConfig_TargetCircuitBreakerDistinguishesOmittedFromZero(t *testing.
 			}
 		})
 	}
+}
+
+// TestLoadConfig_CircuitBreakerFollowsYAMLMergeKeys: a YAML merge key brings in
+// the keys of the mapping it names. Every other block of the schema decodes
+// through yaml.v3, which honours it; the circuit breaker's own decoder read
+// "<<" as a field and refused a valid config — one sharing breaker settings
+// between targets through an anchor — as naming an unknown field. Merged keys
+// are checked and counted as written exactly as keys written in the block are.
+func TestLoadConfig_CircuitBreakerFollowsYAMLMergeKeys(t *testing.T) {
+	const anchored = "strategy: {mode: fallback}\ntargets:\n" +
+		"  - virtual_key: openai\n    circuit_breaker: &cb\n      failure_threshold: 3\n      timeout: 10s\n"
+
+	t.Run("merged settings are applied", func(t *testing.T) {
+		cfg, err := config.LoadConfig(writeTempFile(t, "config.yaml", anchored+
+			"  - virtual_key: anthropic\n    circuit_breaker:\n      <<: *cb\n      timeout: 20s\n"))
+		if err != nil {
+			t.Fatalf("LoadConfig: %v", err)
+		}
+		if err := config.ValidateConfig(*cfg); err != nil {
+			t.Fatalf("ValidateConfig: %v", err)
+		}
+		got := cfg.Targets[1].CircuitBreaker
+		if got == nil || got.FailureThreshold != 3 || got.Timeout != "20s" {
+			t.Fatalf("anthropic circuit_breaker = %+v, want failure_threshold 3 from the anchor and its own timeout 20s", got)
+		}
+	})
+
+	t.Run("a sequence of merged mappings", func(t *testing.T) {
+		cfg, err := config.LoadConfig(writeTempFile(t, "config.yaml", "strategy: {mode: single}\n"+
+			"targets:\n  - virtual_key: openai\n    circuit_breaker:\n      <<: [{failure_threshold: 4}, {success_threshold: 2}]\n"))
+		if err != nil {
+			t.Fatalf("LoadConfig: %v", err)
+		}
+		if got := cfg.Targets[0].CircuitBreaker; got == nil || got.FailureThreshold != 4 || got.SuccessThreshold != 2 {
+			t.Fatalf("circuit_breaker = %+v, want failure_threshold 4 and success_threshold 2", got)
+		}
+	})
+
+	t.Run("a merged zero is a written zero", func(t *testing.T) {
+		cfg, err := config.LoadConfig(writeTempFile(t, "config.yaml", "strategy: {mode: single}\n"+
+			"targets:\n  - virtual_key: openai\n    circuit_breaker:\n      <<: {failure_threshold: 0}\n"))
+		if err == nil {
+			err = config.ValidateConfig(*cfg)
+		}
+		if err == nil || !strings.Contains(err.Error(), "failure_threshold must be positive") {
+			t.Fatalf("load and validate error = %v, want the written-zero refusal", err)
+		}
+	})
+
+	t.Run("a merged unknown key is refused", func(t *testing.T) {
+		_, err := config.LoadConfig(writeTempFile(t, "config.yaml", "strategy: {mode: single}\n"+
+			"targets:\n  - virtual_key: openai\n    circuit_breaker:\n      <<: {failure_treshold: 3}\n"))
+		if err == nil || !strings.Contains(err.Error(), "failure_treshold") {
+			t.Fatalf("LoadConfig error = %v, want the misspelled merged key named", err)
+		}
+	})
+
+	t.Run("an anchor merging itself is refused", func(t *testing.T) {
+		_, err := config.LoadConfig(writeTempFile(t, "config.yaml", "strategy: {mode: single}\n"+
+			"targets:\n  - virtual_key: openai\n    circuit_breaker: &cb\n      <<: *cb\n      timeout: 20s\n"))
+		if err == nil || !strings.Contains(err.Error(), "contains itself") {
+			t.Fatalf("LoadConfig error = %v, want the self-referencing anchor refused", err)
+		}
+	})
 }
 
 func TestLoadConfig_LoadBalanceModeCanonicalizesLegacySpelling(t *testing.T) {

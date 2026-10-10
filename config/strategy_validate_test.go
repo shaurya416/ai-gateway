@@ -286,6 +286,50 @@ func TestValidateStrategy_ErrorNamesTheOffender(t *testing.T) {
 	}
 }
 
+// TestValidateStrategy_ConditionNamingAnAlias: aliases are resolved before the
+// strategy is asked, so a `model` rule naming one compares a request whose model
+// already reads as the alias's target. It loaded clean and never matched, and
+// every request it was written for went to the fallback target instead.
+func TestValidateStrategy_ConditionNamingAnAlias(t *testing.T) {
+	aliases := map[string]string{"fast": "gpt-4o-mini"}
+	runStrategyCases(t, []strategyCase{
+		{
+			name: "model rule naming an alias",
+			cfg: Config{
+				Strategy: StrategyConfig{Mode: ModeConditional, Conditions: []Condition{
+					{Key: ConditionKeyModel, Value: "gpt-4o", TargetKey: "openai"},
+					{Key: ConditionKeyModel, Value: "fast", TargetKey: "groq"},
+				}},
+				Targets: twoTargets(),
+				Aliases: aliases,
+			},
+			wantErr: `conditions[1]: model "fast" is a global alias, resolved to "gpt-4o-mini" before routing, so this rule can never match; match on "gpt-4o-mini" instead`,
+		},
+		{
+			name: "model rule naming the alias target is legal",
+			cfg: Config{
+				Strategy: StrategyConfig{Mode: ModeConditional, Conditions: []Condition{
+					{Key: ConditionKeyModel, Value: "gpt-4o-mini", TargetKey: "groq"},
+				}},
+				Targets: twoTargets(),
+				Aliases: aliases,
+			},
+		},
+		{
+			// A prefix that spells an alias can still match a real model id
+			// ("fast-model-v2"), so it is not provably dead and stays legal.
+			name: "model_prefix rule spelling an alias is legal",
+			cfg: Config{
+				Strategy: StrategyConfig{Mode: ModeConditional, Conditions: []Condition{
+					{Key: ConditionKeyModelPrefix, Value: "fast", TargetKey: "groq"},
+				}},
+				Targets: twoTargets(),
+				Aliases: aliases,
+			},
+		},
+	})
+}
+
 // TestValidateStrategy_ValueShape · v1.5.5: rules whose *value* is wrong in a
 // way the runtime cannot report on — a dead condition, a prefix that matches
 // everything, two A/B arms that attribution cannot tell apart.

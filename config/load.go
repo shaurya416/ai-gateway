@@ -9,6 +9,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"slices"
 	"strings"
@@ -80,10 +81,12 @@ func LoadConfig(path string) (*Config, error) {
 }
 
 // DecodeJSONStrict decodes one JSON config document into cfg, rejecting unknown
-// keys, duplicate object keys, and data trailing the top-level object. It is the
-// single decoder for every way a JSON config enters the gateway — a file read
-// by LoadConfig and a request body applied through PUT/POST /admin/config — so
-// the two cannot disagree about which configs are valid.
+// keys, duplicate object keys, and data trailing the top-level object. Two
+// spellings of one field that differ only in case are duplicates too: encoding/json
+// reads both into that field and keeps the later. It is the single decoder for
+// every way a JSON config enters the gateway — a file read by LoadConfig and a
+// request body applied through PUT/POST /admin/config — so the two cannot
+// disagree about which configs are valid.
 //
 // It reports EVERY unknown key, not the first. encoding/json's
 // DisallowUnknownFields returns on the first one, so a config with three typos
@@ -121,17 +124,37 @@ func DecodeJSONStrict(data []byte, cfg *Config) error {
 	return nil
 }
 
-type duplicateJSONKeyError string
+// duplicateJSONKeyError reports an object key that sets what an earlier key in
+// the same object already set. first is that earlier key as written; it differs
+// from key only when the two are spellings of one struct field.
+type duplicateJSONKeyError struct {
+	key, first string
+}
 
 func (e duplicateJSONKeyError) Error() string {
-	return fmt.Sprintf("json: duplicate object key %q", string(e))
+	if e.first == e.key {
+		return fmt.Sprintf("json: duplicate object key %q", e.key)
+	}
+	return fmt.Sprintf("json: duplicate object key %q: it sets the same field as %q", e.key, e.first)
 }
+
+// configType is the schema rejectDuplicateJSONKeys resolves keys against.
+var configType = reflect.TypeFor[Config]()
 
 // rejectDuplicateJSONKeys scans the first JSON value without materializing it.
 // All non-duplicate errors are left to the typed decoder below so malformed
 // input keeps encoding/json's existing error behavior.
+//
+// A key is a duplicate when an earlier key in the same object lands in the same
+// place, and where that is depends on what the object decodes into. A map
+// matches keys exactly, so "fast" and "Fast" are two aliases. A struct matches
+// a field's name case-insensitively, so "strategy" and "Strategy" are one field
+// and encoding/json lets the later one replace the earlier: such a document
+// loaded clean and routed on whichever block came last. The scan therefore
+// walks the schema alongside the document and folds case exactly where the
+// decoder does.
 func rejectDuplicateJSONKeys(data []byte) error {
-	err := scanJSONValue(json.NewDecoder(bytes.NewReader(data)))
+	err := scanJSONValue(json.NewDecoder(bytes.NewReader(data)), configType)
 	var duplicate duplicateJSONKeyError
 	if errors.As(err, &duplicate) {
 		return duplicate
@@ -139,7 +162,10 @@ func rejectDuplicateJSONKeys(data []byte) error {
 	return nil
 }
 
-func scanJSONValue(dec *json.Decoder) error {
+// scanJSONValue scans one JSON value decoding into t. t is nil where the
+// destination is not a schema type — an interface, or a key the schema does not
+// have — and keys there are matched exactly, as a map[string]any matches them.
+func scanJSONValue(dec *json.Decoder, t reflect.Type) error {
 	token, err := dec.Token()
 	if err != nil {
 		return err
@@ -148,9 +174,22 @@ func scanJSONValue(dec *json.Decoder) error {
 	if !ok {
 		return nil
 	}
+	for t != nil && t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
 	switch delim {
 	case '{':
-		seen := make(map[string]struct{})
+		var fields []jsonField
+		var elem reflect.Type
+		isStruct := t != nil && t.Kind() == reflect.Struct
+		switch {
+		case isStruct:
+			fields = jsonFieldsOf(t)
+		case t != nil && t.Kind() == reflect.Map:
+			elem = t.Elem()
+		}
+		seenKeys := make(map[string]string)
+		seenFields := make(map[int]string)
 		for dec.More() {
 			keyToken, err := dec.Token()
 			if err != nil {
@@ -160,23 +199,104 @@ func scanJSONValue(dec *json.Decoder) error {
 			if !ok {
 				return errors.New("json: object key is not a string")
 			}
-			if _, exists := seen[key]; exists {
-				return duplicateJSONKeyError(key)
+			child := elem
+			field := -1
+			if isStruct {
+				child = nil
+				if field = matchJSONField(fields, key); field >= 0 {
+					child = fields[field].typ
+				}
 			}
-			seen[key] = struct{}{}
-			if err := scanJSONValue(dec); err != nil {
+			if field >= 0 {
+				if first, exists := seenFields[field]; exists {
+					return duplicateJSONKeyError{key: key, first: first}
+				}
+				seenFields[field] = key
+			} else {
+				if _, exists := seenKeys[key]; exists {
+					return duplicateJSONKeyError{key: key, first: key}
+				}
+				seenKeys[key] = key
+			}
+			if err := scanJSONValue(dec, child); err != nil {
 				return err
 			}
 		}
 	case '[':
+		var elem reflect.Type
+		if t != nil && (t.Kind() == reflect.Slice || t.Kind() == reflect.Array) {
+			elem = t.Elem()
+		}
 		for dec.More() {
-			if err := scanJSONValue(dec); err != nil {
+			if err := scanJSONValue(dec, elem); err != nil {
 				return err
 			}
 		}
 	}
 	_, err = dec.Token()
 	return err
+}
+
+// jsonField is one field encoding/json decodes an object key into.
+type jsonField struct {
+	name string
+	typ  reflect.Type
+}
+
+// jsonFieldsOf lists the fields encoding/json decodes an object into for struct
+// type t: exported, not tagged "-", named by the json tag when it carries a
+// name. An embedded struct with no tag name contributes its own fields, as
+// encoding/json promotes them.
+//
+// CircuitBreakerConfig decodes through its own UnmarshalJSON, into a wire
+// struct whose json tags are its own exported fields' tags, so the same list
+// describes it.
+func jsonFieldsOf(t reflect.Type) []jsonField {
+	var fields []jsonField
+	for i := range t.NumField() {
+		f := t.Field(i)
+		tag := f.Tag.Get("json")
+		if tag == "-" {
+			continue
+		}
+		name, _, _ := strings.Cut(tag, ",")
+		if f.Anonymous && name == "" {
+			embedded := f.Type
+			if embedded.Kind() == reflect.Pointer {
+				embedded = embedded.Elem()
+			}
+			if embedded.Kind() == reflect.Struct {
+				fields = append(fields, jsonFieldsOf(embedded)...)
+				continue
+			}
+		}
+		if !f.IsExported() {
+			continue
+		}
+		if name == "" {
+			name = f.Name
+		}
+		fields = append(fields, jsonField{name: name, typ: f.Type})
+	}
+	return fields
+}
+
+// matchJSONField returns the index of the field encoding/json decodes key into,
+// or -1 when the struct has none: an exact name first, then a case-insensitive
+// one, which is the decoder's own order and its own folding (strings.EqualFold
+// is the comparison encoding/json documents its folding as equal to).
+func matchJSONField(fields []jsonField, key string) int {
+	for i, f := range fields {
+		if f.name == key {
+			return i
+		}
+	}
+	for i, f := range fields {
+		if strings.EqualFold(f.name, key) {
+			return i
+		}
+	}
+	return -1
 }
 
 // withEveryUnknownField upgrades encoding/json's first-unknown-key error to the
@@ -271,7 +391,7 @@ func ValidateConfig(cfg Config) error {
 		}
 	}
 
-	if err := validateStrategy(cfg.Strategy, cfg.Targets); err != nil {
+	if err := validateStrategy(cfg.Strategy, cfg.Targets, cfg.Aliases); err != nil {
 		return err
 	}
 
@@ -562,7 +682,7 @@ func validateNamedTarget(field, value string, targets []Target) error {
 	return fmt.Errorf("%s %q does not name any configured target", field, value)
 }
 
-func validateStrategy(s StrategyConfig, targets []Target) error {
+func validateStrategy(s StrategyConfig, targets []Target, aliases map[string]string) error {
 	if err := validateSticky(s); err != nil {
 		return err
 	}
@@ -587,7 +707,7 @@ func validateStrategy(s StrategyConfig, targets []Target) error {
 			return fmt.Errorf("cost-optimized unpriced_strategy must be one of fallback, skip, allow")
 		}
 	case ModeConditional:
-		return validateConditions(s.Conditions, targets)
+		return validateConditions(s.Conditions, targets, aliases)
 	case ModeContentBased:
 		return validateContentConditions(s.ContentConditions, targets)
 	case ModeABTest:
@@ -637,7 +757,7 @@ func validateSticky(s StrategyConfig) error {
 	return nil
 }
 
-func validateConditions(conditions []Condition, targets []Target) error {
+func validateConditions(conditions []Condition, targets []Target, aliases map[string]string) error {
 	if len(conditions) == 0 {
 		return fmt.Errorf("conditional strategy requires at least one condition")
 	}
@@ -671,6 +791,16 @@ func validateConditions(conditions []Condition, targets []Target) error {
 					why = "; an empty model_prefix matches every model"
 				}
 				return fmt.Errorf("conditions[%d]: key %q requires a non-empty value with no surrounding whitespace, got %q%s", i, c.Key, c.Value, why)
+			}
+			// Aliases are resolved before the strategy is asked, so a model
+			// rule naming one compares a request whose model has already been
+			// rewritten to the alias's target and never matches: the traffic it
+			// was written for goes to the fallback target, and nothing at request
+			// time says why. targets[].model_map refuses an alias name for the
+			// same reason. A model_prefix rule is left alone — a prefix that
+			// spells an alias can still match a real model id.
+			if target, isAlias := aliases[c.Value]; isAlias && c.Key == ConditionKeyModel {
+				return fmt.Errorf("conditions[%d]: model %q is a global alias, resolved to %q before routing, so this rule can never match; match on %q instead", i, c.Value, target, target)
 			}
 		}
 		if c.Key == ConditionKeyMetadata && c.Field == "" {

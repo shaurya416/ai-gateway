@@ -163,7 +163,9 @@ with no surrounding whitespace, and `user` a non-empty one — matching is
 verbatim, so a padded or empty `model` can match nothing, an empty `user` never
 matches, and an empty `model_prefix` would match every model and swallow every
 rule below it. A padded `user` value is legal: the request's `user` is compared
-as sent.
+as sent. A `model` value that names a global alias is refused at load: aliases
+resolve before routing, so the rule would compare a request whose model already
+reads as the alias's target, and never match — write the target instead.
 
 ### content-based
 Routes by the textual content of the prompt. Rules evaluate in order, first match

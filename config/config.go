@@ -628,17 +628,22 @@ func (c *CircuitBreakerConfig) UnmarshalJSON(data []byte) error {
 
 // UnmarshalYAML preserves whether defaultable circuit-breaker fields were
 // omitted while retaining strict rejection of unknown fields.
+//
+// A YAML merge key (`<<: *defaults`) is not a field: it brings in the keys of
+// the mappings it names, and those keys are checked and counted as written
+// exactly as if they appeared in the block itself — the treatment yaml.v3
+// gives every other block of the schema. Read as a key, it refused a valid
+// config naming "<<" as an unknown field.
 func (c *CircuitBreakerConfig) UnmarshalYAML(node *yaml.Node) error {
 	known := map[string]bool{"failure_threshold": true, "success_threshold": true, "max_half_threshold": true, "timeout": true}
 	present := make(map[string]bool, len(node.Content)/2)
 	var unknown []string
-	for i := 0; i+1 < len(node.Content); i += 2 {
-		key := node.Content[i]
+	visitYAMLMappingKeys(node, func(key *yaml.Node) {
 		present[key.Value] = true
 		if !known[key.Value] {
 			unknown = append(unknown, fmt.Sprintf("line %d: field %s not found in type config.circuitBreakerWire", key.Line, key.Value))
 		}
-	}
+	})
 	if len(unknown) > 0 {
 		return &yaml.TypeError{Errors: unknown}
 	}
@@ -653,6 +658,54 @@ func (c *CircuitBreakerConfig) UnmarshalYAML(node *yaml.Node) error {
 		timeout:          present["timeout"],
 	})
 	return nil
+}
+
+// visitYAMLMappingKeys calls visit with every key mapping sets, following YAML
+// merge keys into the mappings they name — a mapping, an alias of one, or a
+// sequence of either — as yaml.v3 does when it decodes the block. A merge value
+// of any other shape is left for the decode to refuse.
+//
+// Each mapping is walked once. An anchor whose merge names itself is a cycle,
+// and following it recursed until the stack overflowed and killed the process;
+// it is left for the decode to refuse as yaml.v3 refuses it in every other
+// block.
+func visitYAMLMappingKeys(mapping *yaml.Node, visit func(key *yaml.Node)) {
+	walked := make(map[*yaml.Node]bool)
+	var walk func(*yaml.Node)
+	walk = func(mapping *yaml.Node) {
+		if walked[mapping] {
+			return
+		}
+		walked[mapping] = true
+		for i := 0; i+1 < len(mapping.Content); i += 2 {
+			key, value := mapping.Content[i], mapping.Content[i+1]
+			if !isYAMLMergeKey(key) {
+				visit(key)
+				continue
+			}
+			sources := []*yaml.Node{value}
+			if value.Kind == yaml.SequenceNode {
+				sources = value.Content
+			}
+			for _, source := range sources {
+				if source.Kind == yaml.AliasNode {
+					source = source.Alias
+				}
+				if source != nil && source.Kind == yaml.MappingNode {
+					walk(source)
+				}
+			}
+		}
+	}
+	walk(mapping)
+}
+
+// isYAMLMergeKey reports whether key is the merge key "<<", by the rule yaml.v3
+// applies: a plain scalar, or one tagged !!merge. A quoted "<<" is an ordinary
+// string key.
+func isYAMLMergeKey(key *yaml.Node) bool {
+	return key.Kind == yaml.ScalarNode && key.Value == "<<" &&
+		(key.Tag == "" || key.Tag == "!" || key.ShortTag() == "!!merge")
 }
 
 // circuitBreakerPresence says which breaker fields the document wrote. A

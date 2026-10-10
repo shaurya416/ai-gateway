@@ -142,6 +142,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   other client of the Admin API was handed a credential that could never
   authenticate. `PUT /admin/keys/{id}` is unchanged: a past expiry there is
   how an existing key is retired.
+- A `conditional` rule whose `model` value names a global alias is now refused
+  at load. Aliases are resolved before the strategy is asked, so such a rule
+  compared a request whose model already read as the alias's target, never
+  matched, and every request it was written for went to the fallback target —
+  a config with `aliases: {fast: gpt-4o-mini}` and a rule
+  `{key: model, value: fast, target_key: groq}` loaded clean and sent `fast`
+  traffic to `targets[0]`. `ferrogw validate`, startup and `PUT /admin/config`
+  now name the alias and its target, the same refusal `targets[].model_map`
+  already gives an alias name. A `model_prefix` rule is unaffected.
+- A JSON config that spells one field twice in different letter case —
+  `"strategy"` and `"Strategy"`, `"weight"` and `"WEIGHT"` — is now refused as
+  a duplicate key. encoding/json reads both spellings into the same field and
+  keeps the later one, while the duplicate-key check compared keys exactly, so
+  the document loaded clean, from a file or through `PUT /admin/config`, and
+  the gateway routed on whichever block came last. Keys of a map — `aliases`,
+  `model_map`, a plugin's `config` — are still matched exactly, so `"fast"` and
+  `"Fast"` remain two aliases.
+- A YAML config whose `circuit_breaker` block uses a merge key
+  (`<<: *defaults`) now loads. Every other block decodes through the YAML
+  library, which honours merge keys; the breaker's own decoder read `<<` as a
+  field name and refused the config with `field << not found`, so breaker
+  settings could not be shared between targets through an anchor. Merged keys
+  are checked and counted as written exactly as keys written in the block are:
+  a merged zero is refused as a written zero is, and a misspelled merged key is
+  named.
 - A streamed chat request that fails now reaches observability exporters with
   the status and duration its event hooks report. The exporter event was
   rebuilt from the error's message alone, which drops its type, so every
