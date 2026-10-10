@@ -428,6 +428,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   not zero, so the check for an all-zero price list passed as well: the plugin
   loaded with its `spend_limit_usd` set and never refused a request. Each is
   now a load error, reported by `ferrogw validate` as well as at startup.
+- The per-turn check a budget runs inside the MCP tool-call loop now counts
+  the provider call made before the loop. The running spend started at zero on
+  entering the loop, so that call never entered it: the first loop turn was
+  checked as though nothing had been spent and every later turn's figure was
+  short by it, and a request whose first turn alone crossed the budget was
+  still sent another turn.
+- A stdio MCP server whose `tools/list` never stops paginating no longer drives
+  gateway memory up for the whole initialization window. The stdio transport
+  followed `nextCursor` through its library, which sets no bound, so a server
+  answering every page with another cursor held the handshake open and
+  appended every page to memory until the 60-second initialization deadline —
+  over 600 MiB held after ten seconds against half-megabyte pages. It now
+  walks the pages itself under the bounds the HTTP transport applies: more
+  than 1024 pages, or more than 10 MiB of tool definitions in all, fails the
+  server's initialization.
+- A tool result carrying a `resource_link` content block now reaches the model
+  with the link intact. The gateway's content block modelled only text, image
+  and embedded-resource fields, so a link kept its type and MIME type and lost
+  its `uri`, `name`, `title`, `description` and `size` — on both transports —
+  and the model was handed `[{"type":"resource_link","mimeType":"…"}]`, a
+  successful answer pointing at nothing. Those fields are now decoded and
+  forwarded, `size` as the number the server wrote.
+- An `allowed_tools` entry that names no tool the MCP server advertises is now
+  logged at WARN, naming the server and the unmatched entries. Such an entry —
+  a typo, or a tool the server renamed in an upgrade — exposed nothing while
+  the server reported ready, so the model was never offered the tool and
+  nothing said why. Initialization still succeeds; the entries that match are
+  exposed as before.
 
 ## [1.5.9] — 2026-09-18
 

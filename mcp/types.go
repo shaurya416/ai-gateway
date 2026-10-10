@@ -57,7 +57,8 @@ type ToolCallResult struct {
 }
 
 // ContentBlock is a single piece of content returned by a tool call.
-// Type is one of "text", "image", or "resource" (MCP 2025-11-25 §4.5).
+// Type is one of "text", "image", "audio", "resource_link", or "resource"
+// (MCP 2025-11-25).
 //
 // Phase 1 only extracts the text payload for conversation messages;
 // non-text fields are decoded and preserved but not converted to prose.
@@ -65,10 +66,21 @@ type ContentBlock struct {
 	Type string `json:"type"`
 	// Text carries the content for type="text" blocks.
 	Text string `json:"text,omitempty"`
-	// Data and MimeType are populated for type="image" blocks.
-	// Data is a base64-encoded payload; MimeType is e.g. "image/png".
+	// Data and MimeType are populated for type="image" and type="audio"
+	// blocks. Data is a base64-encoded payload; MimeType is e.g. "image/png".
+	// A resource_link block carries MimeType as well.
 	Data     string `json:"data,omitempty"`
 	MimeType string `json:"mimeType,omitempty"`
+	// URI, Name, Title, Description and Size describe the resource a
+	// type="resource_link" block points at. The URI is the tool's answer, so a
+	// block that dropped these fields would reach the model as a link to
+	// nothing. Size keeps the number as the server wrote it: it is metadata
+	// the model reads, and a server writing 1024.0 must not fail the result.
+	URI         string      `json:"uri,omitempty"`
+	Name        string      `json:"name,omitempty"`
+	Title       string      `json:"title,omitempty"`
+	Description string      `json:"description,omitempty"`
+	Size        json.Number `json:"size,omitempty"`
 	// Resource holds the embedded resource object for type="resource" blocks.
 	// Stored as raw JSON for forward compatibility with future MCP spec revisions.
 	Resource json.RawMessage `json:"resource,omitempty"`

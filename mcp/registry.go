@@ -549,13 +549,33 @@ func (r *Registry) initServer(ctx context.Context, name string) error {
 		for _, t := range entry.config.AllowedTools {
 			allowed[t] = true
 		}
+		matched := make(map[string]bool, len(allowed))
 		filtered := tools[:0]
 		for _, t := range tools {
 			if allowed[t.Name] {
 				filtered = append(filtered, t)
+				matched[t.Name] = true
 			}
 		}
 		tools = filtered
+
+		// An entry that matches nothing — a typo, or a tool the server renamed
+		// in an upgrade — exposes nothing, and the server still reports ready,
+		// so the model is simply never offered the tool the operator configured.
+		// Not an initialization failure: the entries that do match are working.
+		var unmatched []string
+		for _, t := range entry.config.AllowedTools {
+			if !matched[t] && !slices.Contains(unmatched, t) {
+				unmatched = append(unmatched, t)
+			}
+		}
+		if len(unmatched) > 0 {
+			r.log.Warn("mcp: allowed_tools entries match no tool the server advertises",
+				"server", name,
+				"unmatched", unmatched,
+				"exposed", len(tools),
+			)
+		}
 	}
 
 	r.mu.Lock()

@@ -331,21 +331,45 @@ func (c *stdioClient) Initialize(ctx context.Context) (*ServerInfo, error) {
 // ListTools fetches the tool list over stdio and converts it to ferro-labs types
 // via a JSON round-trip. The mark3labs Tool type marshals to the same JSON
 // structure as the ferro-labs Tool type (name, description, inputSchema).
+//
+// The cursor is followed one page at a time under the same bounds the HTTP
+// transport applies, rather than through the library's ListTools, which follows
+// nextCursor with no bound at all: a server that never stops handing out cursors
+// held the handshake open and appended every page to memory until the
+// initialization deadline. Page size is measured on the converted page, the
+// stdio counterpart of the response bytes the HTTP side counts.
 func (c *stdioClient) ListTools(ctx context.Context) ([]Tool, error) {
-	result, err := c.inner.ListTools(ctx, mcpgo.ListToolsRequest{})
-	if err != nil {
-		return nil, fmt.Errorf("mcp stdio tools/list: %w", err)
-	}
+	var (
+		tools  []Tool
+		req    mcpgo.ListToolsRequest
+		listed int
+	)
+	for range maxToolListPages {
+		page, err := c.inner.ListToolsByPage(ctx, req)
+		if err != nil {
+			return nil, fmt.Errorf("mcp stdio tools/list: %w", err)
+		}
 
-	toolsJSON, err := json.Marshal(result.Tools)
-	if err != nil {
-		return nil, fmt.Errorf("mcp stdio tools/list marshal: %w", err)
+		pageJSON, err := json.Marshal(page.Tools)
+		if err != nil {
+			return nil, fmt.Errorf("mcp stdio tools/list marshal: %w", err)
+		}
+		listed += len(pageJSON)
+		if listed > maxResponseBodyBytes {
+			return nil, fmt.Errorf("mcp stdio tools/list: listing exceeds %d byte limit", maxResponseBodyBytes)
+		}
+		var pageTools []Tool
+		if err := json.Unmarshal(pageJSON, &pageTools); err != nil {
+			return nil, fmt.Errorf("mcp stdio tools/list unmarshal: %w", err)
+		}
+		tools = append(tools, pageTools...)
+
+		if page.NextCursor == "" {
+			return tools, nil
+		}
+		req.Params.Cursor = page.NextCursor
 	}
-	var tools []Tool
-	if err := json.Unmarshal(toolsJSON, &tools); err != nil {
-		return nil, fmt.Errorf("mcp stdio tools/list unmarshal: %w", err)
-	}
-	return tools, nil
+	return nil, fmt.Errorf("mcp stdio tools/list: server returned more than %d pages", maxToolListPages)
 }
 
 // CallTool invokes a named tool over stdio. Arguments are unmarshaled from

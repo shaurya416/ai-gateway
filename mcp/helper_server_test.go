@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"os"
+	"strings"
 	"testing"
 
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
@@ -25,7 +26,16 @@ const (
 	// server that gives up its error stream at startup. The gateway sees EOF
 	// before the server is ever ready.
 	helperModeStderrClosed = "stderr-closed"
+	// helperModeEndlessCursor answers every tools/list page with another
+	// nextCursor, the shape of a server whose pagination never terminates.
+	helperModeEndlessCursor = "endless-cursor"
+	// helperModeEndlessLargePages does the same with pages of roughly
+	// helperLargePageBytes each, so a listing grows by that much per page.
+	helperModeEndlessLargePages = "endless-large-pages"
 )
+
+// helperLargePageBytes sizes one page in helperModeEndlessLargePages.
+const helperLargePageBytes = 512 << 10
 
 // Tools the helper advertises. Two of them exist to drive the server's own
 // lifecycle from the test, since that is the only way to sequence "close
@@ -34,6 +44,9 @@ const (
 	helperToolEcho        = "helper_echo"
 	helperToolCloseStderr = "helper_close_stderr"
 	helperToolDie         = "helper_die"
+	// helperToolLink answers with a resource_link content block. It is not
+	// advertised, so it changes no listing; a test calls it by name.
+	helperToolLink = "helper_link"
 )
 
 // helperServerConfig returns a ServerConfig that launches this test binary as a
@@ -95,7 +108,14 @@ func runHelperMCPServer(mode string) {
 			os.Exit(1)
 		}
 
-		if err := writeHelperResponse(out, *req.ID, helperResult(req.Method)); err != nil {
+		result := helperResult(req.Method)
+		if page := helperToolsPage(mode, req.Method); page != nil {
+			result = page
+		}
+		if req.Method == "tools/call" && req.Params.Name == helperToolLink {
+			result = map[string]any{"content": []map[string]any{helperResourceLink}}
+		}
+		if err := writeHelperResponse(out, *req.ID, result); err != nil {
 			os.Exit(1)
 		}
 
@@ -134,6 +154,42 @@ func helperResult(method string) any {
 		// Covers ping, whose result is an empty object.
 		return map[string]any{}
 	}
+}
+
+// helperResourceLink is the resource_link block helperToolLink returns.
+var helperResourceLink = map[string]any{
+	"type":        "resource_link",
+	"uri":         "file:///workspace/docs/README.md",
+	"name":        "README.md",
+	"title":       "Project readme",
+	"description": "Top-level documentation for the workspace",
+	"mimeType":    "text/markdown",
+}
+
+// helperToolsPage returns the tools/list page the paging modes answer with, or
+// nil when mode serves the ordinary single-page listing.
+func helperToolsPage(mode, method string) any {
+	if method != "tools/list" {
+		return nil
+	}
+	schema := map[string]any{"type": "object"}
+	switch mode {
+	case helperModeEndlessCursor:
+		return map[string]any{
+			"tools":      []map[string]any{{"name": helperToolEcho, "description": "echo", "inputSchema": schema}},
+			"nextCursor": "again",
+		}
+	case helperModeEndlessLargePages:
+		return map[string]any{
+			"tools": []map[string]any{{
+				"name":        helperToolEcho,
+				"description": strings.Repeat("x", helperLargePageBytes),
+				"inputSchema": schema,
+			}},
+			"nextCursor": "again",
+		}
+	}
+	return nil
 }
 
 // writeHelperResponse emits one JSON-RPC response frame and flushes it, since
