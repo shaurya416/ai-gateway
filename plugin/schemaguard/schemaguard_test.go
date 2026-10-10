@@ -403,13 +403,13 @@ func TestInit_RejectsANonStringAction(t *testing.T) {
 	}
 }
 
-// A plugin runs inside the request pipeline, so it stops when the request is
-// abandoned rather than validating documents nobody is waiting for.
-//
-// It returns nil, not the context's error: an error from Execute means the
-// plugin BROKE, which the gateway reports as a 500 and counts against the
-// target's circuit breaker. A caller hanging up is not a server fault.
-func TestExecute_StopsOnACancelledContext(t *testing.T) {
+// Every choice is validated whatever the context says. The verdict is the last
+// thing between the response and the caller, and an ended context is not only a
+// caller who left: the gateway's own request_timeout ends it, and so does an
+// earlier after_request plugin that hangs until that deadline, while the caller
+// is still waiting. Stopping early approved the response unvalidated, and the
+// gateway served it.
+func TestExecute_ValidatesOnAnEndedContext(t *testing.T) {
 	g := &SchemaGuard{}
 	if err := g.Init(map[string]any{"schema": objectSchema()}); err != nil {
 		t.Fatalf("Init: %v", err)
@@ -419,11 +419,11 @@ func TestExecute_StopsOnACancelledContext(t *testing.T) {
 
 	pctx := newResponse(`{"name":"ada"}`)
 	if err := g.Execute(ctx, pctx); err != nil {
-		t.Fatalf("Execute returned the caller's cancellation as a plugin fault: %v", err)
+		t.Fatalf("Execute: %v", err)
 	}
 
-	if pctx.Reject {
-		t.Fatal("the validation loop ran to completion on an abandoned request")
+	if !pctx.Reject {
+		t.Fatal("a response missing a required field was approved because the request's context had ended")
 	}
 }
 

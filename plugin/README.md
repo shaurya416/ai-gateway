@@ -92,7 +92,8 @@ config:
   blocked_words: ["password", "secret"]  # a list of strings. A bare string, a
                                          # non-string entry or an empty entry
                                          # fails the load
-  case_sensitive: false
+  case_sensitive: false                  # true or false; anything else, a quoted
+                                         # "true" included, fails the load
 ```
 
 ### regex-guard
@@ -350,7 +351,10 @@ Returns a stored response for an identical repeated request instead of calling
 the provider again. The cache key includes the API credential, so one key's
 response is never served to another, and the `X-Gateway-Metadata` routing
 hints, so requests a conditional rule sends to different targets never share an
-entry. List it at both stages with identical config. Both settings must be
+entry. A response is stored under the key its request was looked up under, so a
+`before_request` plugin listed after the cache that rewrites the request —
+`pii-redact` under `redact` — does not stop its repeats from hitting. List it
+at both stages with identical config. Both settings must be
 whole numbers `>= 0`; anything else, a quoted number included, fails the load.
 
 ```yaml

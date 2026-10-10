@@ -30,7 +30,9 @@ import (
 // A consumer that finds ctx.Err() set between texts should stop and return nil,
 // not the context's error: an error from Execute means the plugin broke, which
 // the gateway answers 500 and the target's circuit breaker counts as a fault.
-// A caller hanging up is neither.
+// A caller hanging up is neither. Stopping approves nothing here, because no
+// provider call is made on a context that has ended. ResponseText is
+// different; see there.
 func RequestText(req *providers.Request) iter.Seq[string] {
 	return func(yield func(string) bool) {
 		if req == nil {
@@ -45,7 +47,17 @@ func RequestText(req *providers.Request) iter.Seq[string] {
 }
 
 // ResponseText yields every piece of text a response carries back to the
-// caller, on the same terms as RequestText.
+// caller, on the same terms as RequestText except one: a consumer screens all
+// of it whatever ctx.Err() says.
+//
+// Nothing stands between the after_request verdict and the caller. An ended
+// context is not only a caller who left: the gateway's own request_timeout
+// ends it too, and so does an earlier plugin in the stage — a request-log
+// store that hangs until that deadline — while the caller is still waiting
+// for the response. A consumer that stopped early would return the nil a clean
+// response returns, and the gateway would serve the response unscreened. A
+// response is already in memory and bounded, so screening all of it costs
+// little.
 func ResponseText(resp *providers.Response) iter.Seq[string] {
 	return func(yield func(string) bool) {
 		if resp == nil {

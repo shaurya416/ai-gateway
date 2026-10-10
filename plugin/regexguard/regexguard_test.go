@@ -310,8 +310,9 @@ func TestInit_RejectsAnEmptyRulesList(t *testing.T) {
 	}
 }
 
-// A plugin runs inside the request pipeline, so it stops when the request is
-// abandoned rather than matching content nobody is waiting for.
+// A plugin runs inside the request pipeline, so it stops screening a request
+// that has been abandoned rather than matching content nobody is waiting for.
+// No provider call is made on an ended context, so stopping approves nothing.
 //
 // It returns nil, not the context's error: an error from Execute means the
 // plugin BROKE, which the gateway reports as a 500 and counts against the
@@ -326,27 +327,43 @@ func TestExecute_StopsOnACancelledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	for _, tc := range []struct {
-		name string
-		pctx *plugin.Context
-	}{
-		{name: "request", pctx: newRequest("my ssn is 123-45-6789")},
-		{name: "response", pctx: &plugin.Context{
-			Stage:    plugin.StageAfterRequest,
-			Metadata: map[string]any{},
-			Response: &providers.Response{
-				Choices: []providers.Choice{{Message: providers.Message{Content: "it is 123-45-6789"}}},
-			},
-		}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			if err := g.Execute(ctx, tc.pctx); err != nil {
-				t.Fatalf("Execute returned the caller's cancellation as a plugin fault: %v", err)
-			}
-			if tc.pctx.Reject {
-				t.Fatal("the screening loop ran to completion on an abandoned request")
-			}
-		})
+	pctx := newRequest("my ssn is 123-45-6789")
+	if err := g.Execute(ctx, pctx); err != nil {
+		t.Fatalf("Execute returned the caller's cancellation as a plugin fault: %v", err)
+	}
+	if pctx.Reject {
+		t.Fatal("the screening loop ran to completion on an abandoned request")
+	}
+}
+
+// The response is screened in full whatever the context says. Its verdict is
+// the last thing between the response and the caller, and an ended context is
+// not only a caller who left: the gateway's own request_timeout ends it, and
+// so does an earlier after_request plugin that hangs until that deadline,
+// while the caller is still waiting. Stopping early approved the response
+// unscreened, and the gateway served it.
+func TestExecute_ScreensTheResponseOnAnEndedContext(t *testing.T) {
+	g := &RegexGuard{}
+	if err := g.Init(map[string]any{
+		"rules": []any{map[string]any{"name": "ssn", "pattern": `\d{3}-\d{2}-\d{4}`, "apply_to": "output"}},
+	}); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	pctx := &plugin.Context{
+		Stage:    plugin.StageAfterRequest,
+		Metadata: map[string]any{},
+		Response: &providers.Response{
+			Choices: []providers.Choice{{Message: providers.Message{Content: "it is 123-45-6789"}}},
+		},
+	}
+	if err := g.Execute(ctx, pctx); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !pctx.Reject {
+		t.Fatal("a response matching a block rule was approved because the request's context had ended")
 	}
 }
 

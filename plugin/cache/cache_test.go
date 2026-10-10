@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/ferro-labs/ai-gateway/plugin"
+	"github.com/ferro-labs/ai-gateway/plugin/piiredact"
 	"github.com/ferro-labs/ai-gateway/providers"
 )
 
@@ -1191,5 +1192,59 @@ func TestExecute_StandsDownOnNonChatSurfaces(t *testing.T) {
 	}
 	if !chat.SkipProvider || chat.Response == nil {
 		t.Fatal("the chat cache hit was lost")
+	}
+}
+
+// A response is stored under the key it was looked up under. The two stages
+// used to compute the key separately, from the request as each stage saw it,
+// and a before_request plugin listed after the cache can rewrite that request
+// in between — pii-redact under action redact does, and the example config
+// lists it after the cache. The entry then landed under the rewritten request's
+// key, which no lookup ever computes, so every request the redactor touched
+// was sent to the provider again, while the cache reported itself enabled.
+func TestResponseCache_StoresUnderTheKeyItLookedUp(t *testing.T) {
+	t.Parallel()
+
+	c := initCache(t, map[string]any{})
+	redact := &piiredact.PIIRedact{}
+	if err := redact.Init(map[string]any{"action": "redact", "entities": []any{"ssn"}}); err != nil {
+		t.Fatalf("pii-redact Init: %v", err)
+	}
+
+	m := plugin.NewManager(nil)
+	for _, reg := range []struct {
+		stage plugin.Stage
+		p     plugin.Plugin
+	}{
+		{plugin.StageBeforeRequest, c},
+		{plugin.StageBeforeRequest, redact},
+		{plugin.StageAfterRequest, c},
+	} {
+		if err := m.Register(reg.stage, reg.p); err != nil {
+			t.Fatalf("Register: %v", err)
+		}
+	}
+
+	serve := func() *plugin.Context {
+		pctx := plugin.NewContext(testRequest("gpt-4", "my ssn is 123-45-6789"))
+		t.Cleanup(func() { plugin.PutContext(pctx) })
+		pctx.Metadata["api_key"] = "key-alice"
+		if err := m.RunBefore(context.Background(), pctx); err != nil {
+			t.Fatalf("RunBefore: %v", err)
+		}
+		if !pctx.SkipProvider {
+			pctx.Response = testResponse()
+			if err := m.RunAfter(context.Background(), pctx); err != nil {
+				t.Fatalf("RunAfter: %v", err)
+			}
+		}
+		return pctx
+	}
+
+	if first := serve(); first.SkipProvider {
+		t.Fatal("the first request was served from an empty cache")
+	}
+	if second := serve(); !second.SkipProvider {
+		t.Fatal("an identical request missed the cache: the response was stored under the rewritten request's key")
 	}
 }

@@ -366,6 +366,36 @@ func TestInit_AcceptsAWellFormedBlocklist(t *testing.T) {
 	}
 }
 
+// TestInit_RejectsANonBooleanCaseSensitive: case_sensitive is a switch, and
+// a value that is not one is a load error rather than a silent "false". A
+// quoted "true", or a ${VAR} reference, which resolves to a string, used to be
+// skipped, so a filter written to match case-sensitively matched every casing
+// of every entry — "API" refused every prompt that said "api" — while the
+// plugin reported itself configured as written.
+func TestInit_RejectsANonBooleanCaseSensitive(t *testing.T) {
+	for _, value := range []any{"true", "false", 1, []any{true}} {
+		config := map[string]any{"blocked_words": []any{"API"}, "case_sensitive": value}
+
+		err := (&WordFilter{}).Init(config)
+		if err == nil || !strings.Contains(err.Error(), "case_sensitive") {
+			t.Fatalf("Init(case_sensitive: %#v) error = %v, want one naming case_sensitive", value, err)
+		}
+		if err := plugin.ValidateConfigFor("word-filter", config); err == nil {
+			t.Fatalf("ValidateConfigFor accepted case_sensitive: %#v, which Init refuses", value)
+		}
+	}
+
+	for value, want := range map[any]bool{true: true, false: false} {
+		f := initFilter(t, map[string]any{"blocked_words": []any{"API"}, "case_sensitive": value})
+		if f.caseSensitive != want {
+			t.Fatalf("case_sensitive: %v loaded as %v", value, f.caseSensitive)
+		}
+	}
+	if f := initFilter(t, map[string]any{"blocked_words": []any{"API"}, "case_sensitive": nil}); f.caseSensitive {
+		t.Fatal("a null case_sensitive did not take the default, false")
+	}
+}
+
 // TestRegister_RefusesTheOnErrorStage: word-filter screens the request and the
 // response, and does nothing at on_error — a rejection there denies nothing,
 // since the request has already failed. An entry at that stage used to load,

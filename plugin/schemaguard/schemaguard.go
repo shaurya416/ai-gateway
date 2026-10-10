@@ -183,11 +183,9 @@ func (g *SchemaGuard) Execute(ctx context.Context, pctx *plugin.Context) error {
 		return nil
 	}
 
+	// Every choice is validated whatever the context says; see
+	// plugin.ResponseText.
 	for _, choice := range pctx.Response.Choices {
-		// The caller has gone; see plugin.RequestText for why this is not an error.
-		if ctx.Err() != nil {
-			return nil
-		}
 		violation := g.validate(choice.Message)
 		if violation == "" {
 			continue

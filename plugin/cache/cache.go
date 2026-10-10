@@ -152,9 +152,12 @@ func (c *ResponseCache) Execute(_ context.Context, pctx *plugin.Context) error {
 	// and it is populated before the before_request stage, so both stages of one
 	// request read the same value.
 	apiKey, _ := pctx.Metadata["api_key"].(string)
-	key := cacheKey(pctx.Request, apiKey)
 
 	if pctx.Stage == plugin.StageBeforeRequest {
+		key := cacheKey(pctx.Request, apiKey)
+		if pctx.Metadata != nil {
+			pctx.Metadata[metaLookupKey] = key
+		}
 		if resp, ok := c.Get(key); ok {
 			pctx.Response = cloneResponse(resp)
 			pctx.SkipProvider = true
@@ -174,12 +177,29 @@ func (c *ResponseCache) Execute(_ context.Context, pctx *plugin.Context) error {
 		return nil
 	}
 
+	// Stored under the key the lookup used, not one computed afresh. A
+	// before_request plugin listed after this one may have rewritten the
+	// request since — pii-redact under action redact does — and an entry keyed
+	// on the rewritten request is one no lookup ever computes, so every request
+	// such a plugin touched missed. Computed here only when this request was
+	// never looked up, which is a cache listed at after_request alone.
+	key, ok := pctx.Metadata[metaLookupKey].(string)
+	if !ok {
+		key = cacheKey(pctx.Request, apiKey)
+	}
+
 	// Store a private copy: the caller's resp keeps being mutated after this
 	// call returns (e.g. Route/RouteStream stamp OverheadMs post-RunAfter), so
 	// the cache must not hold onto the same pointer.
 	c.Set(key, cloneResponse(pctx.Response))
 	return nil
 }
+
+// metaLookupKey is the Metadata slot holding the key this request was looked
+// up under at before_request, so the after_request store files the response
+// where that lookup will find it. Per request, like every Metadata entry; the
+// key is a hash and carries no request content.
+const metaLookupKey = "response-cache.lookup_key"
 
 // PreservesModel declares that this plugin never changes the model a request
 // routes to — it reads the request and answers from a store, and rewrites

@@ -48,11 +48,14 @@ func (w *WordFilter) SupportedStages() []plugin.Stage {
 	return []plugin.Stage{plugin.StageBeforeRequest, plugin.StageAfterRequest}
 }
 
-// ValidateConfig runs the blocklist checks Init runs, so a malformed
-// blocked_words is a `ferrogw validate` error rather than a failed start. See
+// ValidateConfig runs the checks Init runs, so a malformed blocked_words or
+// case_sensitive is a `ferrogw validate` error rather than a failed start. See
 // plugin.ConfigValidator.
 func (w *WordFilter) ValidateConfig(config map[string]any) error {
-	_, err := blockedWords(config)
+	if _, err := blockedWords(config); err != nil {
+		return err
+	}
+	_, err := caseSensitivity(config)
 	return err
 }
 
@@ -62,10 +65,12 @@ func (w *WordFilter) Init(config map[string]any) error {
 	if err != nil {
 		return err
 	}
-	w.blockedWords = append(w.blockedWords, words...)
-	if cs, ok := config["case_sensitive"].(bool); ok {
-		w.caseSensitive = cs
+	caseSensitive, err := caseSensitivity(config)
+	if err != nil {
+		return err
 	}
+	w.blockedWords = append(w.blockedWords, words...)
+	w.caseSensitive = caseSensitive
 	// Pre-lowercase the blocked words once so case-insensitive Execute calls
 	// compare against the cached list instead of calling strings.ToLower per
 	// blocked-word × message × request.
@@ -174,4 +179,22 @@ func blockedWords(config map[string]any) ([]string, error) {
 		}
 	}
 	return words, nil
+}
+
+// caseSensitivity reads case_sensitive out of a config block. Absent or null
+// takes the default, false.
+//
+// Anything but a boolean is a load error. A quoted "true", or a ${VAR}
+// reference, which resolves to a string, used to be skipped and read as false,
+// so a filter written to match case-sensitively matched every casing of every
+// entry while the plugin reported itself configured as written.
+func caseSensitivity(config map[string]any) (bool, error) {
+	switch v := config["case_sensitive"].(type) {
+	case nil:
+		return false, nil
+	case bool:
+		return v, nil
+	default:
+		return false, fmt.Errorf("word-filter: case_sensitive must be true or false, got %T", v)
+	}
 }

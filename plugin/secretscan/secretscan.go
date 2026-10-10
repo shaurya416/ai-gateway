@@ -203,10 +203,8 @@ func (s *SecretScan) Execute(ctx context.Context, pctx *plugin.Context) error {
 	}
 
 	if pctx.Stage == plugin.StageAfterRequest {
+		// Runs to completion whatever the context says; see plugin.ResponseText.
 		for text := range plugin.ResponseText(pctx.Response) {
-			if ctx.Err() != nil {
-				return nil
-			}
 			if s.screen(ctx, pctx, text, "response") {
 				return nil
 			}

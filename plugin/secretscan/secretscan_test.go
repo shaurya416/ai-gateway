@@ -465,8 +465,9 @@ func TestInit_RejectsAKindsValueThatIsNotAList(t *testing.T) {
 	}
 }
 
-// A plugin runs inside the request pipeline, so it stops when the request is
-// abandoned rather than scanning content nobody is waiting for.
+// A plugin runs inside the request pipeline, so it stops scanning a request
+// that has been abandoned rather than scanning content nobody is waiting for.
+// No provider call is made on an ended context, so stopping approves nothing.
 //
 // It returns nil, not the context's error: an error from Execute means the
 // plugin BROKE, which the gateway reports as a 500 and counts against the
@@ -479,27 +480,41 @@ func TestExecute_StopsOnACancelledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	for _, tc := range []struct {
-		name string
-		pctx *plugin.Context
-	}{
-		{name: "request", pctx: newRequest("my key is AKIAIOSFODNN7EXAMPLE")}, // #nosec G101 -- AWS's own published example key, not a live credential.
-		{name: "response", pctx: &plugin.Context{
-			Stage:    plugin.StageAfterRequest,
-			Metadata: map[string]any{},
-			Response: &providers.Response{
-				Choices: []providers.Choice{{Message: providers.Message{Content: "sure: AKIAIOSFODNN7EXAMPLE"}}}, // #nosec G101 -- AWS's own published example key, not a live credential.
-			},
-		}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			if err := s.Execute(ctx, tc.pctx); err != nil {
-				t.Fatalf("Execute returned the caller's cancellation as a plugin fault: %v", err)
-			}
-			if tc.pctx.Reject {
-				t.Fatal("the screening loop ran to completion on an abandoned request")
-			}
-		})
+	pctx := newRequest("my key is AKIAIOSFODNN7EXAMPLE") // #nosec G101 -- AWS's own published example key, not a live credential.
+	if err := s.Execute(ctx, pctx); err != nil {
+		t.Fatalf("Execute returned the caller's cancellation as a plugin fault: %v", err)
+	}
+	if pctx.Reject {
+		t.Fatal("the screening loop ran to completion on an abandoned request")
+	}
+}
+
+// The response is screened in full whatever the context says. Its verdict is
+// the last thing between the response and the caller, and an ended context is
+// not only a caller who left: the gateway's own request_timeout ends it, and
+// so does an earlier after_request plugin that hangs until that deadline,
+// while the caller is still waiting. Stopping early approved the response
+// unscreened, and the gateway served the credential in it.
+func TestExecute_ScreensTheResponseOnAnEndedContext(t *testing.T) {
+	s := &SecretScan{}
+	if err := s.Init(map[string]any{}); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	pctx := &plugin.Context{
+		Stage:    plugin.StageAfterRequest,
+		Metadata: map[string]any{},
+		Response: &providers.Response{
+			Choices: []providers.Choice{{Message: providers.Message{Content: "sure: AKIAIOSFODNN7EXAMPLE"}}}, // #nosec G101 -- AWS's own published example key, not a live credential.
+		},
+	}
+	if err := s.Execute(ctx, pctx); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !pctx.Reject {
+		t.Fatal("a response carrying a credential was approved because the request's context had ended")
 	}
 }
 

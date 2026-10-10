@@ -131,6 +131,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   such call under one missing key and finished with `finish_reason:
   tool_calls` and an empty `tool_calls` list. The reasoning a non-streamed
   request for the same answer received was dropped from the replay.
+- `regex-guard`, `secret-scan` and `schema-guard` listed at `after_request` now
+  screen the whole response even when the request's context has already
+  ended. Each stopped at the first sign of an ended context and returned the
+  same approval a clean response gets, on the reasoning that the caller had
+  left. But the gateway's own `request_timeout` ends that context while the
+  caller is still waiting, and so does an earlier `after_request` plugin that
+  hangs until the deadline — a `request-logger` whose store stops answering —
+  so a non-streaming response carrying a credential, a blocked pattern or a
+  malformed document was served with a `200`, unscreened. The response is now
+  screened in full and refused as it would be on a live context. Request-side
+  screening still stops on an ended context, since no provider call follows.
+- `response-cache` now serves a request that a `before_request` plugin listed
+  after it rewrote. The cache computed its key twice — once to look up at
+  `before_request`, once to store at `after_request` — from the request as each
+  stage saw it, so when a later plugin rewrote the request in between, the
+  response was filed under a key no lookup ever computes. `pii-redact` under
+  `action: redact` does exactly that, and the example config lists it after the
+  cache: every request carrying a value it redacted went to the provider again,
+  identical repeats included, while the cache reported itself enabled. The
+  response is now stored under the key it was looked up under.
+- `word-filter` refuses to load a `case_sensitive` that is not `true` or
+  `false`. A quoted `"true"`, or a `${VAR}` reference, which resolves to a
+  string, was skipped and read as `false`, so a filter written to match
+  case-sensitively matched every casing of every entry — `API` refused every
+  prompt that said `api` — while the plugin reported itself configured as
+  written. It is now a load error naming the key, at startup and in `ferrogw
+  validate`; an absent or null `case_sensitive` still takes the default,
+  `false`.
 - A `budget` that refuses a request inside an MCP tool loop now records what
   that request had already spent. The cap is checked before every loop turn
   against the key's stored spend plus the request's running cost, but a refusal
