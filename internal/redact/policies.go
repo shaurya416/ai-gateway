@@ -162,12 +162,17 @@ func DefaultPolicies() []Policy {
 		// the same reason. This rule follows that precedent: an assignment to a
 		// credential-named key, then 24+ alphanumerics.
 		//
+		// The value has no upper bound. With one, the trailing \b makes a value
+		// a character past it match nothing at all — an alphanumeric run has no
+		// word boundary inside it to stop at — so a 128-character hex secret
+		// would pass through whole while every shorter one is redacted.
+		//
 		// It is a backstop only. The gateway's own credentials are removed by
 		// value before any policy runs, which needs no shape and no keyword.
 		{
 			Name: "keyword_secret",
 			Pattern: regexp.MustCompile(
-				`(?i)((?:api[_\-]?key|apikey|access[_\-]?token|auth[_\-]?token|token|secret|password)["']?\s*[:=]\s*["']?)([A-Za-z0-9]{24,64})\b`,
+				`(?i)((?:api[_\-]?key|apikey|access[_\-]?token|auth[_\-]?token|token|secret|password)["']?\s*[:=]\s*["']?)([A-Za-z0-9]{24,})\b`,
 			),
 			Replacement: "${1}[REDACTED_CREDENTIAL]",
 		},

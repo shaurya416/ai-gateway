@@ -193,6 +193,9 @@ func (p *otelProvider) runWorker(
 	workerDone chan<- struct{},
 ) {
 	defer close(workerDone)
+	// One failure count per exporter, owned by this goroutine alone: it is the
+	// only caller of dispatchEvent.
+	failures := make([]uint64, len(exporters))
 	for {
 		select {
 		case evt, ok := <-q:
@@ -202,7 +205,7 @@ func (p *otelProvider) runWorker(
 			}
 			// Steady-state: use background context so request cancellation
 			// never drops an in-flight event.
-			p.dispatchEvent(context.Background(), exporters, evt)
+			p.dispatchEvent(context.Background(), exporters, failures, evt)
 		case <-done:
 			// Drain remaining buffered events before exiting. Read drainCtx
 			// under the read-lock to establish a clear happens-before with the
@@ -217,7 +220,7 @@ func (p *otelProvider) runWorker(
 			for {
 				select {
 				case evt := <-q:
-					p.dispatchEvent(dCtx, exporters, evt)
+					p.dispatchEvent(dCtx, exporters, failures, evt)
 				default:
 					return
 				}
@@ -231,15 +234,34 @@ func (p *otelProvider) runWorker(
 // passes the Shutdown context so slow exporters honour the deadline. An
 // attempt event reaches only the exporters that asked for attempts; every
 // other event reaches them all.
-func (p *otelProvider) dispatchEvent(ctx context.Context, exporters []observability.Exporter, evt observability.Event) {
-	for _, ex := range exporters {
+//
+// failures holds one count per exporter, in the same order. An Export that
+// returns an error is reported at error level, the first time and then every
+// 64th, the same sampling the queue-full warning uses. The error used to be
+// discarded: an exporter whose backend refused every event — a revoked API key,
+// an unreachable endpoint — lost all of them while it stayed attached and the
+// gateway logged nothing, which reads as a working integration with no traffic.
+func (p *otelProvider) dispatchEvent(ctx context.Context, exporters []observability.Exporter, failures []uint64, evt observability.Event) {
+	for i, ex := range exporters {
 		if evt.Subject == observability.SubjectRoutingAttempt && !exportsRoutingAttempts(ex) {
 			continue
 		}
 		if evt.Subject == observability.SubjectGuardrailMatch && !exportsGuardrailMatches(ex) {
 			continue
 		}
-		exportEvent(ctx, ex, evt)
+		err := exportEvent(ctx, ex, evt)
+		if err == nil {
+			continue
+		}
+		failures[i]++
+		if n := failures[i]; n == 1 || n%64 == 0 {
+			logger.Default().Error("otel: exporter failed to export event; the event is lost to it",
+				"exporter", ex.Name(),
+				"subject", evt.Subject,
+				"error", redact.ErrorMessage(err),
+				"total_failed", n,
+			)
+		}
 	}
 }
 
@@ -260,7 +282,10 @@ func exportsRoutingAttempts(ex observability.Exporter) bool {
 // unrecovered panic there takes the whole process down over telemetry nobody
 // asked to be load-bearing. Recovering per exporter also keeps one broken
 // exporter from swallowing the event for the ones behind it.
-func exportEvent(ctx context.Context, ex observability.Exporter, evt observability.Event) {
+//
+// It returns the error Export returned. A panic is logged here, every time and
+// with its stack, and is returned as nil so the caller does not report it twice.
+func exportEvent(ctx context.Context, ex observability.Exporter, evt observability.Event) (err error) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			logger.Default().Error("otel: exporter panicked",
@@ -269,10 +294,11 @@ func exportEvent(ctx context.Context, ex observability.Exporter, evt observabili
 				"panic", recovered,
 				"stack", string(debug.Stack()),
 			)
+			err = nil
 		}
 	}()
 
-	_ = ex.Export(ctx, evt)
+	return ex.Export(ctx, evt)
 }
 
 // Shutdown stops the async worker, drains buffered events within the ctx

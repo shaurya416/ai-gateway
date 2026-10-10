@@ -165,6 +165,11 @@ type Exporter interface {
 
 	// Export delivers a single Event to the backing system. Implementations
 	// MUST be safe for concurrent use.
+	//
+	// Events are delivered asynchronously, so ctx is not the request's context
+	// and carries none of its values: the request identity is read from evt
+	// (User, SessionID, Metadata), never from ctx. A returned error is logged
+	// by the gateway, sampled, against the exporter's name.
 	Export(ctx context.Context, evt Event) error
 
 	// Shutdown drains the exporter's buffers within the supplied

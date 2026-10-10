@@ -28,6 +28,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reached the upstream as no count at all and was generated, billed and
   answered `200` at the upstream's default count; a negative `n` was forwarded
   for the upstream to refuse.
+- An observability exporter whose `Export` returns an error is now reported.
+  The gateway discarded that error, so an exporter whose backend refused every
+  event — a revoked API key, a moved endpoint — stayed attached and lost all of
+  them while nothing in the gateway's log or metrics said so, which reads as a
+  working integration with no traffic. A failed `Export` is now logged at error
+  level with the exporter's name, the event subject, the redacted error and a
+  running failure count — on the first failure and every 64th after it, the
+  sampling the queue-full warning already uses.
+- A credential longer than 64 characters is no longer left in error text by
+  the keyword-anchored redaction rule — `api_key=`, `"secret": "…"`, `token:`
+  and the like, followed by a run of letters and digits. The rule capped the
+  value at 64 characters and then required a word boundary, and a run of
+  letters and digits has none inside it, so a value one character over the cap
+  matched nothing and reached request-log rows, span errors and exporter events
+  whole, while one of 24 to 64 characters was redacted. The rule now has no
+  upper bound.
+- The observability README no longer tells exporter authors to read the request
+  identity with `RequestIdentityFromContext(ctx)` inside an exporter. Events
+  are delivered asynchronously on a context that is not the request's, so that
+  call returns the zero identity for every request, and an exporter written
+  from the example recorded all traffic as anonymous. The README and the
+  `Exporter.Export` godoc now say to read `Event.User`, `Event.SessionID` and
+  `Event.Metadata`, which the gateway fills from the request.
 - `GET /admin/config` and `GET /admin/config/history` no longer serve the
   query of a URL Go's parser cannot decode. Every query value of a URL field —
   `mcp_servers[].url`, the tracing endpoint — was withheld only when

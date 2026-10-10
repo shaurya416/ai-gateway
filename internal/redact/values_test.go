@@ -120,6 +120,31 @@ func TestKeywordSecret_DoesNotEatOrdinaryText(t *testing.T) {
 	}
 }
 
+// TestKeywordSecret_LongValueIsRedacted pins that a credential is not let
+// through for being long. The rule capped the value at 64 characters and ended
+// on a word boundary, and an alphanumeric run has no boundary inside it — so a
+// value one character past the cap matched nothing and was emitted whole, while
+// every shorter one was redacted.
+func TestKeywordSecret_LongValueIsRedacted(t *testing.T) {
+	withSecrets(t) // no registered values: patterns alone
+
+	for _, n := range []int{24, 64, 65, 128, 512} {
+		value := strings.Repeat("9fK2qW7mZ3", 52)[:n]
+		for _, in := range []string{
+			"upstream said api_key=" + value,
+			`{"secret": "` + value + `", "status": 401}`,
+		} {
+			got := String(in)
+			if strings.Contains(got, value[:24]) {
+				t.Errorf("%d-character credential not redacted:\n in: %q\ngot: %q", n, in, got)
+			}
+			if !strings.Contains(got, "[REDACTED_CREDENTIAL]") {
+				t.Errorf("%d-character credential: no redaction token in %q", n, got)
+			}
+		}
+	}
+}
+
 func TestIsCredentialName(t *testing.T) {
 	credential := []string{
 		"OPENAI_API_KEY", "MISTRAL_API_KEY", "COHERE_API_KEY", "AWS_SECRET_ACCESS_KEY",

@@ -192,7 +192,11 @@ A header value longer than 256 bytes, or carrying a control character, is
 ignored. Unknown JSON body fields are still accepted and ignored, as OpenAI
 clients expect; `session_id` and `metadata` are not body fields on this surface.
 
-Embedders set or read the identity on the context:
+Embedders set the identity on the request context. An exporter reads it from
+the `Event` it is handed, not from its `Export` context: events are delivered
+asynchronously by a background worker, so that context is not the request's and
+carries no identity — `RequestIdentityFromContext` on it returns the zero value
+for every request.
 
 ```go
 ctx = observability.ContextWithRequestIdentity(ctx, observability.RequestIdentity{
@@ -201,8 +205,12 @@ ctx = observability.ContextWithRequestIdentity(ctx, observability.RequestIdentit
     Metadata:  map[string]string{"team": "search"},
 })
 resp, err := gw.Route(ctx, req)
+
 // …and in an Exporter:
-id := observability.RequestIdentityFromContext(ctx)
+func (e *myExporter) Export(ctx context.Context, evt observability.Event) error {
+    user, session, metadata := evt.User, evt.SessionID, evt.Metadata
+    // …
+}
 ```
 
 Identity is never forwarded to a provider by the gateway beyond what the
@@ -228,6 +236,10 @@ whether an OTLP endpoint is set. Implement `observability.Exporter` and register
 factory with `observability.RegisterExporter` in `init()`. No built-in exporters
 ship in this repo — they live in the `ai-gateway-plugins` repository. An
 unrecognised or failing exporter is warned and skipped; the gateway still starts.
+An `Export` that returns an error is logged at error level with the exporter's
+name — the first failure and every 64th after it — so a backend refusing every
+event shows up in the gateway's log rather than as an integration with no
+traffic.
 
 ## Reference
 
