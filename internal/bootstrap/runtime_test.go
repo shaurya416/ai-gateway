@@ -166,10 +166,16 @@ func TestGracefulShutdownWaitsForActiveHandlersBeforeClosingResources(t *testing
 	done := make(chan error, 1)
 	go func() { done <- gracefulShutdown(app, 10*time.Millisecond) }()
 
+	// The handler is held well past Shutdown's 10ms deadline before it is
+	// released, so the deadline is observed while the handler is still
+	// active. Shutdown polls for idle connections, and a poll that first runs
+	// after the release finds everything idle and returns nil; with the
+	// handler held for only 20ms past the deadline, a goroutine delayed that
+	// long on a loaded runner under -race failed this test.
 	select {
 	case err := <-done:
 		t.Fatalf("shutdown returned before the handler finished: %v", err)
-	case <-time.After(30 * time.Millisecond):
+	case <-time.After(300 * time.Millisecond):
 	}
 	if cleanupStarted.Load() {
 		t.Fatal("cleanup started while the active handler was still running")
