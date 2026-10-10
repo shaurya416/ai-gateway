@@ -593,3 +593,81 @@ func TestExecute_ReportsAnAnthropicKeyUnderItsOwnKind(t *testing.T) {
 		})
 	}
 }
+
+// TestExecute_ObserveOnlyActionDoesNotDenyUninspectableContent holds warn and
+// log to their contract on the one input they used to deny: an embeddings
+// input sent as token IDs. Only block rejects; an observe-only action records
+// the decision it is configured to make and forwards the request, exactly as
+// it forwards a readable credential.
+func TestExecute_ObserveOnlyActionDoesNotDenyUninspectableContent(t *testing.T) {
+	for _, action := range []string{plugin.ActionWarn, plugin.ActionLog} {
+		t.Run(action, func(t *testing.T) {
+			s := &SecretScan{}
+			if err := s.Init(map[string]any{"action": action}); err != nil {
+				t.Fatalf("Init: %v", err)
+			}
+
+			pctx := newRequest("")
+			pctx.Metadata[plugin.MetadataUninspectableContent] = true
+			if err := s.Execute(context.Background(), pctx); err != nil {
+				t.Fatalf("Execute: %v", err)
+			}
+
+			if pctx.Reject {
+				t.Fatalf("action %q denied the request; only block rejects", action)
+			}
+			if len(pctx.GuardrailMatches) != 1 || pctx.GuardrailMatches[0].Action != action {
+				t.Fatalf("matches = %+v, want one %q decision recorded", pctx.GuardrailMatches, action)
+			}
+		})
+	}
+}
+
+// TestObserveOnlyActionDoesNotRefuseUninspectablePassthrough covers the same
+// contract on the pass-through, which refuses an unreadable body BEFORE the
+// stage whenever a request-content guardrail is registered. An observe-only
+// instance approves whatever the body says, so it must not be the one that
+// turns the refusal on.
+func TestObserveOnlyActionDoesNotRefuseUninspectablePassthrough(t *testing.T) {
+	for action, wantRefusal := range map[string]bool{
+		plugin.ActionBlock: true,
+		plugin.ActionWarn:  false,
+		plugin.ActionLog:   false,
+	} {
+		t.Run(action, func(t *testing.T) {
+			s := &SecretScan{}
+			if err := s.Init(map[string]any{"action": action}); err != nil {
+				t.Fatalf("Init: %v", err)
+			}
+			m := plugin.NewManager(nil)
+			if err := m.Register(plugin.StageBeforeRequest, s); err != nil {
+				t.Fatalf("Register: %v", err)
+			}
+
+			if got := m.HasBeforeRequestGuardrail(); got != wantRefusal {
+				t.Fatalf("HasBeforeRequestGuardrail() = %v under action %q, want %v", got, action, wantRefusal)
+			}
+		})
+	}
+}
+
+// TestRegister_RefusesTheOnErrorStage: secret-scan screens the request and the
+// response, and does nothing at on_error — a rejection there denies nothing,
+// since the request has already failed. An entry at that stage used to load,
+// report itself enabled and enforce nothing, so it is refused at load instead.
+func TestRegister_RefusesTheOnErrorStage(t *testing.T) {
+	for stage, wantErr := range map[plugin.Stage]bool{
+		plugin.StageBeforeRequest: false,
+		plugin.StageAfterRequest:  false,
+		plugin.StageOnError:       true,
+	} {
+		s := &SecretScan{}
+		if err := s.Init(map[string]any{}); err != nil {
+			t.Fatalf("Init: %v", err)
+		}
+		err := plugin.NewManager(nil).Register(stage, s)
+		if (err != nil) != wantErr {
+			t.Fatalf("Register at %s: err = %v, want error: %v", stage, err, wantErr)
+		}
+	}
+}

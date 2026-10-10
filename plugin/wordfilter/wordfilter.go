@@ -6,6 +6,7 @@ package wordfilter
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"github.com/ferro-labs/ai-gateway/pkg/logger"
@@ -39,20 +40,29 @@ func (w *WordFilter) Name() string { return "word-filter" }
 // Type returns the plugin lifecycle hook type.
 func (w *WordFilter) Type() plugin.PluginType { return plugin.TypeGuardrail }
 
+// SupportedStages reports that this plugin screens the request and the
+// response. At on_error the request has already failed, so a rejection there
+// denies nothing; an entry at that stage would enforce nothing and is refused
+// at load instead.
+func (w *WordFilter) SupportedStages() []plugin.Stage {
+	return []plugin.Stage{plugin.StageBeforeRequest, plugin.StageAfterRequest}
+}
+
+// ValidateConfig runs the blocklist checks Init runs, so a malformed
+// blocked_words is a `ferrogw validate` error rather than a failed start. See
+// plugin.ConfigValidator.
+func (w *WordFilter) ValidateConfig(config map[string]any) error {
+	_, err := blockedWords(config)
+	return err
+}
+
 // Init configures the plugin from the provided options map.
 func (w *WordFilter) Init(config map[string]any) error {
-	if words, ok := config["blocked_words"]; ok {
-		switch list := words.(type) {
-		case []any:
-			for _, word := range list {
-				if s, ok := word.(string); ok {
-					w.blockedWords = append(w.blockedWords, s)
-				}
-			}
-		case []string:
-			w.blockedWords = append(w.blockedWords, list...)
-		}
+	words, err := blockedWords(config)
+	if err != nil {
+		return err
 	}
+	w.blockedWords = append(w.blockedWords, words...)
 	if cs, ok := config["case_sensitive"].(bool); ok {
 		w.caseSensitive = cs
 	}
@@ -132,3 +142,36 @@ func (w *WordFilter) reject(ctx context.Context, pctx *plugin.Context, content, 
 
 // Close releases plugin resources.
 func (w *WordFilter) Close() error { return nil }
+
+// blockedWords reads the blocklist out of a config block.
+//
+// A value that cannot be the list the operator meant is a load error. A scalar
+// (`blocked_words: password`) and a non-string entry used to be dropped in
+// silence, so the filter loaded, reported itself enabled and never blocked the
+// words it was given. An empty or blank entry is refused for the opposite
+// reason: every string contains it, so it blocked every request.
+func blockedWords(config map[string]any) ([]string, error) {
+	var words []string
+	switch list := config["blocked_words"].(type) {
+	case []string:
+		words = list
+	default:
+		raw, err := plugin.ListSetting(list, "blocked_words")
+		if err != nil {
+			return nil, fmt.Errorf("word-filter: %w", err)
+		}
+		for i, word := range raw {
+			s, ok := word.(string)
+			if !ok {
+				return nil, fmt.Errorf("word-filter: blocked_words[%d] must be a string, got %T", i, word)
+			}
+			words = append(words, s)
+		}
+	}
+	for i, word := range words {
+		if strings.TrimSpace(word) == "" {
+			return nil, fmt.Errorf("word-filter: blocked_words[%d] is empty; every request contains it", i)
+		}
+	}
+	return words, nil
+}

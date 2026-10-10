@@ -317,3 +317,69 @@ func TestWordFilter_RejectsUninspectableContent(t *testing.T) {
 		})
 	}
 }
+
+// TestInit_RejectsAMalformedBlocklist holds blocked_words to the rule every
+// other content guardrail already follows: a value that cannot be the list the
+// operator meant is a load error. A scalar (`blocked_words: password`) and a
+// non-string entry were dropped in silence, leaving a filter that loaded,
+// reported itself enabled and never blocked the words it was given. An empty
+// entry fails the other way: every string contains it, so it blocked every
+// request.
+func TestInit_RejectsAMalformedBlocklist(t *testing.T) {
+	tests := []struct {
+		name    string
+		value   any
+		wantErr string
+	}{
+		{name: "a scalar", value: "password", wantErr: "blocked_words must be a list"},
+		{name: "a mapping", value: map[string]any{"password": true}, wantErr: "blocked_words must be a list"},
+		{name: "a non-string entry", value: []any{"password", 1234}, wantErr: "blocked_words[1]"},
+		{name: "a null entry", value: []any{nil, "password"}, wantErr: "blocked_words[0]"},
+		{name: "an empty entry", value: []any{"password", ""}, wantErr: "blocked_words[1]"},
+		{name: "a blank entry", value: []string{"  "}, wantErr: "blocked_words[0]"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := map[string]any{"blocked_words": tt.value}
+
+			err := (&WordFilter{}).Init(config)
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("Init error = %v, want one naming %q", err, tt.wantErr)
+			}
+			// ferrogw validate must refuse what the gateway would refuse to start on.
+			if err := plugin.ValidateConfigFor("word-filter", config); err == nil {
+				t.Fatal("ValidateConfigFor accepted a blocklist Init refuses")
+			}
+		})
+	}
+}
+
+func TestInit_AcceptsAWellFormedBlocklist(t *testing.T) {
+	for _, value := range []any{[]any{"password", " pass "}, []string{"secret"}} {
+		config := map[string]any{"blocked_words": value}
+		if err := (&WordFilter{}).Init(config); err != nil {
+			t.Fatalf("Init(%v): %v", value, err)
+		}
+		if err := plugin.ValidateConfigFor("word-filter", config); err != nil {
+			t.Fatalf("ValidateConfigFor(%v): %v", value, err)
+		}
+	}
+}
+
+// TestRegister_RefusesTheOnErrorStage: word-filter screens the request and the
+// response, and does nothing at on_error — a rejection there denies nothing,
+// since the request has already failed. An entry at that stage used to load,
+// report itself enabled and enforce nothing, so it is refused at load instead.
+func TestRegister_RefusesTheOnErrorStage(t *testing.T) {
+	for stage, wantErr := range map[plugin.Stage]bool{
+		plugin.StageBeforeRequest: false,
+		plugin.StageAfterRequest:  false,
+		plugin.StageOnError:       true,
+	} {
+		f := initFilter(t, map[string]any{"blocked_words": []any{"badword"}})
+		err := plugin.NewManager(nil).Register(stage, f)
+		if (err != nil) != wantErr {
+			t.Fatalf("Register at %s: err = %v, want error: %v", stage, err, wantErr)
+		}
+	}
+}

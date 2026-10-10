@@ -107,6 +107,8 @@ type PIIRedact struct {
 	jsonPlaceholder string
 }
 
+var _ plugin.ContentAgnostic = (*PIIRedact)(nil)
+
 // Name returns the plugin identifier.
 func (p *PIIRedact) Name() string { return "pii-redact" }
 
@@ -120,6 +122,13 @@ func (p *PIIRedact) Type() plugin.PluginType { return plugin.TypeGuardrail }
 func (p *PIIRedact) SupportedStages() []plugin.Stage {
 	return []plugin.Stage{plugin.StageBeforeRequest}
 }
+
+// IgnoresRequestContent reports that a log instance forwards every request as
+// written, so its approval of a body it cannot read is the approval it gives
+// every other body. block and redact both act on what the content says, and
+// redact denies a detection on any surface it cannot rewrite. See
+// plugin.ContentAgnostic.
+func (p *PIIRedact) IgnoresRequestContent() bool { return p.action == plugin.ActionLog }
 
 // actions is the closed set this plugin honours; see plugin.NormalizeAction.
 var actions = []string{plugin.ActionBlock, plugin.ActionRedact, plugin.ActionLog}
@@ -201,7 +210,14 @@ func (p *PIIRedact) Execute(ctx context.Context, pctx *plugin.Context) error {
 	if len(p.entities) == 0 || pctx.Stage != plugin.StageBeforeRequest {
 		return nil
 	}
-	if plugin.RejectUninspectable(pctx) {
+	// Redact is not observe-only: content it cannot read it cannot sanitize
+	// either, which on a projected surface is already a denial. Only log
+	// forwards the body as written.
+	uninspectableAction := plugin.ActionBlock
+	if p.action == plugin.ActionLog {
+		uninspectableAction = plugin.ActionLog
+	}
+	if plugin.ScreenUninspectable(pctx, uninspectableAction) {
 		return nil
 	}
 	if pctx.Request == nil {

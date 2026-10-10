@@ -103,11 +103,29 @@ type SecretScan struct {
 	action  string
 }
 
+var _ plugin.ContentAgnostic = (*SecretScan)(nil)
+
 // Name returns the plugin identifier.
 func (s *SecretScan) Name() string { return "secret-scan" }
 
 // Type returns the plugin lifecycle hook type.
 func (s *SecretScan) Type() plugin.PluginType { return plugin.TypeGuardrail }
+
+// SupportedStages reports that this plugin screens the request and the
+// response. At on_error the request has already failed, so a rejection there
+// denies nothing; an entry at that stage would enforce nothing and is refused
+// at load instead.
+func (s *SecretScan) SupportedStages() []plugin.Stage {
+	return []plugin.Stage{plugin.StageBeforeRequest, plugin.StageAfterRequest}
+}
+
+// IgnoresRequestContent reports that a warn or log instance approves every
+// request whatever it carries, so its approval of a body it cannot read is the
+// approval it gives every other body. Only block derives a verdict from the
+// content. See plugin.ContentAgnostic.
+func (s *SecretScan) IgnoresRequestContent() bool {
+	return s.action == plugin.ActionWarn || s.action == plugin.ActionLog
+}
 
 // actions is the closed set this plugin honours; see plugin.NormalizeAction.
 var actions = []string{plugin.ActionBlock, plugin.ActionWarn, plugin.ActionLog}
@@ -196,7 +214,7 @@ func (s *SecretScan) Execute(ctx context.Context, pctx *plugin.Context) error {
 		return nil
 	}
 
-	if plugin.RejectUninspectable(pctx) {
+	if plugin.ScreenUninspectable(pctx, s.action) {
 		return nil
 	}
 	for text := range plugin.RequestText(pctx.Request) {

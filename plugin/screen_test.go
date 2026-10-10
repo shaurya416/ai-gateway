@@ -257,3 +257,53 @@ func TestNormalizeAction_RejectsAnActionValidForAnotherPlugin(t *testing.T) {
 		t.Fatal("NormalizeAction accepted \"redact\" against a caller whose allowed set does not include it")
 	}
 }
+
+func TestScreenUninspectable_DeniesOnlyWhenAnActionCanBlock(t *testing.T) {
+	tests := []struct {
+		name       string
+		actions    []string
+		wantReject bool
+		wantMatch  []string
+	}{
+		{name: "no action keeps the denial", wantReject: true, wantMatch: []string{ActionBlock}},
+		{name: "block", actions: []string{ActionBlock}, wantReject: true, wantMatch: []string{ActionBlock}},
+		{name: "block among observe-only", actions: []string{ActionLog, ActionBlock}, wantReject: true, wantMatch: []string{ActionBlock}},
+		{name: "warn", actions: []string{ActionWarn}, wantMatch: []string{ActionWarn}},
+		{name: "warn and log", actions: []string{ActionWarn, ActionLog}, wantMatch: []string{ActionWarn, ActionLog}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pctx := &Context{
+				Stage:    StageBeforeRequest,
+				Request:  &providers.Request{},
+				Metadata: map[string]any{MetadataUninspectableContent: true},
+			}
+
+			if !ScreenUninspectable(pctx, tt.actions...) {
+				t.Fatal("ScreenUninspectable reported readable content; there is nothing left to screen")
+			}
+			if pctx.Reject != tt.wantReject {
+				t.Fatalf("Reject = %v, want %v", pctx.Reject, tt.wantReject)
+			}
+			got := make([]string, 0, len(pctx.GuardrailMatches))
+			for _, m := range pctx.GuardrailMatches {
+				got = append(got, m.Action)
+			}
+			if !slices.Equal(got, tt.wantMatch) {
+				t.Fatalf("recorded actions = %v, want %v", got, tt.wantMatch)
+			}
+		})
+	}
+}
+
+func TestScreenUninspectable_IgnoresReadableContentAndLaterStages(t *testing.T) {
+	for _, pctx := range []*Context{
+		{Stage: StageBeforeRequest, Request: &providers.Request{}, Metadata: map[string]any{}},
+		{Stage: StageAfterRequest, Request: &providers.Request{}, Metadata: map[string]any{MetadataUninspectableContent: true}},
+	} {
+		if ScreenUninspectable(pctx, ActionLog) || pctx.Reject || len(pctx.GuardrailMatches) != 0 {
+			t.Fatalf("stage %s: ScreenUninspectable acted on a request it had no reason to: reject=%v matches=%+v",
+				pctx.Stage, pctx.Reject, pctx.GuardrailMatches)
+		}
+	}
+}

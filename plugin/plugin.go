@@ -141,7 +141,9 @@ const (
 	// A content guardrail must read it as content it was REQUIRED to inspect and
 	// could not, and deny the request — Reject, which is a verdict, never an
 	// error, which would report the gateway as broken. Serving it instead leaves
-	// the blocklist evadable by a one-line client-side transform.
+	// the blocklist evadable by a one-line client-side transform. A guardrail
+	// configured only to warn or log has nothing to evade and denies nothing; it
+	// records the decision instead (see ScreenUninspectable).
 	//
 	// It is absent whenever the content was projected, and absent on every chat
 	// request, so a deployment running no content guardrail keeps serving

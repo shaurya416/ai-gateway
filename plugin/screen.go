@@ -3,6 +3,7 @@ package plugin
 import (
 	"fmt"
 	"iter"
+	"slices"
 	"strings"
 
 	"github.com/ferro-labs/ai-gateway/internal/envref"
@@ -114,11 +115,7 @@ func yieldMessage(msg providers.Message, yield func(string) bool) bool {
 // At after_request there is nothing to withhold: the response has already been
 // delivered chunk by chunk, so this reports false and the caller proceeds.
 func RejectUninspectable(pctx *Context) bool {
-	if pctx == nil || pctx.Request == nil || pctx.Stage != StageBeforeRequest {
-		return false
-	}
-	uninspectable, _ := pctx.Metadata[MetadataUninspectableContent].(bool)
-	if !uninspectable {
+	if !uninspectableRequest(pctx) {
 		return false
 	}
 	// A denial is a guardrail decision like any other, so it carries the same
@@ -128,6 +125,42 @@ func RejectUninspectable(pctx *Context) bool {
 	pctx.Reject = true
 	pctx.Reason = "request blocked by content policy: content is not inspectable text"
 	return true
+}
+
+// ScreenUninspectable applies RejectUninspectable on behalf of a guardrail
+// whose configured actions decide whether it may deny at all. actions are what
+// the guardrail's request-side checks resolve to. It reports whether the
+// request carried uninspectable content, which leaves nothing further to
+// screen.
+//
+// Only block denies, so the denial is reserved for a guardrail that has one —
+// or that names no action, which keeps RejectUninspectable's answer. A warn or
+// log guardrail lets through whatever a readable body says; refusing the one
+// body it cannot read made an observe-only rollout reject traffic its own
+// action promised to forward. It records instead the decision each action
+// would have made, the same signal a readable violation produces, so sizing a
+// policy in log mode still counts the requests block mode will deny.
+func ScreenUninspectable(pctx *Context, actions ...string) bool {
+	if len(actions) == 0 || slices.Contains(actions, ActionBlock) {
+		return RejectUninspectable(pctx)
+	}
+	if !uninspectableRequest(pctx) {
+		return false
+	}
+	for _, action := range actions {
+		pctx.NoteGuardrailMatch(action)
+	}
+	return true
+}
+
+// uninspectableRequest reports whether pctx is a before_request carrying
+// content the gateway could not project as text.
+func uninspectableRequest(pctx *Context) bool {
+	if pctx == nil || pctx.Request == nil || pctx.Stage != StageBeforeRequest {
+		return false
+	}
+	uninspectable, _ := pctx.Metadata[MetadataUninspectableContent].(bool)
+	return uninspectable
 }
 
 // Action names what a guardrail does when its check matches. Shared spellings

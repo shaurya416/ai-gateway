@@ -703,3 +703,59 @@ func TestExecute_LogAllowsOnASurfaceThatDiscardsTheRewrite(t *testing.T) {
 		t.Fatal("action=log denied on a surface that discards rewrites; only redact has a rewrite to lose there")
 	}
 }
+
+// TestExecute_LogActionDoesNotDenyUninspectableContent: log neither denies nor
+// rewrites, "the same on every surface". redact is not observe-only — on a
+// projected surface it already denies a detection it cannot sanitize — so it
+// keeps denying content it cannot read.
+func TestExecute_LogActionDoesNotDenyUninspectableContent(t *testing.T) {
+	for action, wantReject := range map[string]bool{
+		plugin.ActionBlock:  true,
+		plugin.ActionRedact: true,
+		plugin.ActionLog:    false,
+	} {
+		t.Run(action, func(t *testing.T) {
+			p := &PIIRedact{}
+			if err := p.Init(map[string]any{"action": action}); err != nil {
+				t.Fatalf("Init: %v", err)
+			}
+
+			pctx := newRequest("")
+			pctx.Metadata[plugin.MetadataSurface] = "embeddings"
+			pctx.Metadata[plugin.MetadataUninspectableContent] = true
+			if err := p.Execute(context.Background(), pctx); err != nil {
+				t.Fatalf("Execute: %v", err)
+			}
+
+			if pctx.Reject != wantReject {
+				t.Fatalf("Reject = %v under action %q, want %v", pctx.Reject, action, wantReject)
+			}
+			if !wantReject && (len(pctx.GuardrailMatches) != 1 || pctx.GuardrailMatches[0].Action != action) {
+				t.Fatalf("matches = %+v, want one %q decision recorded", pctx.GuardrailMatches, action)
+			}
+		})
+	}
+}
+
+func TestLogActionDoesNotRefuseUninspectablePassthrough(t *testing.T) {
+	for action, wantRefusal := range map[string]bool{
+		plugin.ActionBlock:  true,
+		plugin.ActionRedact: true,
+		plugin.ActionLog:    false,
+	} {
+		t.Run(action, func(t *testing.T) {
+			p := &PIIRedact{}
+			if err := p.Init(map[string]any{"action": action}); err != nil {
+				t.Fatalf("Init: %v", err)
+			}
+			m := plugin.NewManager(nil)
+			if err := m.Register(plugin.StageBeforeRequest, p); err != nil {
+				t.Fatalf("Register: %v", err)
+			}
+
+			if got := m.HasBeforeRequestGuardrail(); got != wantRefusal {
+				t.Fatalf("HasBeforeRequestGuardrail() = %v under action %q, want %v", got, action, wantRefusal)
+			}
+		})
+	}
+}

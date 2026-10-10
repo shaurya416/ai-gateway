@@ -59,10 +59,12 @@ gateway refuses to start if they disagree.
 A plugin that can only act at some stages is **refused at the others**, by
 `ferrogw validate` and at startup. `pii-redact` and `prompt-shield` screen the
 prompt, so they run at `before_request`; `schema-guard` validates the answer, so
-it runs at `after_request`. Listing one anywhere else used to load a plugin that
-reported itself enabled and did nothing. `regex-guard`, `secret-scan`,
-`word-filter` and the multi-stage plugins above are unaffected: they act at
-every stage they name.
+it runs at `after_request`. `secret-scan` and `word-filter` screen either side,
+so they run at `before_request` and `after_request` — not at `on_error`, where
+the request has already failed and a rejection denies nothing. `regex-guard`
+runs at the stages its rules' `apply_to` can act at. Listing one anywhere else
+used to load a plugin that reported itself enabled and did nothing. The
+multi-stage plugins above are unaffected: they act at every stage they name.
 
 ## Built-in plugins
 
@@ -87,7 +89,9 @@ listed at `after_request` it screens the response too.
 
 ```yaml
 config:
-  blocked_words: ["password", "secret"]
+  blocked_words: ["password", "secret"]  # a list of strings. A bare string, a
+                                         # non-string entry or an empty entry
+                                         # fails the load
   case_sensitive: false
 ```
 

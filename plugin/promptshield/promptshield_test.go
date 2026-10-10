@@ -377,3 +377,53 @@ func TestDetect_AgreesWithExecuteUnderBlock(t *testing.T) {
 		})
 	}
 }
+
+// TestExecute_ObserveOnlyActionDoesNotDenyUninspectableContent: see the
+// package doc — only block rejects, and an observe-only rollout must not block
+// on the one input it cannot read either.
+func TestExecute_ObserveOnlyActionDoesNotDenyUninspectableContent(t *testing.T) {
+	for _, action := range []string{plugin.ActionWarn, plugin.ActionLog} {
+		t.Run(action, func(t *testing.T) {
+			s := &PromptShield{}
+			if err := s.Init(map[string]any{"action": action}); err != nil {
+				t.Fatalf("Init: %v", err)
+			}
+
+			pctx := newRequest("")
+			pctx.Metadata[plugin.MetadataUninspectableContent] = true
+			if err := s.Execute(context.Background(), pctx); err != nil {
+				t.Fatalf("Execute: %v", err)
+			}
+
+			if pctx.Reject {
+				t.Fatalf("action %q denied the request; an observe-only rollout must not block", action)
+			}
+			if len(pctx.GuardrailMatches) != 1 || pctx.GuardrailMatches[0].Action != action {
+				t.Fatalf("matches = %+v, want one %q decision recorded", pctx.GuardrailMatches, action)
+			}
+		})
+	}
+}
+
+func TestObserveOnlyActionDoesNotRefuseUninspectablePassthrough(t *testing.T) {
+	for action, wantRefusal := range map[string]bool{
+		plugin.ActionBlock: true,
+		plugin.ActionWarn:  false,
+		plugin.ActionLog:   false,
+	} {
+		t.Run(action, func(t *testing.T) {
+			s := &PromptShield{}
+			if err := s.Init(map[string]any{"action": action}); err != nil {
+				t.Fatalf("Init: %v", err)
+			}
+			m := plugin.NewManager(nil)
+			if err := m.Register(plugin.StageBeforeRequest, s); err != nil {
+				t.Fatalf("Register: %v", err)
+			}
+
+			if got := m.HasBeforeRequestGuardrail(); got != wantRefusal {
+				t.Fatalf("HasBeforeRequestGuardrail() = %v under action %q, want %v", got, action, wantRefusal)
+			}
+		})
+	}
+}

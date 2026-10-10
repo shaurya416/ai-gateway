@@ -85,6 +85,8 @@ type PromptShield struct {
 	action  string
 }
 
+var _ plugin.ContentAgnostic = (*PromptShield)(nil)
+
 // Name returns the plugin identifier.
 func (s *PromptShield) Name() string { return "prompt-shield" }
 
@@ -97,6 +99,14 @@ func (s *PromptShield) Type() plugin.PluginType { return plugin.TypeGuardrail }
 // at load instead.
 func (s *PromptShield) SupportedStages() []plugin.Stage {
 	return []plugin.Stage{plugin.StageBeforeRequest}
+}
+
+// IgnoresRequestContent reports that a warn or log instance approves every
+// request whatever it carries, so its approval of a body it cannot read is the
+// approval it gives every other body. Only block derives a verdict from the
+// content. See plugin.ContentAgnostic.
+func (s *PromptShield) IgnoresRequestContent() bool {
+	return s.action == plugin.ActionWarn || s.action == plugin.ActionLog
 }
 
 // actions is the closed set this plugin honours; see plugin.NormalizeAction.
@@ -172,7 +182,7 @@ func (s *PromptShield) Execute(ctx context.Context, pctx *plugin.Context) error 
 	if pctx.Stage != plugin.StageBeforeRequest || len(s.enabled) == 0 {
 		return nil
 	}
-	if plugin.RejectUninspectable(pctx) {
+	if plugin.ScreenUninspectable(pctx, s.action) {
 		return nil
 	}
 

@@ -478,3 +478,70 @@ func TestValidateConfig_PassesABlockCarryingAnEnvReference(t *testing.T) {
 		t.Fatalf("ValidateConfig rejected a block whose pattern is an env reference: %v", err)
 	}
 }
+
+// TestExecute_ObserveOnlyRulesDoNotDenyUninspectableContent: only a block rule
+// rejects. A request-side rule set with no block rule in it must forward the
+// one input it cannot read, recording each configured action, and a single
+// block rule among them must still deny.
+func TestExecute_ObserveOnlyRulesDoNotDenyUninspectableContent(t *testing.T) {
+	tests := []struct {
+		name       string
+		rules      []any
+		wantReject bool
+		wantMatch  []string
+	}{
+		{
+			name: "warn and log rules",
+			rules: []any{
+				map[string]any{"name": "ssn", "pattern": `\d{3}-\d{2}-\d{4}`, "action": "warn"},
+				map[string]any{"name": "codename", "pattern": "bluebird", "action": "log", "apply_to": "both"},
+				// An output-only block rule screens the response, so it has no
+				// say over a request it cannot read.
+				map[string]any{"name": "leak", "pattern": "internal", "action": "block", "apply_to": "output"},
+			},
+			wantMatch: []string{plugin.ActionWarn, plugin.ActionLog},
+		},
+		{
+			name: "one block rule among them",
+			rules: []any{
+				map[string]any{"name": "ssn", "pattern": `\d{3}-\d{2}-\d{4}`, "action": "warn"},
+				map[string]any{"name": "codename", "pattern": "bluebird", "action": "block"},
+			},
+			wantReject: true,
+			wantMatch:  []string{plugin.ActionBlock},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			g := &RegexGuard{}
+			if err := g.Init(map[string]any{"rules": tt.rules}); err != nil {
+				t.Fatalf("Init: %v", err)
+			}
+
+			pctx := newRequest("")
+			pctx.Metadata[plugin.MetadataUninspectableContent] = true
+			if err := g.Execute(context.Background(), pctx); err != nil {
+				t.Fatalf("Execute: %v", err)
+			}
+
+			if pctx.Reject != tt.wantReject {
+				t.Fatalf("Reject = %v, want %v", pctx.Reject, tt.wantReject)
+			}
+			var got []string
+			for _, m := range pctx.GuardrailMatches {
+				got = append(got, m.Action)
+			}
+			if strings.Join(got, ",") != strings.Join(tt.wantMatch, ",") {
+				t.Fatalf("recorded actions = %v, want %v", got, tt.wantMatch)
+			}
+
+			m := plugin.NewManager(nil)
+			if err := m.Register(plugin.StageBeforeRequest, g); err != nil {
+				t.Fatalf("Register: %v", err)
+			}
+			if got := m.HasBeforeRequestGuardrail(); got != tt.wantReject {
+				t.Fatalf("HasBeforeRequestGuardrail() = %v, want %v: only a request-side block rule may refuse an unreadable pass-through body", got, tt.wantReject)
+			}
+		})
+	}
+}

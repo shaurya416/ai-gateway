@@ -60,6 +60,8 @@ type RegexGuard struct {
 	rules []rule
 }
 
+var _ plugin.ContentAgnostic = (*RegexGuard)(nil)
+
 // Name returns the plugin identifier.
 func (g *RegexGuard) Name() string { return "regex-guard" }
 
@@ -84,6 +86,25 @@ func (g *RegexGuard) SupportedStages() []plugin.Stage {
 		stages = append(stages, plugin.StageAfterRequest)
 	}
 	return stages
+}
+
+// IgnoresRequestContent reports that no rule screening the request can deny
+// it — every one warns or logs — so the plugin approves a body it cannot read
+// exactly as it approves every other. Before Init there are no rules to read,
+// and the answer is the safe one. See plugin.ContentAgnostic.
+func (g *RegexGuard) IgnoresRequestContent() bool {
+	return len(g.rules) > 0 && !slices.Contains(g.requestActions(), plugin.ActionBlock)
+}
+
+// requestActions lists the action of every rule that screens the request.
+func (g *RegexGuard) requestActions() []string {
+	var out []string
+	for _, r := range g.rules {
+		if r.applies(false) {
+			out = append(out, r.action)
+		}
+	}
+	return out
 }
 
 // actions is the closed set this plugin honours; see plugin.NormalizeAction.
@@ -191,7 +212,7 @@ func (g *RegexGuard) Execute(ctx context.Context, pctx *plugin.Context) error {
 		return nil
 	}
 
-	if plugin.RejectUninspectable(pctx) {
+	if plugin.ScreenUninspectable(pctx, g.requestActions()...) {
 		return nil
 	}
 	for text := range plugin.RequestText(pctx.Request) {

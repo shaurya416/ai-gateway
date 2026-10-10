@@ -228,6 +228,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   turn against a total one turn short, so a key whose cap the opening turn
   crossed was granted another full turn. The total now starts with the opening
   turn's cost.
+- A content guardrail set to `warn` or `log` no longer refuses requests it
+  cannot read. `secret-scan` and `prompt-shield` under `warn` or `log`,
+  `regex-guard` with no request-side `block` rule, and `pii-redact` under
+  `log` denied an embeddings input sent as token IDs, and each counted as a
+  content-reading guardrail, so the `/v1/*` pass-through refused every body it
+  cannot project as text: enabling one in observe-only mode to size a policy
+  started rejecting requests the gateway had been serving. The denial for
+  unreadable content ignored the configured action. It now applies only to an
+  instance that can block; an observe-only instance forwards the request and
+  records a guardrail match carrying its own action, so log mode still counts
+  what block mode would deny. `block`, and `pii-redact` under `redact`, still
+  deny content they cannot read. `plugin.ScreenUninspectable` applies the rule
+  for a guardrail's configured actions.
+- `word-filter` refuses a `blocked_words` it cannot use. A bare string
+  (`blocked_words: password`) and a non-string entry were dropped in silence,
+  so the filter loaded, reported itself enabled and never blocked the words it
+  was given; an empty entry did the opposite and blocked every request, since
+  every string contains it. Each is now a load error, reported by
+  `ferrogw validate` as well as at startup. An absent or empty list is
+  unchanged.
+- `secret-scan` and `word-filter` listed at `on_error` are refused at load.
+  At that stage the request has already failed, so a rejection denies nothing:
+  the entry loaded, reported itself enabled and enforced nothing. Both now
+  declare the stages they act at, `before_request` and `after_request`, as
+  `pii-redact`, `prompt-shield`, `regex-guard` and `schema-guard` already do.
 
 ## [1.5.9] — 2026-09-18
 
