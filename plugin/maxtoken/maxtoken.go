@@ -116,8 +116,7 @@ func (m *MaxToken) Execute(_ context.Context, pctx *plugin.Context) error {
 	// max_tokens with a huge max_completion_tokens and have the huge one
 	// forwarded past this cap.
 	if requested, ok := pctx.Request.EffectiveMaxTokens(); m.maxTokens > 0 && ok && requested > m.maxTokens {
-		pctx.Reject = true
-		pctx.Reason = fmt.Sprintf("max_tokens %d exceeds limit of %d", requested, m.maxTokens)
+		deny(pctx, fmt.Sprintf("max_tokens %d exceeds limit of %d", requested, m.maxTokens))
 		return nil
 	}
 
@@ -131,8 +130,7 @@ func (m *MaxToken) Execute(_ context.Context, pctx *plugin.Context) error {
 	// apply, because total input length means the same thing either way.
 	_, projected := pctx.Metadata[plugin.MetadataSurface]
 	if !projected && m.maxMessages > 0 && len(pctx.Request.Messages) > m.maxMessages {
-		pctx.Reject = true
-		pctx.Reason = fmt.Sprintf("message count %d exceeds limit of %d", len(pctx.Request.Messages), m.maxMessages)
+		deny(pctx, fmt.Sprintf("message count %d exceeds limit of %d", len(pctx.Request.Messages), m.maxMessages))
 		return nil
 	}
 
@@ -151,8 +149,7 @@ func (m *MaxToken) Execute(_ context.Context, pctx *plugin.Context) error {
 			totalLen += messageLen(msg)
 		}
 		if totalLen > m.maxInputLen {
-			pctx.Reject = true
-			pctx.Reason = fmt.Sprintf("total input length %d exceeds limit of %d", totalLen, m.maxInputLen)
+			deny(pctx, fmt.Sprintf("total input length %d exceeds limit of %d", totalLen, m.maxInputLen))
 			return nil
 		}
 	}
@@ -160,16 +157,33 @@ func (m *MaxToken) Execute(_ context.Context, pctx *plugin.Context) error {
 	return nil
 }
 
+// deny refuses the request and records the refusal as a guardrail match, as
+// every guardrail does on every decision. A denial left unrecorded reaches no
+// guardrail-match consumer, so a policy sized or audited from that signal reads
+// as though this plugin never acted.
+func deny(pctx *plugin.Context, reason string) {
+	pctx.NoteGuardrailMatch(plugin.ActionBlock)
+	pctx.Reject = true
+	pctx.Reason = reason
+}
+
 // messageLen measures a message the size it travels to the provider. A
 // multipart message is measured from its parts alone: Content already holds
 // the concatenated text parts, so adding both would count the text twice while
 // still ignoring the image payload — which, for a base64 data URI, is nearly
 // the whole request.
+//
+// The arguments of each tool call the message replays travel with it and are
+// billed as prompt tokens like the rest of it, so they count too. Leaving them
+// out let an assistant turn carry any amount of input past a cap of any size.
 func messageLen(msg providers.Message) int {
-	if len(msg.ContentParts) == 0 {
-		return len(msg.Content)
-	}
 	n := 0
+	for _, call := range msg.ToolCalls {
+		n += len(call.Function.Arguments)
+	}
+	if len(msg.ContentParts) == 0 {
+		return n + len(msg.Content)
+	}
 	for _, part := range msg.ContentParts {
 		n += len(part.Text)
 		if part.ImageURL != nil {

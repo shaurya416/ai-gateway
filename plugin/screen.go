@@ -1,6 +1,7 @@
 package plugin
 
 import (
+	"encoding/json"
 	"fmt"
 	"iter"
 	"slices"
@@ -12,7 +13,8 @@ import (
 
 // RequestText yields every piece of text a request carries to the provider:
 // each message's Content and ReasoningContent, the Text of each of its content
-// parts, and the arguments of each tool call it replays.
+// parts, and the arguments of each tool call it replays — the JSON document as
+// written, then each string in it that is written with an escape, decoded.
 //
 // Both, because neither alone is the whole message. Message.UnmarshalJSON
 // collapses only parts typed "text" into Content, so a blocked word in a part
@@ -97,8 +99,77 @@ func yieldMessage(msg providers.Message, yield func(string) bool) bool {
 		if !yield(call.Function.Arguments) {
 			return false
 		}
+		if !yieldEscapedStrings(call.Function.Arguments, yield) {
+			return false
+		}
 	}
 	return true
+}
+
+// yieldEscapedStrings yields, decoded, every string in a JSON document that is
+// written with an escape sequence.
+//
+// Tool-call arguments are a JSON document, and an escape changes what a pattern
+// sees. In the raw text an escaped newline is a backslash and the letter n,
+// glued to whatever follows it, so a pattern anchored on a word boundary — a
+// credential, an SSN, a card number — never matched a value on the next line,
+// while the provider and the model read a newline and the value after it. A
+// string written without an escape is its decoded value byte for byte, set off
+// by quotes in the document already yielded, so yielding it again would screen
+// the same bytes twice.
+//
+// Text that is not a JSON document has no decoded form; the raw text has
+// already been yielded and is all there is.
+func yieldEscapedStrings(doc string, yield func(string) bool) bool {
+	if !strings.Contains(doc, `\`) || !json.Valid([]byte(doc)) {
+		return true
+	}
+	for start, end := range JSONStringLiterals(doc) {
+		literal := doc[start:end]
+		if !strings.Contains(literal, `\`) {
+			continue
+		}
+		var decoded string
+		if json.Unmarshal([]byte(literal), &decoded) != nil || decoded == "" {
+			continue
+		}
+		if !yield(decoded) {
+			return false
+		}
+	}
+	return true
+}
+
+// JSONStringLiterals yields the byte span [start, end) of every string literal
+// in doc, quotation marks included, object keys among them. doc must be a valid
+// JSON document (json.Valid): outside a string literal valid JSON carries no
+// quotation mark, which is what lets the spans be found without a parser.
+//
+// It is what a guardrail rewriting a JSON document — a tool call's arguments —
+// uses to work on each string as the provider will decode it, and to leave the
+// document's structure, key order and number formatting exactly as written.
+func JSONStringLiterals(doc string) iter.Seq2[int, int] {
+	return func(yield func(int, int) bool) {
+		for i := 0; i < len(doc); i++ {
+			if doc[i] != '"' {
+				continue
+			}
+			end := i + 1
+			for end < len(doc) && doc[end] != '"' {
+				if doc[end] == '\\' {
+					end++
+				}
+				end++
+			}
+			if end >= len(doc) {
+				return
+			}
+			if !yield(i, end+1) {
+				return
+			}
+			i = end
+		}
+	}
 }
 
 // RejectUninspectable denies a before_request whose content the gateway could

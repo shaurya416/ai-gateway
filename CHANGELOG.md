@@ -115,6 +115,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stream meter and attached its usage regardless, so whether a client that
   declined usage got one depended on where the answer came from. Accounting is
   unchanged — the cost, metrics and request-log row still read the real usage.
+- Content guardrails screen a tool call's arguments as the provider reads
+  them. The arguments are a JSON document, and they were matched as raw text,
+  where an escaped newline is a backslash and the letter `n` glued to whatever
+  follows it: a credential, an SSN or a card number at the start of a line had
+  no word boundary in front of it, so `secret-scan` forwarded it in either
+  direction and `pii-redact` in the request, each reporting itself enabled.
+  `pii-redact`'s `redact` mode also broke the document it rewrote — an email
+  after an escaped newline took the `n` with it and left `\[REDACTED]`, an
+  escape JSON does not have, and a card number written as a JSON number became
+  a bare placeholder, which is not a JSON value either — so a provider that
+  parses the arguments failed the request or dropped them. Every string in the
+  arguments that is written with an escape is now screened decoded as well, and
+  `redact` rewrites each string by its decoded value and replaces a bare value
+  with the placeholder as a JSON string, so the arguments still parse. A
+  custom pattern written against the arguments as text, spanning a key and its
+  value, is still redacted from the text as written.
+  `plugin.JSONStringLiterals` locates the strings in a JSON document for a
+  plugin that rewrites one.
+- `max-token` counts a replayed tool call's arguments toward
+  `max_input_length`. They travel to the provider with the rest of the
+  conversation and are billed as prompt tokens, but only message bodies were
+  measured, so an assistant turn could carry any amount of input past a cap of
+  any size.
+- `max-token` records a guardrail match when it refuses a request over
+  `max_tokens`, `max_messages` or `max_input_length`. Only its refusal of
+  content it could not read did, so the other three denials reached no
+  `gateway.guardrail.match` consumer and a policy audited from that signal read
+  as though the plugin never acted.
 - A caller closing a streamed `/v1/responses` or `/v1/*` pass-through response
   no longer counts against the target's circuit breaker. The reverse proxy
   reports a body copy that breaks off by panicking, and the panic unwound

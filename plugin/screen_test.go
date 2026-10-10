@@ -111,6 +111,62 @@ func TestRequestText_YieldsToolCallArgumentsAndReasoning(t *testing.T) {
 	}
 }
 
+// A tool call's arguments are a JSON document, and an escape changes what a
+// pattern sees: in the raw text an escaped newline is a backslash and the
+// letter n glued to whatever follows it, so a pattern anchored on a word
+// boundary never matched the value on the next line while the provider and the
+// model read a newline and the value after it. A string written with an escape
+// is yielded decoded as well; one written without is already in the document
+// byte for byte.
+func TestRequestText_YieldsEscapedToolCallArgumentStringsDecoded(t *testing.T) {
+	args := `{"body":"line one\nAKIAIOSFODNN7EXAMPLE","plain":"as written","n":1}` // #nosec G101 -- AWS's own published example key, not a live credential.
+	req := &providers.Request{
+		Messages: []providers.Message{{
+			ToolCalls: []providers.ToolCall{{Function: providers.FunctionCall{Name: "write", Arguments: args}}},
+		}},
+	}
+
+	got := slices.Collect(RequestText(req))
+
+	want := []string{args, "line one\nAKIAIOSFODNN7EXAMPLE"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("RequestText yielded %q, want %q — an escaped string must be screened as the provider reads it", got, want)
+	}
+}
+
+// The spans cover keys and values alike, and an escaped quote or an escaped
+// backslash before the closing quote does not end a literal early.
+func TestJSONStringLiterals_SpansEveryStringIncludingEscapedQuotes(t *testing.T) {
+	doc := `{"a":"x\"y","b\\":["z\\",1,"é"],"c":null}`
+
+	var got []string
+	for start, end := range JSONStringLiterals(doc) {
+		got = append(got, doc[start:end])
+	}
+
+	want := []string{`"a"`, `"x\"y"`, `"b\\"`, `"z\\"`, `"é"`, `"c"`}
+	if !slices.Equal(got, want) {
+		t.Fatalf("JSONStringLiterals spans = %q, want %q", got, want)
+	}
+}
+
+// Arguments that are not a JSON document have no decoded form; the raw text is
+// still screened, once.
+func TestRequestText_InvalidToolCallArgumentsYieldOnlyTheRawText(t *testing.T) {
+	args := `{"body":"line one\nline two"`
+	req := &providers.Request{
+		Messages: []providers.Message{{
+			ToolCalls: []providers.ToolCall{{Function: providers.FunctionCall{Name: "write", Arguments: args}}},
+		}},
+	}
+
+	got := slices.Collect(RequestText(req))
+
+	if want := []string{args}; !slices.Equal(got, want) {
+		t.Fatalf("RequestText yielded %q, want %q", got, want)
+	}
+}
+
 // A tool call carrying no arguments is not content, exactly as an empty
 // Content and a non-text part are not.
 func TestResponseText_SkipsAToolCallWithNoArguments(t *testing.T) {

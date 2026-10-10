@@ -570,6 +570,98 @@ func TestExecute_RedactKeepsToolCallArgumentsValidJSON(t *testing.T) {
 	}
 }
 
+// Redaction rewrites a tool call's arguments as the JSON document they are,
+// value by value. Matched against the raw text, an escape sequence was read as
+// part of the value: an email after an escaped newline took the n with it and
+// left `\[REDACTED]`, an escape JSON does not have, so the arguments stopped
+// parsing; an SSN after one had no word boundary and was forwarded untouched;
+// and a card number written as a JSON number was replaced by a bare
+// placeholder, which is not JSON either.
+func TestExecute_RedactsToolCallArgumentsAsJSONValues(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		args  string
+		field string
+		want  string
+	}{
+		{"email after an escaped newline", `{"note":"write to\njane@example.com"}`, "note", "write to\n[REDACTED]"},
+		{"ssn after an escaped newline", `{"note":"ssn:\n123-45-6789"}`, "note", "ssn:\n[REDACTED]"},
+		{"card number written as a number", `{"card":4111111111111111}`, "card", "[REDACTED]"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := &PIIRedact{}
+			if err := p.Init(map[string]any{"action": "redact"}); err != nil {
+				t.Fatalf("Init: %v", err)
+			}
+			pctx := newRequest("")
+			pctx.Request.Messages[0].ToolCalls = []providers.ToolCall{
+				{Function: providers.FunctionCall{Name: "send", Arguments: tc.args}},
+			}
+
+			if err := p.Execute(context.Background(), pctx); err != nil {
+				t.Fatalf("Execute: %v", err)
+			}
+			if pctx.Reject {
+				t.Fatalf("redact mode denied the request: %q", pctx.Reason)
+			}
+
+			got := pctx.Request.Messages[0].ToolCalls[0].Function.Arguments
+			var decoded map[string]any
+			if err := json.Unmarshal([]byte(got), &decoded); err != nil {
+				t.Fatalf("arguments are no longer valid JSON: %v\n%s", err, got)
+			}
+			if decoded[tc.field] != tc.want {
+				t.Fatalf("decoded %s = %q, want %q (arguments %s)", tc.field, decoded[tc.field], tc.want, got)
+			}
+		})
+	}
+}
+
+// A custom pattern written against the arguments as text, spanning a key and its
+// value, matches no single string in them. Block mode denies it, so redact mode
+// must not forward the value it covers.
+func TestExecute_RedactsACustomPatternSpanningToolCallArgumentStructure(t *testing.T) {
+	p := &PIIRedact{}
+	if err := p.Init(map[string]any{
+		"action":   "redact",
+		"entities": []any{},
+		"patterns": []any{`"password":\s*"[^"]*"`},
+	}); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	pctx := newRequest("")
+	pctx.Request.Messages[0].ToolCalls = []providers.ToolCall{
+		{Function: providers.FunctionCall{Name: "login", Arguments: `{"user":"jane","password":"hunter2"}`}},
+	}
+
+	if err := p.Execute(context.Background(), pctx); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if got := pctx.Request.Messages[0].ToolCalls[0].Function.Arguments; strings.Contains(got, "hunter2") {
+		t.Fatalf("redact mode forwarded the value its pattern covers: %s", got)
+	}
+}
+
+// Block mode reads the same decoded values redact mode rewrites, so a value
+// written after an escape is denied rather than forwarded.
+func TestExecute_BlocksAnSSNAfterAnEscapeInToolCallArguments(t *testing.T) {
+	p := &PIIRedact{}
+	if err := p.Init(map[string]any{"action": "block"}); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	pctx := newRequest("")
+	pctx.Request.Messages[0].ToolCalls = []providers.ToolCall{
+		{Function: providers.FunctionCall{Name: "send", Arguments: `{"note":"ssn:\n123-45-6789"}`}},
+	}
+
+	if err := p.Execute(context.Background(), pctx); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !pctx.Reject {
+		t.Fatal("an SSN after an escaped newline in tool-call arguments was forwarded")
+	}
+}
+
 func TestDetect_ReportsBuiltinEntityNames(t *testing.T) {
 	for _, tc := range []struct {
 		name string

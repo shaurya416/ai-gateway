@@ -132,7 +132,11 @@ only built-in guardrail that can, rewrites it in place and lets it continue
 request as written (`action: log`, the observe-only mode for sizing a policy
 before enforcing it). Redaction rewrites every screenable field — a message's
 `Content`, its reasoning content, each of its content parts and each tool
-call's arguments — so none of them can carry the value past the plugin. A
+call's arguments — so none of them can carry the value past the plugin. The
+arguments are rewritten as the JSON document they are: each string by its
+decoded value, so a value after an escaped newline is found and the arguments
+still parse afterwards. A custom pattern written against the arguments as text,
+spanning a key and its value, is still applied to the text as written. A
 `credit_card` match must also pass the Luhn check, so a sixteen-digit order id
 or tracking number is not denied as a card.
 
@@ -293,7 +297,7 @@ refused rather than measured as empty.
 config:
   max_tokens: 4096       # reject a request whose completion ceiling exceeds this
   max_messages: 50       # reject more than this many messages
-  max_input_length: 0    # 0 = no total-character limit
+  max_input_length: 0    # 0 = no total-character limit; replayed tool-call arguments count
 ```
 
 ### rate-limit

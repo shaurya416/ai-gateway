@@ -102,9 +102,12 @@ type PIIRedact struct {
 	entities    []entity
 	action      string
 	placeholder string
-	// jsonPlaceholder is placeholder as it reads inside a JSON string, for the
-	// one field that is a JSON document: a tool call's arguments.
-	jsonPlaceholder string
+	// jsonPlaceholder is placeholder as it reads inside a JSON string, and
+	// jsonValuePlaceholder is placeholder as a whole JSON string, quotes
+	// included, for the one field that is a JSON document: a tool call's
+	// arguments.
+	jsonPlaceholder      string
+	jsonValuePlaceholder string
 }
 
 var _ plugin.ContentAgnostic = (*PIIRedact)(nil)
@@ -164,6 +167,7 @@ func (p *PIIRedact) Init(config map[string]any) error {
 		return fmt.Errorf("pii-redact: redact_placeholder: %w", err)
 	}
 	p.jsonPlaceholder = string(escaped[1 : len(escaped)-1])
+	p.jsonValuePlaceholder = string(escaped)
 
 	entities, present := config["entities"]
 	selected, err := selectEntities(entities, present)
@@ -328,12 +332,62 @@ func (p *PIIRedact) redactRequest(ctx context.Context, pctx *plugin.Context) {
 			msg.ContentParts[j].Text = p.redact(ctx, pctx, msg.ContentParts[j].Text)
 		}
 		for j := range msg.ToolCalls {
-			// The arguments are a JSON document, so the placeholder goes in
-			// JSON-escaped: a quote or a backslash in it would otherwise turn a
-			// valid argument object into one the provider cannot parse.
-			msg.ToolCalls[j].Function.Arguments = p.redactWith(ctx, pctx, msg.ToolCalls[j].Function.Arguments, p.jsonPlaceholder)
+			msg.ToolCalls[j].Function.Arguments = p.redactArguments(ctx, pctx, msg.ToolCalls[j].Function.Arguments)
 		}
 	}
+}
+
+// redactArguments rewrites a tool call's arguments as the JSON document they
+// are, so a redaction never leaves the provider a document it cannot parse.
+//
+// Each string is redacted as the provider will decode it and re-encoded.
+// Matched against the raw text instead, an escape sequence was read as part of
+// the value: an email after an escaped newline took the n with it and left
+// `\[REDACTED]`, an escape JSON does not have, and an SSN after one had no word
+// boundary and was forwarded as written. What lies between the strings — a
+// number, above all — is replaced by the placeholder as a JSON string rather
+// than as bare text, which is not a JSON value. Structure, key order, and every
+// string with nothing to redact are left exactly as written.
+//
+// A custom pattern written against the document as text — a key together with
+// its value — matches no single string and no segment between them. Block mode
+// screens the document as written and denies it, so what is left is redacted as
+// text as well rather than forwarded.
+//
+// Arguments that are not a JSON document have no structure to keep; they are
+// redacted as text, with the placeholder JSON-escaped so a quote or a backslash
+// in it adds no new defect of its own.
+func (p *PIIRedact) redactArguments(ctx context.Context, pctx *plugin.Context, args string) string {
+	if !json.Valid([]byte(args)) {
+		return p.redactWith(ctx, pctx, args, p.jsonPlaceholder)
+	}
+	var out strings.Builder
+	last := 0
+	for start, end := range plugin.JSONStringLiterals(args) {
+		out.WriteString(p.redactWith(ctx, pctx, args[last:start], p.jsonValuePlaceholder))
+		out.WriteString(p.redactJSONString(ctx, pctx, args[start:end]))
+		last = end
+	}
+	out.WriteString(p.redactWith(ctx, pctx, args[last:], p.jsonValuePlaceholder))
+	return p.redactWith(ctx, pctx, out.String(), p.jsonPlaceholder)
+}
+
+// redactJSONString redacts one JSON string literal, quotes included, by its
+// decoded value. A literal with nothing to redact is returned as written.
+func (p *PIIRedact) redactJSONString(ctx context.Context, pctx *plugin.Context, literal string) string {
+	var decoded string
+	if err := json.Unmarshal([]byte(literal), &decoded); err != nil {
+		return p.redactWith(ctx, pctx, literal, p.jsonPlaceholder)
+	}
+	redacted := p.redact(ctx, pctx, decoded)
+	if redacted == decoded {
+		return literal
+	}
+	encoded, err := json.Marshal(redacted)
+	if err != nil {
+		return p.jsonValuePlaceholder
+	}
+	return string(encoded)
 }
 
 // redact replaces every match with the configured placeholder as LITERAL text.

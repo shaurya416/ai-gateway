@@ -326,3 +326,65 @@ func TestMaxToken_IgnoresRequestContent(t *testing.T) {
 		})
 	}
 }
+
+// A guardrail records every decision it makes, so a denial reaches the
+// guardrail-match signal an operator sizes and audits a policy from. Only the
+// denial for unreadable content did; a request over any of the three limits
+// was refused with nothing recorded, and read as though no guardrail had acted.
+func TestMaxToken_EveryDenialRecordsAGuardrailMatch(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		config map[string]any
+		req    func() *providers.Request
+	}{
+		{"max_tokens", map[string]any{"max_tokens": 10}, func() *providers.Request {
+			req := testRequest("gpt-4", "hello")
+			req.MaxTokens = intPtr(20)
+			return req
+		}},
+		{"max_messages", map[string]any{"max_messages": 1}, func() *providers.Request {
+			return testRequest("gpt-4", "one", "two")
+		}},
+		{"max_input_length", map[string]any{"max_input_length": 3}, func() *providers.Request {
+			return testRequest("gpt-4", "hello")
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := initMaxToken(t, tc.config)
+			pctx := &plugin.Context{Request: tc.req(), Stage: plugin.StageBeforeRequest, Metadata: map[string]any{}}
+
+			if err := m.Execute(context.Background(), pctx); err != nil {
+				t.Fatalf("Execute error: %v", err)
+			}
+			if !pctx.Reject {
+				t.Fatalf("expected the request to be rejected")
+			}
+			if len(pctx.GuardrailMatches) != 1 || pctx.GuardrailMatches[0].Action != plugin.ActionBlock {
+				t.Errorf("GuardrailMatches = %+v, want one %q match for the denial", pctx.GuardrailMatches, plugin.ActionBlock)
+			}
+		})
+	}
+}
+
+// A replayed tool call's arguments travel to the provider with the rest of the
+// conversation and are billed as prompt tokens like it, so they count toward the
+// input length. Measuring only the message bodies let a request carry any
+// amount of input in an assistant turn's arguments past a cap of any size.
+func TestMaxToken_MaxInputLengthCountsToolCallArguments(t *testing.T) {
+	m := initMaxToken(t, map[string]any{"max_input_length": 100})
+	req := &providers.Request{Model: "gpt-4", Messages: []providers.Message{
+		{Role: "user", Content: "hi"},
+		{Role: "assistant", ToolCalls: []providers.ToolCall{{Function: providers.FunctionCall{
+			Name:      "write",
+			Arguments: `{"body":"` + strings.Repeat("A", 5000) + `"}`,
+		}}}},
+	}}
+	pctx := plugin.NewContext(req)
+
+	if err := m.Execute(context.Background(), pctx); err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+	if !pctx.Reject {
+		t.Fatal("5000 characters of tool-call arguments passed a 100-character input cap")
+	}
+}

@@ -317,6 +317,45 @@ func TestExecute_ScreensToolCallArgumentsInTheResponse(t *testing.T) {
 	}
 }
 
+// Tool-call arguments are a JSON document, so a credential on its own line is
+// written after an escaped newline — a backslash and the letter n, which the
+// key's word boundary reads as part of the same word. The provider and the
+// model read a newline and the key; the scan has to read the same thing, in
+// either direction.
+func TestExecute_ScreensACredentialAfterAnEscapeInToolCallArguments(t *testing.T) {
+	args := `{"file":".env","content":"# deploy\nAKIAIOSFODNN7EXAMPLE"}` // #nosec G101 -- AWS's own published example key, not a live credential.
+	call := []providers.ToolCall{{Function: providers.FunctionCall{Name: "write_file", Arguments: args}}}
+
+	for _, tc := range []struct {
+		name string
+		pctx *plugin.Context
+	}{
+		{"request replaying the call", &plugin.Context{
+			Stage:    plugin.StageBeforeRequest,
+			Metadata: map[string]any{},
+			Request:  &providers.Request{Messages: []providers.Message{{Role: "assistant", ToolCalls: call}}},
+		}},
+		{"response making the call", &plugin.Context{
+			Stage:    plugin.StageAfterRequest,
+			Metadata: map[string]any{},
+			Response: &providers.Response{Choices: []providers.Choice{{Message: providers.Message{ToolCalls: call}}}},
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := &SecretScan{}
+			if err := s.Init(map[string]any{}); err != nil {
+				t.Fatalf("Init: %v", err)
+			}
+			if err := s.Execute(context.Background(), tc.pctx); err != nil {
+				t.Fatalf("Execute returned an error; a denial is a verdict, not a fault: %v", err)
+			}
+			if !tc.pctx.Reject {
+				t.Fatal("a credential after an escaped newline in tool-call arguments was forwarded")
+			}
+		})
+	}
+}
+
 func TestInit_KindsSelectsASubset(t *testing.T) {
 	s := &SecretScan{}
 	if err := s.Init(map[string]any{"kinds": []any{"private_key"}}); err != nil {
