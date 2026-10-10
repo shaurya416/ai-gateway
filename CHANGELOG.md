@@ -1052,6 +1052,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that answers `405` (it does not let clients end sessions) or `404` (the
   session already ended) is treated as done; any other answer is reported with
   the rest of the teardown errors. The request is bounded at 2 seconds.
+- An HTTP MCP server built on the official Go SDK with `KeepAlive` set no
+  longer closes the gateway's session once per keepalive interval. A server
+  reaches its client outside an answer only over the event stream the client
+  opens with a `GET` after the handshake, and the gateway never opened one, so
+  every keepalive ping went undelivered; the SDK counts that as a failed ping
+  and closes the session, failing any tool call in flight at that moment and
+  making the next call start a new session. The gateway now opens the stream
+  for each session it is issued, answers `ping` on it with an empty result,
+  refuses any other request the server sends as an unknown method, and reopens
+  the stream when it ends or the connection drops. A server that answers the
+  `GET` with `405` (it offers no stream), or with anything else that is not a
+  stream, is not asked again for that session. A stream is never reopened
+  sooner than a second after the last, whatever `retry:` interval the server
+  names. Closing the client closes the stream.
+- A stdio MCP tool call now reaches the server with its arguments as the model
+  wrote them. They were decoded into an untyped value on the way to the
+  transport, which holds every number as a 64-bit float, so an integer past
+  2^53 — a snowflake or a bigint row id — arrived rounded to a different value
+  (`1234567890123456789` became `1234567890123456800`), while the HTTP
+  transport forwarded the same arguments untouched. The arguments are still
+  checked to be JSON, then forwarded as written.
 - A chat, Responses or embeddings request whose provider reported no token
   usage is recorded unpriced instead of as a priced $0.00. Cost calculation
   marked such a request priced whenever the catalog carried the model's rate,

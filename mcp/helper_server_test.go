@@ -54,6 +54,10 @@ const (
 	// answers with how that ping was received. Called by name, like
 	// helperToolLink.
 	helperToolPingClient = "helper_ping_client"
+	// helperToolArgs answers with the arguments exactly as they arrived, so a
+	// test can see what the server was sent. Called by name, like
+	// helperToolLink.
+	helperToolArgs = "helper_args"
 )
 
 // helperPingAnswered is helperToolPingClient's answer when the client replied
@@ -102,7 +106,8 @@ func runHelperMCPServer(mode string) {
 			ID     *json.RawMessage `json:"id"`
 			Method string           `json:"method"`
 			Params struct {
-				Name string `json:"name"`
+				Name      string          `json:"name"`
+				Arguments json.RawMessage `json:"arguments"`
 			} `json:"params"`
 		}
 		if err := dec.Decode(&req); err != nil {
@@ -131,6 +136,9 @@ func runHelperMCPServer(mode string) {
 		}
 		if req.Method == "tools/call" && req.Params.Name == helperToolPingClient {
 			result = helperPingClient(dec, out)
+		}
+		if req.Method == "tools/call" && req.Params.Name == helperToolArgs {
+			result = map[string]any{"content": []map[string]any{{"type": "text", "text": string(req.Params.Arguments)}}}
 		}
 		if err := writeHelperResponse(out, *req.ID, result); err != nil {
 			os.Exit(1)

@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -10,6 +11,7 @@ import (
 	"mime"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -63,6 +65,18 @@ type Client struct {
 
 	// nextID is incremented atomically to produce unique JSON-RPC request IDs.
 	nextID atomic.Int64
+
+	// streamClient carries the server's event stream, which stays open for as
+	// long as the session does and so takes no overall timeout. Same transport
+	// and redirect policy as httpClient.
+	streamClient *http.Client
+
+	// listenMu guards the event stream's lifecycle: the stream serving the
+	// current session, and whether Close has ruled out starting another.
+	listenMu     sync.Mutex
+	listenCancel context.CancelFunc
+	listenDone   chan struct{}
+	listenClosed bool
 }
 
 // NewClient creates an MCP client for the given Streamable HTTP endpoint.
@@ -71,10 +85,15 @@ func NewClient(endpoint string, headers map[string]string, timeout time.Duration
 	if timeout <= 0 {
 		timeout = defaultToolCallTimeout
 	}
+	httpClient := httpclient.New(timeout)
 	return &Client{
 		endpoint:   endpoint,
 		headers:    headers,
-		httpClient: httpclient.New(timeout),
+		httpClient: httpClient,
+		streamClient: &http.Client{
+			Transport:     httpClient.Transport,
+			CheckRedirect: httpClient.CheckRedirect,
+		},
 	}
 }
 
@@ -82,6 +101,7 @@ func NewClient(endpoint string, headers map[string]string, timeout time.Duration
 // notifications/initialized) and stores the Mcp-Session-Id for subsequent
 // requests. Safe to call again — it starts a new session.
 func (c *Client) Initialize(ctx context.Context) (*ServerInfo, error) {
+	prior := c.getSessionID()
 	params := map[string]any{
 		// The revision this build speaks, taken from the same library constant the
 		// stdio transport hands to mark3labs. Hardcoding it here made the two
@@ -145,6 +165,13 @@ func (c *Client) Initialize(ctx context.Context) (*ServerInfo, error) {
 		logger.Default().Warn("mcp server did not accept notifications/initialized; continuing",
 			"endpoint", c.endpoint,
 			"error", err)
+	}
+
+	// Only a session this handshake issued gets a stream: a server that issued
+	// none cannot send requests at all, and one that handed back the ID the
+	// client already held already has one.
+	if sid := c.getSessionID(); sid != "" && sid != prior {
+		c.listen(sid)
 	}
 
 	return &info, nil
@@ -538,6 +565,221 @@ func (c *Client) setSessionID(sid string) {
 	c.sessionMu.Unlock()
 }
 
+const (
+	// listenRetryDelay is the wait before reopening an event stream that ended or
+	// broke, when the server named no retry interval of its own. It is also the
+	// shortest wait, whatever interval the server names: a server that asks for
+	// one millisecond and then ends every stream at once would otherwise be
+	// reopened a thousand times a second.
+	listenRetryDelay = time.Second
+	// listenRetryMaxDelay caps that wait. It doubles for each stream that ends
+	// without delivering anything, so a server that closes the stream at once
+	// is reopened at most twice a minute.
+	listenRetryMaxDelay = 30 * time.Second
+)
+
+// listen opens the session's event stream, replacing the stream of any earlier
+// session, and keeps it open until Close or the next session.
+//
+// The stream is the only way a server reaches the client outside an answer to
+// a request, and a server pings its client over it. Without it a ping had
+// nowhere to go: the official Go SDK, with KeepAlive set, counts an undelivered
+// ping as a failed one and closes the session, cutting off any tool call in
+// flight at that moment and making the next call pay a fresh handshake, once
+// per keepalive interval for the life of the process. The official SDK clients
+// all open this stream after the handshake.
+func (c *Client) listen(sid string) {
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+
+	c.listenMu.Lock()
+	if c.listenClosed {
+		c.listenMu.Unlock()
+		cancel()
+		return
+	}
+	prevCancel, prevDone := c.listenCancel, c.listenDone
+	c.listenCancel, c.listenDone = cancel, done
+	c.listenMu.Unlock()
+
+	if prevCancel != nil {
+		prevCancel()
+		<-prevDone
+	}
+	go c.serveEvents(ctx, sid, done)
+}
+
+// stopListening closes the event stream and waits for it to finish, and rules
+// out opening another.
+func (c *Client) stopListening() {
+	c.listenMu.Lock()
+	c.listenClosed = true
+	cancel, done := c.listenCancel, c.listenDone
+	c.listenCancel, c.listenDone = nil, nil
+	c.listenMu.Unlock()
+
+	if cancel != nil {
+		cancel()
+		<-done
+	}
+}
+
+// errEventStreamRefused marks an event stream the server would not serve, or
+// served past the size bound. Unlike a stream that broke, it is not reopened.
+var errEventStreamRefused = errors.New("event stream refused")
+
+// serveEvents holds the event stream open, reopening it when the server ends
+// it or it breaks, until ctx is cancelled or the server refuses it.
+//
+// A refusal ends the loop rather than being retried. 405 is how a server says
+// it offers no stream, and 404 that the session is over — the next request
+// meets the same 404 and starts a new session, and with it a new stream. A
+// stream that broke, or could not be reached, is reopened like one the server
+// ended: a proxy or load balancer dropping the connection says nothing about
+// the session.
+func (c *Client) serveEvents(ctx context.Context, sid string, done chan<- struct{}) {
+	defer close(done)
+
+	delay := listenRetryDelay
+	for {
+		retry, delivered, err := c.readEvents(ctx, sid)
+		if ctx.Err() != nil {
+			return
+		}
+		if errors.Is(err, errEventStreamRefused) {
+			logger.Default().Debug("mcp server event stream unavailable; requests the server sends will go unanswered",
+				"endpoint", c.endpoint,
+				"error", err)
+			return
+		}
+		switch {
+		case retry > 0:
+			delay = retry
+		case delivered:
+			delay = listenRetryDelay
+		default:
+			delay *= 2
+		}
+		delay = min(max(delay, listenRetryDelay), listenRetryMaxDelay)
+
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
+	}
+}
+
+// readEvents opens the event stream once and answers what arrives on it until
+// the server ends it. It reports the retry interval the server asked for, if
+// any, and whether any event arrived. err is non-nil when the stream could not
+// be opened or broke, and wraps errEventStreamRefused when the server refused
+// it; a stream the server ended cleanly returns nil.
+//
+// Each line, and each event's data, is bounded by maxResponseBodyBytes — the
+// same bound as a response body, for the same untrusted peer.
+func (c *Client) readEvents(ctx context.Context, sid string) (retry time.Duration, delivered bool, err error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.endpoint, nil)
+	if err != nil {
+		return 0, false, err
+	}
+	req.Header.Set("Accept", "text/event-stream")
+	req.Header.Set("Mcp-Session-Id", sid)
+	for k, v := range c.headers {
+		req.Header.Set(k, v)
+	}
+	resp, err := c.streamClient.Do(req)
+	if err != nil {
+		return 0, false, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK || !isEventStream(resp.Header.Get("Content-Type")) {
+		return 0, false, fmt.Errorf("%w: HTTP %d", errEventStreamRefused, resp.StatusCode)
+	}
+
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 0, 4096), maxResponseBodyBytes)
+	var (
+		data []string
+		size int
+	)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if line == "" { // a blank line dispatches the event
+			if len(data) > 0 {
+				delivered = true
+				c.answerServerMessage(ctx, sid, strings.Join(data, "\n"))
+			}
+			data, size = data[:0], 0
+			continue
+		}
+		if value, ok := strings.CutPrefix(line, "retry:"); ok {
+			if ms, convErr := strconv.Atoi(strings.TrimSpace(value)); convErr == nil && ms > 0 {
+				retry = time.Duration(ms) * time.Millisecond
+			}
+			continue
+		}
+		value, ok := strings.CutPrefix(line, "data:")
+		if !ok { // a comment, or a field the gateway does not use
+			continue
+		}
+		value = strings.TrimPrefix(value, " ")
+		if size += len(value); size > maxResponseBodyBytes {
+			return retry, delivered, fmt.Errorf("%w: event exceeds %d byte limit", errEventStreamRefused, maxResponseBodyBytes)
+		}
+		data = append(data, value)
+	}
+	if err := scanner.Err(); errors.Is(err, bufio.ErrTooLong) {
+		return retry, delivered, fmt.Errorf("%w: line exceeds %d byte limit", errEventStreamRefused, maxResponseBodyBytes)
+	} else if err != nil {
+		return retry, delivered, err
+	}
+	return retry, delivered, nil
+}
+
+// answerServerMessage replies to a request the server sent on the event
+// stream. ping is answered with the empty result the spec requires; anything
+// else is refused as an unknown method, since the gateway declares no client
+// capabilities. Notifications, and anything that is not JSON-RPC, need no
+// reply.
+func (c *Client) answerServerMessage(ctx context.Context, sid, data string) {
+	var msg struct {
+		ID     json.RawMessage `json:"id"`
+		Method string          `json:"method"`
+	}
+	if err := json.Unmarshal([]byte(data), &msg); err != nil || msg.Method == "" ||
+		len(msg.ID) == 0 || string(msg.ID) == "null" {
+		return
+	}
+
+	reply := map[string]any{"jsonrpc": "2.0", "id": msg.ID}
+	if msg.Method == "ping" {
+		reply["result"] = map[string]any{}
+	} else {
+		reply["error"] = map[string]any{"code": -32601, "message": "Method not found"}
+	}
+	body, err := json.Marshal(reply)
+	if err != nil {
+		return
+	}
+	req, err := c.newPost(ctx, body, sid)
+	if err != nil {
+		return
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		logger.Default().Debug("mcp server request could not be answered",
+			"endpoint", c.endpoint,
+			"method", msg.Method,
+			"error", err)
+		return
+	}
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxErrorBodyBytes))
+	_ = resp.Body.Close()
+}
+
 // sessionCloseTimeout bounds the DELETE that ends a session on Close. Teardown
 // shares Gateway.Close's few seconds with every other server, and a session the
 // server never hears about ends on its own schedule anyway.
@@ -554,8 +796,13 @@ const sessionCloseTimeout = 2 * time.Second
 // the task serving it, until the server itself restarts; later ones hold it for
 // half an hour, counted against their session limit.
 //
+// The event stream is closed first, and Close waits for it, so no goroutine
+// outlives the client.
+//
 // Safe to call more than once; only the first call sends anything.
 func (c *Client) Close() error {
+	c.stopListening()
+
 	c.sessionMu.Lock()
 	sid := c.sessionID
 	c.sessionID = ""

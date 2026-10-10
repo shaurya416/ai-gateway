@@ -243,6 +243,10 @@ func TestClientHTTPError(t *testing.T) {
 func TestClientSessionIDPropagation(t *testing.T) {
 	var receivedSID string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost { // the event stream, which this server does not offer
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
 		receivedSID = r.Header.Get("Mcp-Session-Id")
 		var req JSONRPCRequest
 		_ = json.NewDecoder(r.Body).Decode(&req)

@@ -394,6 +394,13 @@ func (c *stdioClient) CallTool(ctx context.Context, name string, arguments json.
 			return nil, fmt.Errorf("mcp stdio tools/call %s: unmarshal args: %w", name, err)
 		}
 		req.Params.Arguments = args
+		// Sent as the model wrote them, as the HTTP transport sends them. The
+		// decoded copy holds every number as a float64, so an integer past 2^53
+		// — a snowflake or a bigint row id — reached the server rounded to a
+		// different value. The library re-emits RawArguments in place of it.
+		if args != nil {
+			req.Params.RawArguments = arguments
+		}
 	}
 
 	result, err := c.inner.CallTool(ctx, req)
