@@ -3,6 +3,8 @@ package cache
 import (
 	"context"
 	"fmt"
+	"math"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -67,6 +69,66 @@ func TestResponseCache_Init(t *testing.T) {
 			t.Errorf("expected Capacity 50, got %d", c.Capacity)
 		}
 	})
+}
+
+// A value the cache cannot honour as written is a load error naming the key.
+// Each of these used to load: a quoted number or a ${VAR} reference, which
+// resolves to a string, kept the default in its place, a negative or
+// sub-second max_age expired every entry as it was stored, so the cache
+// reported itself enabled and never served a hit, and a negative or fractional
+// max_entries was read as a size other than the one written.
+func TestResponseCache_RejectsAMalformedSetting(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name   string
+		config map[string]any
+		key    string
+	}{
+		{"quoted max_age", map[string]any{"max_age": "60"}, "max_age"},
+		{"resolved reference", map[string]any{"max_entries": "500"}, "max_entries"},
+		{"unresolved reference", map[string]any{"max_age": "${CACHE_MAX_AGE}"}, "max_age"},
+		{"boolean", map[string]any{"max_entries": true}, "max_entries"},
+		{"negative max_age", map[string]any{"max_age": -60}, "max_age"},
+		{"negative max_entries", map[string]any{"max_entries": -1.0}, "max_entries"},
+		{"sub-second max_age", map[string]any{"max_age": 0.5}, "max_age"},
+		{"fractional max_entries", map[string]any{"max_entries": 2.5}, "max_entries"},
+		{"NaN", map[string]any{"max_age": math.NaN()}, "max_age"},
+		{"infinite", map[string]any{"max_entries": math.Inf(1)}, "max_entries"},
+		{"max_age past what a duration holds", map[string]any{"max_age": 1e10}, "max_age"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := (&ResponseCache{}).Init(tc.config)
+			if err == nil {
+				t.Fatalf("Init accepted %v; the cache it builds is not the one written", tc.config)
+			}
+			if !strings.Contains(err.Error(), tc.key) {
+				t.Errorf("Init error %q does not name %q", err, tc.key)
+			}
+			if err := plugin.ValidateConfigFor("response-cache", tc.config); err == nil {
+				t.Errorf("ValidateConfigFor accepted %v, which Init rejects", tc.config)
+			}
+		})
+	}
+}
+
+// A null value is an unset key, a whole number written as a float is the
+// number it reads as, and zero is a value like any other; none is malformed.
+func TestResponseCache_AcceptsNullWholeFloatAndZeroSettings(t *testing.T) {
+	t.Parallel()
+
+	config := map[string]any{"max_age": 60.0, "max_entries": nil}
+	if err := plugin.ValidateConfigFor("response-cache", config); err != nil {
+		t.Fatalf("ValidateConfigFor: %v", err)
+	}
+	c := initCache(t, config)
+	if c.TTL != 60*time.Second || c.Capacity != 1000 {
+		t.Fatalf("TTL/Capacity = %v/%d, want 1m0s/1000", c.TTL, c.Capacity)
+	}
+
+	if c := initCache(t, map[string]any{"max_entries": 0, "max_age": 0}); c.Capacity != 0 || c.TTL != 0 {
+		t.Fatalf("TTL/Capacity = %v/%d, want 0s/0", c.TTL, c.Capacity)
+	}
 }
 
 func TestResponseCache_CacheMiss(t *testing.T) {

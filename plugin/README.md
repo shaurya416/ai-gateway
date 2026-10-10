@@ -323,7 +323,8 @@ A per-API-key spend cap. It estimates each request's cost from the response's
 token usage and the configured per-million-token prices, accumulates it against
 the key, and rejects once the limit is reached. Keys on the API credential, so
 it applies to authenticated requests. List it at both stages with identical
-config.
+config. The limit, every rate and `max_keys` must be finite numbers `>= 0`; a
+negative value, or YAML's `.nan` or `.inf`, fails the load.
 
 ```yaml
 config:
@@ -342,7 +343,8 @@ Returns a stored response for an identical repeated request instead of calling
 the provider again. The cache key includes the API credential, so one key's
 response is never served to another, and the `X-Gateway-Metadata` routing
 hints, so requests a conditional rule sends to different targets never share an
-entry. List it at both stages with identical config.
+entry. List it at both stages with identical config. Both settings must be
+whole numbers `>= 0`; anything else, a quoted number included, fails the load.
 
 ```yaml
 config:

@@ -142,3 +142,56 @@ func TestDefaultRedactor_UserinfoPasswordWithPunctuation(t *testing.T) {
 		}
 	}
 }
+
+// A URL's userinfo ends at the LAST "@" before the host — that is how net/url
+// and the drivers built on it read one — so a password or a user name holding a
+// raw "@" is a working credential. Ending the userinfo at the first "@" replaced
+// the head of such a password and printed its tail, or, for a user name holding
+// one, matched nothing and printed the whole password.
+func TestRedact_UserinfoHoldingAnAtSign(t *testing.T) {
+	cases := []struct {
+		name   string
+		in     string
+		want   string
+		secret []string
+	}{
+		{
+			name:   "password holding an at sign, undotted host",
+			in:     "dial postgres://ferrogw:brief@1x@postgres:5432/gateway failed",
+			want:   "dial postgres://ferrogw:[REDACTED]@postgres:5432/gateway failed",
+			secret: []string{"brief@1x", "1x@"},
+		},
+		{
+			name:   "password holding two at signs, dotted host",
+			in:     "proxy https://svc:s3cr@t!x@y9@proxy.internal.example.com:8443/v1 refused",
+			want:   "proxy https://svc:[REDACTED]@proxy.internal.example.com:8443/v1 refused",
+			secret: []string{"s3cr", "t!x", "y9@"},
+		},
+		{
+			name:   "user name holding an at sign",
+			in:     "dial postgres://admin@dbserver:" + shortPassword + "@dbserver.example.com:5432/app failed",
+			want:   "dial postgres://admin@dbserver:[REDACTED]@dbserver.example.com:5432/app failed",
+			secret: []string{shortPassword},
+		},
+		{
+			// The match ends with the URL: a later field's "@" is not the host's.
+			name:   "a JSON line carrying a later address",
+			in:     `{"dsn":"postgres://u:` + shortPassword + `@db:5432/app","owner":"ops@example.com"}`,
+			want:   `{"dsn":"postgres://u:[REDACTED]@db:5432/app","owner":"ops@example.com"}`,
+			secret: []string{shortPassword},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := URLCredentials(tc.in); got != tc.want {
+				t.Errorf("URLCredentials(%q)\n got: %q\nwant: %q", tc.in, got, tc.want)
+			}
+			got := DefaultRedactor().Redact(tc.in)
+			for _, fragment := range tc.secret {
+				if strings.Contains(got, fragment) {
+					t.Errorf("DefaultRedactor().Redact(%q) = %q, leaks password fragment %q", tc.in, got, fragment)
+				}
+			}
+		})
+	}
+}

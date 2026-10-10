@@ -9,6 +9,7 @@ import (
 
 	"github.com/ferro-labs/ai-gateway/plugin"
 	"github.com/ferro-labs/ai-gateway/providers"
+	"go.yaml.in/yaml/v3"
 )
 
 func makePlugin(t *testing.T, cfg map[string]any) *Plugin {
@@ -626,5 +627,40 @@ func TestBudget_RejectsNegativeTokenRates(t *testing.T) {
 				t.Error("Init accepted a negative token rate")
 			}
 		})
+	}
+}
+
+// TestBudget_RejectsNonFiniteAmounts covers the values a "< 0" check cannot
+// see. YAML spells NaN and infinity .nan and .inf, and both decode to a
+// float64 that passes it: a NaN spend_limit_usd is never reached, so the budget
+// loaded with its limit set and refused nothing, and an infinite rate priced a
+// key's first request at infinity and refused every request after it.
+func TestBudget_RejectsNonFiniteAmounts(t *testing.T) {
+	keys := []string{
+		"spend_limit_usd", "input_per_m_tokens", "output_per_m_tokens",
+		"cache_read_per_m_tokens", "cache_write_per_m_tokens", "max_keys",
+	}
+	for _, key := range keys {
+		for _, value := range []string{".nan", ".inf", "-.inf"} {
+			t.Run(key+"="+value, func(t *testing.T) {
+				var config map[string]any
+				doc := "spend_limit_usd: 1.0\ninput_per_m_tokens: 3.0\noutput_per_m_tokens: 15.0\n"
+				if err := yaml.Unmarshal([]byte(doc), &config); err != nil {
+					t.Fatalf("decode base config: %v", err)
+				}
+				var override map[string]any
+				if err := yaml.Unmarshal([]byte(key+": "+value), &override); err != nil {
+					t.Fatalf("decode %s: %v", key, err)
+				}
+				config[key] = override[key]
+
+				if err := (&Plugin{}).ValidateConfig(config); err == nil {
+					t.Errorf("ValidateConfig accepted %s: %s", key, value)
+				}
+				if err := (&Plugin{}).Init(config); err == nil {
+					t.Errorf("Init accepted %s: %s", key, value)
+				}
+			})
+		}
 	}
 }

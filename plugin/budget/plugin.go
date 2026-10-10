@@ -249,74 +249,51 @@ func parseBudget(config map[string]any) (settings, error) {
 		s.storeID = v
 	}
 
+	var err error
 	if v, ok := config["spend_limit_usd"]; ok {
-		f, err := plugin.ToFloat64(v)
-		if err != nil {
-			return settings{}, fmt.Errorf("budget: spend_limit_usd: %w", err)
+		if s.spendLimitUSD, err = amount("spend_limit_usd", v); err != nil {
+			return settings{}, err
 		}
-		if f < 0 {
-			return settings{}, fmt.Errorf("budget: spend_limit_usd must be >= 0")
-		}
-		s.spendLimitUSD = f
 	}
 
 	// A negative rate prices a request below zero, and a cost that is not
 	// positive is never recorded — so a sign typo here loaded a budget that
 	// reported its limit and refused nothing.
 	if v, ok := config["input_per_m_tokens"]; ok {
-		f, err := plugin.ToFloat64(v)
-		if err != nil {
-			return settings{}, fmt.Errorf("budget: input_per_m_tokens: %w", err)
+		if s.inputPerMTokens, err = amount("input_per_m_tokens", v); err != nil {
+			return settings{}, err
 		}
-		if f < 0 {
-			return settings{}, fmt.Errorf("budget: input_per_m_tokens must be >= 0")
-		}
-		s.inputPerMTokens = f
 	}
 
 	if v, ok := config["output_per_m_tokens"]; ok {
-		f, err := plugin.ToFloat64(v)
-		if err != nil {
-			return settings{}, fmt.Errorf("budget: output_per_m_tokens: %w", err)
+		if s.outputPerMTokens, err = amount("output_per_m_tokens", v); err != nil {
+			return settings{}, err
 		}
-		if f < 0 {
-			return settings{}, fmt.Errorf("budget: output_per_m_tokens must be >= 0")
-		}
-		s.outputPerMTokens = f
 	}
 
 	// Optional, and their ABSENCE is meaningful: an unset cache rate leaves the
 	// cached subset on the input rate, a rate of 0 makes it free. See the
 	// package documentation.
 	if v, ok := config["cache_read_per_m_tokens"]; ok {
-		f, err := plugin.ToFloat64(v)
+		f, err := amount("cache_read_per_m_tokens", v)
 		if err != nil {
-			return settings{}, fmt.Errorf("budget: cache_read_per_m_tokens: %w", err)
-		}
-		if f < 0 {
-			return settings{}, fmt.Errorf("budget: cache_read_per_m_tokens must be >= 0")
+			return settings{}, err
 		}
 		s.cacheReadPerMTokens = &f
 	}
 
 	if v, ok := config["cache_write_per_m_tokens"]; ok {
-		f, err := plugin.ToFloat64(v)
+		f, err := amount("cache_write_per_m_tokens", v)
 		if err != nil {
-			return settings{}, fmt.Errorf("budget: cache_write_per_m_tokens: %w", err)
-		}
-		if f < 0 {
-			return settings{}, fmt.Errorf("budget: cache_write_per_m_tokens must be >= 0")
+			return settings{}, err
 		}
 		s.cacheWritePerMTokens = &f
 	}
 
 	if v, ok := config["max_keys"]; ok {
-		n, err := plugin.ToFloat64(v)
+		n, err := amount("max_keys", v)
 		if err != nil {
-			return settings{}, fmt.Errorf("budget: max_keys: %w", err)
-		}
-		if n < 0 {
-			return settings{}, fmt.Errorf("budget: max_keys must be >= 0")
+			return settings{}, err
 		}
 		s.maxKeys = int(n)
 	}
@@ -327,6 +304,25 @@ func parseBudget(config map[string]any) (settings, error) {
 	}
 
 	return s, nil
+}
+
+// amount converts one configured value and rejects anything that is not a
+// finite number of zero or more.
+//
+// A sign is not the only way to write a value no request can be compared
+// against. NaN and infinity — which YAML spells .nan and .inf — pass a check
+// for "< 0": a NaN limit is never reached, so the budget refused nothing while
+// reporting its limit, and an infinite rate priced a key's first request at
+// infinity and refused every one after it.
+func amount(key string, v any) (float64, error) {
+	f, err := plugin.ToFloat64(v)
+	if err != nil {
+		return 0, fmt.Errorf("budget: %s: %w", key, err)
+	}
+	if math.IsNaN(f) || math.IsInf(f, 0) || f < 0 {
+		return 0, fmt.Errorf("budget: %s must be a finite number >= 0, got %v", key, v)
+	}
+	return f, nil
 }
 
 // ValidateConfig checks the config block without opening a spend store, so

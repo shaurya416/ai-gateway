@@ -303,6 +303,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stream meter and attached its usage regardless, so whether a client that
   declined usage got one depended on where the answer came from. Accounting is
   unchanged — the cost, metrics and request-log row still read the real usage.
+- Redacted log lines, error messages and request-log rows no longer print part
+  of a URL password that holds a raw `@`. A URL's userinfo ends at the last
+  `@` before the host — that is how `net/url` and the database drivers built on
+  it read a DSN or a base URL, so such a password is a working credential —
+  but the redaction rule ended it at the first: `postgres://app:pa@ss@db/app`
+  became `postgres://app:[REDACTED]@ss@db/app`, and a user name holding an `@`,
+  the shape some managed databases give theirs, matched nothing and left the
+  whole password in the line. The rule now ends the userinfo where the URL
+  parser does, so the password is removed whole and the host stays readable.
+- `budget` refuses to load a limit or rate that is not a finite number. YAML
+  spells NaN and infinity `.nan` and `.inf`, and both passed the `>= 0` check:
+  with `spend_limit_usd: .nan` no recorded spend ever reached the limit, so the
+  plugin loaded with its cap set, `ferrogw validate` reported the config valid,
+  and the budget refused nothing; an infinite rate priced a key's first request
+  at infinity and refused every request after it. `spend_limit_usd`, every
+  per-million-token rate and `max_keys` must now be finite and `>= 0`, at
+  startup and in `ferrogw validate`.
+- `response-cache` refuses to load a `max_age` or `max_entries` that is not a
+  whole number of zero or more. A quoted number, or a `${VAR}` reference, which
+  resolves to a string, was skipped without a word and the default served in
+  its place — a cache configured to keep answers for a minute kept them for
+  five — and a negative or sub-second `max_age` loaded a cache that expired
+  every entry as it was stored, and a negative `max_entries` one that held a
+  single entry, while the plugin reported itself enabled. Such a value is now a
+  startup error naming the key, and `ferrogw validate` reports it too.
 - `prompt-shield` detects "ignore all previous instructions", the wording the
   system-override attack is best known by. Its pattern accepted "ignore all
   instructions" and "ignore previous instructions" but not the two qualifiers

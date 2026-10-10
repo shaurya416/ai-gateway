@@ -11,7 +11,9 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"hash"
+	"math"
 	"sort"
 	"strconv"
 	"time"
@@ -46,26 +48,76 @@ func (c *ResponseCache) Type() plugin.PluginType {
 	return plugin.TypeTransform
 }
 
-// Init configures the plugin from the provided options map.
-func (c *ResponseCache) Init(config map[string]any) error {
-	maxAge := 300
-	// JSON delivers numeric values as float64; YAML may deliver int. Handle both.
-	switch v := config["max_age"].(type) {
-	case int:
-		maxAge = v
-	case float64:
-		maxAge = int(v)
-	}
-	ttl := time.Duration(maxAge) * time.Second
+// settings are the values one response-cache config block resolves to.
+type settings struct {
+	ttl      time.Duration
+	capacity int
+}
 
-	capacity := 1000
-	switch v := config["max_entries"].(type) {
-	case int:
-		capacity = v
-	case float64:
-		capacity = int(v)
+// maxAgeSeconds is the longest max_age a time.Duration can carry.
+const maxAgeSeconds = math.MaxInt64 / int64(time.Second)
+
+// parseSettings reads and checks a response-cache config block. It is the
+// single place the plugin's rules live, shared by Init and ValidateConfig so a
+// value the gateway would refuse to start on is the same value `ferrogw
+// validate` reports. An absent or null key keeps its default (max_age 300,
+// max_entries 1000).
+//
+// A value that is not a whole number of zero or more is a load error. A quoted
+// number, or a ${VAR} reference, which resolves to a string, used to be skipped
+// in silence and the default served in its place, so a cache configured for a
+// minute kept answers for five. A negative max_age, or one under a second,
+// expired every entry as it was stored — a cache that loaded, reported itself
+// enabled and never served a hit — and a negative or fractional max_entries
+// was read as a size other than the one written. Zero is accepted for either.
+func parseSettings(config map[string]any) (settings, error) {
+	s := settings{ttl: 300 * time.Second, capacity: 1000}
+	if v, ok := config["max_age"]; ok && v != nil {
+		n, err := wholeNumber("max_age", v, maxAgeSeconds)
+		if err != nil {
+			return settings{}, err
+		}
+		s.ttl = time.Duration(n) * time.Second
 	}
-	c.Memory = cachestore.NewMemory(capacity, ttl)
+	if v, ok := config["max_entries"]; ok && v != nil {
+		n, err := wholeNumber("max_entries", v, math.MaxInt)
+		if err != nil {
+			return settings{}, err
+		}
+		s.capacity = int(n)
+	}
+	return s, nil
+}
+
+// wholeNumber converts one configured value and rejects anything that is not a
+// whole number from zero up to limit.
+func wholeNumber(key string, v any, limit int64) (int64, error) {
+	f, err := plugin.ToFloat64(v)
+	if err != nil {
+		return 0, fmt.Errorf("response-cache: %s: %w", key, err)
+	}
+	if math.IsNaN(f) || f < 0 || f >= float64(limit) || f != math.Trunc(f) {
+		return 0, fmt.Errorf("response-cache: %s must be a whole number >= 0, got %v", key, v)
+	}
+	return int64(f), nil
+}
+
+// ValidateConfig checks the config block without building a cache, so
+// `ferrogw validate` and `ferrogw doctor` reject a value this plugin would
+// reject at startup. See plugin.ConfigValidator.
+func (c *ResponseCache) ValidateConfig(config map[string]any) error {
+	_, err := parseSettings(config)
+	return err
+}
+
+// Init configures the plugin from the provided options map. See parseSettings
+// for the rules both settings follow.
+func (c *ResponseCache) Init(config map[string]any) error {
+	s, err := parseSettings(config)
+	if err != nil {
+		return err
+	}
+	c.Memory = cachestore.NewMemory(s.capacity, s.ttl)
 	return nil
 }
 

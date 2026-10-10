@@ -21,8 +21,18 @@ var urlCredentialParam = regexp.MustCompile(
 //
 // Only the password is replaced. The scheme, user and host stay readable,
 // because "connection refused" is unanswerable without them, and neither is a
-// secret. The value class stops at the "@" so the rest of the URL survives.
-var urlUserinfoPassword = regexp.MustCompile(`([a-zA-Z][a-zA-Z0-9+.\-]*://[^\s:/?#@]+:)[^\s/?#@]+@`)
+// secret. The match stops at the "@" before the host so the rest of the URL
+// survives.
+//
+// The userinfo ends at the LAST "@" before the host, not the first: that is how
+// net/url and the database drivers built on it read a URL, so a password or a
+// user name carrying a raw "@" — common in generated passwords, and the shape
+// some managed databases give their user names — is a working credential. Read
+// up to the first "@" instead, the rule replaced a password's head and printed
+// the rest of it, or matched nothing and printed all of it. A segment after the
+// first "@" stops at a quotation mark, which no URL's userinfo can hold, so the
+// match cannot run on into the next field of a JSON line.
+var urlUserinfoPassword = regexp.MustCompile(`([a-zA-Z][a-zA-Z0-9+.\-]*://[^\s:/?#@]+(?:@[^\s:/?#@"]+)*:)[^\s/?#@]+(?:@[^\s/?#@"]+)*@`)
 
 // URLCredentials replaces credential-bearing query-parameter values in s, and
 // the password in a URL's userinfo.
