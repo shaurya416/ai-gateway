@@ -27,12 +27,14 @@ package streamwrap
 import (
 	"cmp"
 	"context"
+	"errors"
 	"slices"
 	"time"
 
 	"github.com/ferro-labs/ai-gateway/internal/events"
 	"github.com/ferro-labs/ai-gateway/models"
 	"github.com/ferro-labs/ai-gateway/pkg/metrics"
+	"github.com/ferro-labs/ai-gateway/plugin"
 	"github.com/ferro-labs/ai-gateway/providers"
 )
 
@@ -199,8 +201,8 @@ func (m MeterMeta) usageOnlyForClient(chunk providers.StreamChunk) bool {
 }
 
 // Measurements are the per-request numbers a completed stream produced. They
-// mirror plugin.Measurements, which streamwrap cannot import without depending
-// on the pipeline it is metered by.
+// mirror plugin.Measurements, which the gateway fills from them for the
+// after_request and on_error stages.
 type Measurements struct {
 	DurationMs float64
 	TTFTMs     float64
@@ -220,6 +222,15 @@ type StreamOutcome struct {
 	TTFTMs      float64
 	TTLTMs      float64
 	ErrorMsg    string
+	// Err is the error the stream failed with, nil on success; ErrorMsg is its
+	// message. The error itself is carried because its type is what classifies
+	// the failure — an after_request rejection, an upstream status, the idle
+	// bound — and an error rebuilt from the message alone classifies as a 500.
+	Err error
+	// Latency is the request's whole duration, measured when the stream ended:
+	// the figure the request's lifecycle events report. TTLTMs is not a
+	// substitute — a stream that failed before its first chunk has none.
+	Latency time.Duration
 	// Model is the routed, client-visible model used by the synthesized response
 	// and terminal attribution. Provider chunk models remain unchanged on the
 	// forwarded stream but do not replace this internal identity.
@@ -515,6 +526,8 @@ func finishStreamOnError(
 			TTFTMs:    ttftMs,
 			TTLTMs:    ttltMs,
 			ErrorMsg:  streamErr.Error(),
+			Err:       streamErr,
+			Latency:   latency,
 		})
 	}
 	if meta.CircuitBreakerOutcome != nil {
@@ -524,10 +537,11 @@ func finishStreamOnError(
 
 // handleCompletionFn invokes meta.CompletionFn when it is set. It returns
 // true if the caller (the Meter goroutine) should return immediately, which
-// happens when CompletionFn returns a non-nil error. On error it emits plugin
-// error metrics, publishes the failed event, forwards an error chunk on out,
-// finalises the span, and records a successful circuit-breaker outcome (the
-// provider stream itself completed successfully; only the plugin failed).
+// happens when CompletionFn returns a non-nil error. On error it counts the
+// rejection or the plugin failure, publishes the failed event, forwards an
+// error chunk on out, finalises the span, and records a successful
+// circuit-breaker outcome (the provider stream itself completed successfully;
+// only the plugin failed).
 func handleCompletionFn(
 	ctx context.Context,
 	meta MeterMeta,
@@ -550,8 +564,18 @@ func handleCompletionFn(
 	// other outcome — the same rule the non-streaming after-plugin failure
 	// follows.
 	requestMetrics.Duration.Observe(measured.DurationMs / 1000.0)
-	requestMetrics.Error.Inc()
-	metrics.ForProviderError(meta.Provider, metrics.ErrTypePlugin).Inc()
+	// A plugin that denied the response is counted as the rejection it is, as
+	// the non-streaming path counts it: the provider served the request and the
+	// plugin did its job, so neither the request's error counter nor the
+	// target's provider-error series may read it as a failure. Only a plugin
+	// that broke is one.
+	var rejection *plugin.RejectionError
+	if errors.As(err, &rejection) {
+		requestMetrics.Rejected.Inc()
+	} else {
+		requestMetrics.Error.Inc()
+		metrics.ForProviderError(meta.Provider, metrics.ErrTypePlugin).Inc()
+	}
 	// The request ended failed, so it is published as failed — the event the
 	// non-streaming path sends for the same after_request failure. Publishing
 	// nothing here left a stream an after_request guardrail rejected, or a
@@ -578,6 +602,8 @@ func handleCompletionFn(
 			TTFTMs:    measured.TTFTMs,
 			TTLTMs:    measured.TTLTMs,
 			ErrorMsg:  err.Error(),
+			Err:       err,
+			Latency:   latency,
 		})
 	}
 	// Provider stream completed; plugin failure must not block CB recovery.
@@ -634,6 +660,7 @@ func finishStreamOnSuccess(
 			Cost:        cost,
 			TTFTMs:      ttftMs,
 			TTLTMs:      ttltMs,
+			Latency:     latency,
 			Model:       meta.Model,
 		})
 	}

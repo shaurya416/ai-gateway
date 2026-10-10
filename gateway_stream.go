@@ -2,7 +2,6 @@ package aigateway
 
 import (
 	"context"
-	"errors"
 	"runtime/trace"
 	"sync"
 	"time"
@@ -324,21 +323,26 @@ func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-cha
 			ModelFound:    o.Cost.ModelFound,
 		})
 		finishSpan.SetStreamTimings(o.TTFTMs, o.TTLTMs)
-		if o.ErrorMsg != "" {
-			finishSpan.SetError(errors.New(o.ErrorMsg))
+		if o.Err != nil {
+			finishSpan.SetError(o.Err)
 		}
 		finishSpan.End()
 
-		// Emit observability event for streaming completion/failure.
+		// Emit observability event for streaming completion/failure. Built
+		// from the error itself and the request's whole duration — the inputs
+		// the event hooks get for the same request. An error rebuilt from its
+		// message classified every stream failure as a 500, and the time to
+		// the last chunk reported a stream that failed before its first one
+		// as having taken no time at all.
 		if obsEventsActive {
 			var he events.HookEvent
-			if o.ErrorMsg != "" {
+			if o.Err != nil {
 				he = events.FailedRequest(
 					traceID,
 					providerName,
 					req.Model,
-					errors.New(o.ErrorMsg),
-					time.Duration(o.TTLTMs*float64(time.Millisecond)),
+					o.Err,
+					o.Latency,
 					true,
 				)
 			} else {
@@ -346,7 +350,7 @@ func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-cha
 					traceID,
 					providerName,
 					req.Model,
-					time.Duration(o.TTLTMs*float64(time.Millisecond)),
+					o.Latency,
 					true,
 					o.TokensIn,
 					o.TokensOut,

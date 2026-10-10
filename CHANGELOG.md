@@ -92,6 +92,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   other client of the Admin API was handed a credential that could never
   authenticate. `PUT /admin/keys/{id}` is unchanged: a past expiry there is
   how an existing key is retired.
+- A streamed chat request that fails now reaches observability exporters with
+  the status and duration its event hooks report. The exporter event was
+  rebuilt from the error's message alone, which drops its type, so every
+  stream failure classified as `500` — a response an `after_request`
+  guardrail rejected (`502`), an upstream error mid-stream, the stream idle
+  bound (`504`) — and its latency was the time to the last chunk received, so a
+  stream that failed before its first chunk reported `0` ms however long it
+  had waited. Exporters now receive the error itself and the request's whole
+  duration, as hooks and non-streamed requests already did; a completed
+  stream's event reports its whole duration too.
+- A streamed chat request whose response an `after_request` plugin rejects is
+  now counted as `gateway_requests_total{status="rejected"}`, as the same
+  rejection is on a non-streamed request and on every other surface. The
+  stream counted it as `status="error"` and as
+  `gateway_provider_errors_total{error_type="plugin_error"}` against the target
+  that had served it, so a guardrail doing its job read as that provider
+  failing. A plugin that breaks rather than denies is still counted as an
+  error.
 - A streamed chat request that an `after_request` plugin rejects or fails on
   now reaches the event hooks as `gateway.request.failed`. The client was sent
   the error and the metrics counted it, but the stream's metering published no
