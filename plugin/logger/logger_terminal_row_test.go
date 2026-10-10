@@ -123,6 +123,11 @@ func TestRequestLogger_CompletedThenFailedStillRecordsWithoutAnAnnotator(t *test
 	if writer.entries[1].Stage != string(plugin.StageOnError) {
 		t.Errorf("second row stage = %q, want on_error", writer.entries[1].Stage)
 	}
+	// The completed call's usage is already on the first row; repeating it here
+	// would count it twice in every total read from the log.
+	if second := writer.entries[1]; second.TotalTokens != 0 || second.CostUSD != nil {
+		t.Errorf("second row repeats the first row's usage: tokens %d, cost %v", second.TotalTokens, second.CostUSD)
+	}
 }
 
 // A blank trace id matches nothing rather than every unattributed row, which is

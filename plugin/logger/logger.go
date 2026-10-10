@@ -333,14 +333,15 @@ func (l *RequestLogger) Execute(ctx context.Context, pctx *plugin.Context) error
 		)
 		// A request that already has a terminal row gets its failure recorded on
 		// that row instead of a second one. See recordLateFailure.
-		if createdAt, ok := terminalRow(pctx); ok && l.recordLateFailure(ctx, log, logger.TraceIDFromContext(ctx), createdAt, errMsg) {
+		createdAt, hasTerminalRow := terminalRow(pctx)
+		if hasTerminalRow && l.recordLateFailure(ctx, log, logger.TraceIDFromContext(ctx), createdAt, errMsg) {
 			return nil
 		}
-		l.persist(ctx, log, requestlog.Entry{
+		entry := requestlog.Entry{
 			TraceID: logger.TraceIDFromContext(ctx),
 			Stage:   string(plugin.StageOnError),
 			Model:   model,
-			// There is no response on this path, so the provider comes from the
+			// A failure usually has no response, so the provider comes from the
 			// routing target instead — the last one attempted. A failure row that
 			// cannot name what failed is most of the row's value missing, and it
 			// is the same column the after_request row fills from the response.
@@ -351,11 +352,30 @@ func (l *RequestLogger) Execute(ctx context.Context, pctx *plugin.Context) error
 			ErrorMessage: errMsg,
 			CreatedAt:    now,
 			// A failed request still took time, and how long it took to fail is
-			// worth as much as how long a success took. It has no cost: nothing
-			// was billed, and no token count reached the catalog to price.
+			// worth as much as how long a success took.
 			DurationMs: measured(pctx.Measurements.DurationMs, pctx.Measurements.DurationMs > 0),
 			TTFTMs:     measured(pctx.Measurements.TTFTMs, pctx.Measurements.HasTTFT),
-		})
+		}
+		// A request that failed before a provider answered was billed nothing,
+		// and its row carries no tokens and no cost. One that failed AFTER — an
+		// after_request plugin refused or broke on the response, or an MCP tool
+		// loop failed part-way — reaches this stage with what the provider
+		// returned still on the context, and that call was billed. Its usage and
+		// the cost the gateway priced it at belong on this row, which is the
+		// request's only terminal row: dropping them recorded a billed call as
+		// zero tokens and an unknown cost, and every spend and token total read
+		// from the log came up short by it.
+		//
+		// Not when a terminal row already holds them, which is the fallback
+		// above, and not for a response served from cache, which reached no
+		// provider at all.
+		if pctx.Response != nil && !pctx.SkipProvider && !hasTerminalRow {
+			entry.PromptTokens = pctx.Response.Usage.PromptTokens
+			entry.CompletionTokens = pctx.Response.Usage.CompletionTokens
+			entry.TotalTokens = pctx.Response.Usage.TotalTokens
+			entry.CostUSD = measured(pctx.Measurements.CostUSD, pctx.Measurements.HasCost)
+		}
+		l.persist(ctx, log, entry)
 	}
 
 	return nil

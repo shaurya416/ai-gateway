@@ -300,10 +300,17 @@ func parseBudget(config map[string]any) (settings, error) {
 		s.cacheWritePerMTokens = &f
 	}
 
+	// A count of keys, so a whole number. A fraction used to be truncated —
+	// 0.5 to 0, which the store reads as no cap at all — and a value past the
+	// largest int wrapped negative on conversion, which reads the same way: a
+	// budget that reported a cap and tracked every key it was ever shown.
 	if v, ok := config["max_keys"]; ok {
 		n, err := amount("max_keys", v)
 		if err != nil {
 			return settings{}, err
+		}
+		if n != math.Trunc(n) || n >= math.MaxInt {
+			return settings{}, fmt.Errorf("budget: max_keys must be a whole number >= 0, got %v", v)
 		}
 		s.maxKeys = int(n)
 	}

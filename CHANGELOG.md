@@ -225,6 +225,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   such call under one missing key and finished with `finish_reason:
   tool_calls` and an empty `tool_calls` list. The reasoning a non-streamed
   request for the same answer received was dropped from the replay.
+- `prompt-shield` detects a phrase whose words are separated by a no-break
+  space or any other Unicode space. Its categories matched the gap between
+  words with RE2's `\s`, which is ASCII only — not even a vertical tab — so
+  "ignore previous instructions" written with `U+00A0` between the words, the
+  way text that passed through HTML arrives in a pasted page or a fetched tool
+  result, reached the provider with the plugin enabled and no match recorded.
+  Every character Go's `unicode.IsSpace` reads as a space now separates words;
+  words run together, or joined by anything else, still do not match.
+- `request-logger` keeps the tokens and cost of a call the provider answered
+  and the gateway then refused. When an `after_request` plugin listed ahead of
+  the logger refused the response — `schema-guard`, `secret-scan` or a
+  `regex-guard` output rule — or an MCP tool loop failed part-way, the request's
+  only terminal row was its `on_error` row, and that row recorded no tokens and
+  no cost although the provider had billed the call. Every token and spend total
+  read from the request log came up short by it, and the request counted as
+  unpriced. The row now carries the usage the gateway left on the request and
+  the cost it priced it at. A request that failed before any provider answered,
+  a refused response served from cache, and a failure annotated onto an
+  existing `after_request` row are unchanged.
+- `budget` refuses to load a `max_keys` that is not a whole number. A fraction
+  was truncated — `0.5` to `0`, which the store reads as no cap — and a value
+  past the largest integer wrapped negative, read the same way, so the plugin
+  loaded reporting a key cap and tracked every key it was shown. Such a value is
+  now a load error naming the key, at startup and in `ferrogw validate`.
 - `regex-guard`, `secret-scan` and `schema-guard` listed at `after_request` now
   screen the whole response even when the request's context has already
   ended. Each stopped at the first sign of an ended context and returned the

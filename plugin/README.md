@@ -327,12 +327,12 @@ A per-API-key spend cap. It estimates each request's cost from the response's
 token usage and the configured per-million-token prices, accumulates it against
 the key, and rejects once the limit is reached. Keys on the API credential, so
 it applies to authenticated requests. List it at both stages with identical
-config. The limit, every rate and `max_keys` must be finite numbers `>= 0`; a
-negative value, or YAML's `.nan` or `.inf`, fails the load, and so does a
-`store_id` that is not a string. Inside an MCP tool loop the cap is checked
-before every turn, and a request refused there has the turns it already made
-recorded against the key, so its next request is refused before reaching a
-provider.
+config. The limit, every rate and `max_keys` must be finite numbers `>= 0`, and
+`max_keys` a whole one; a negative value, a fractional `max_keys`, or YAML's
+`.nan` or `.inf`, fails the load, and so does a `store_id` that is not a
+string. Inside an MCP tool loop the cap is checked before every turn, and a
+request refused there has the turns it already made recorded against the key,
+so its next request is refused before reaching a provider.
 
 ```yaml
 config:

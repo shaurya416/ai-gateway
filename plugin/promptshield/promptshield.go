@@ -75,11 +75,30 @@ type category struct {
 // "Ignore all previous instructions" is the form the attack is best known by,
 // and an alternation that took one qualifier or the other let exactly that
 // phrase through.
+//
+// The words of a phrase may be separated by any space, not only an ASCII one;
+// see wordGap.
 var categories = []category{
-	{"system_override", regexp.MustCompile(`(?i)(ignore\s+(all\s+previous|previous|all)\s+instructions|disregard\s+your\s+instructions|forget\s+your\s+instructions|override\s+system\s+prompt)`)},
-	{"role_manipulation", regexp.MustCompile(`(?i)(act\s+as\s+if\s+you\s+are|pretend\s+you\s+are|roleplay\s+as|assume\s+the\s+role\s+of\s+(?:the\s+)?(?:system|assistant|admin|administrator)\b)`)},
-	{"instruction_leak", regexp.MustCompile(`(?i)(show\s+me\s+your\s+system\s+prompt|reveal\s+your\s+instructions|what\s+are\s+your\s+instructions|print\s+your\s+system\s+message|output\s+your\s+prompt)`)},
+	{"system_override", phrase(`(?i)(ignore\s+(all\s+previous|previous|all)\s+instructions|disregard\s+your\s+instructions|forget\s+your\s+instructions|override\s+system\s+prompt)`)},
+	{"role_manipulation", phrase(`(?i)(act\s+as\s+if\s+you\s+are|pretend\s+you\s+are|roleplay\s+as|assume\s+the\s+role\s+of\s+(?:the\s+)?(?:system|assistant|admin|administrator)\b)`)},
+	{"instruction_leak", phrase(`(?i)(show\s+me\s+your\s+system\s+prompt|reveal\s+your\s+instructions|what\s+are\s+your\s+instructions|print\s+your\s+system\s+message|output\s+your\s+prompt)`)},
 	{"delimiter_attack", regexp.MustCompile("(?i)(" + regexp.QuoteMeta("```system") + "|" + regexp.QuoteMeta("###SYSTEM") + "|" + regexp.QuoteMeta("[SYSTEM]") + "|" + regexp.QuoteMeta("<|system|>") + ")")},
+}
+
+// wordGap matches the space between two words of a phrase: one or more of the
+// characters unicode.IsSpace reports as space.
+//
+// RE2's \s is ASCII only — tab, newline, form feed, carriage return and the
+// space itself, not even a vertical tab — so a phrase whose words were
+// separated by a no-break space matched no category. That is how text arrives
+// from HTML, where &nbsp; is routine: a pasted page, a fetched document, a tool
+// result about to be read by the model. Every word was the common written
+// form and the plugin recorded nothing.
+const wordGap = `[\t-\r \x{85}\p{Z}]+`
+
+// phrase compiles a category pattern with each \s+ in it read as wordGap.
+func phrase(pattern string) *regexp.Regexp {
+	return regexp.MustCompile(strings.ReplaceAll(pattern, `\s+`, wordGap))
 }
 
 // PromptShield detects prompt-injection attempts in a request and applies the

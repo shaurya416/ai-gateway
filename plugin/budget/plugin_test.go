@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"strings"
 	"sync"
 	"testing"
 
@@ -661,6 +662,34 @@ func TestBudget_RejectsNonFiniteAmounts(t *testing.T) {
 					t.Errorf("Init accepted %s: %s", key, value)
 				}
 			})
+		}
+	}
+}
+
+// TestBudget_RejectsAMaxKeysThatIsNotAWholeNumber covers a key cap the store
+// cannot hold as written. A fraction was truncated — 0.5 to 0, which the store
+// reads as no cap — and a value past the largest int wrapped negative, read the
+// same way, so the budget loaded reporting a cap and tracked every key.
+func TestBudget_RejectsAMaxKeysThatIsNotAWholeNumber(t *testing.T) {
+	for _, value := range []any{0.5, 1.5, 1e19} {
+		config := map[string]any{
+			"store_id":        fmt.Sprintf("max-keys-%v", value),
+			"spend_limit_usd": 1.0, "input_per_m_tokens": 3.0, "max_keys": value,
+		}
+
+		if err := (&Plugin{}).ValidateConfig(config); err == nil || !strings.Contains(err.Error(), "max_keys") {
+			t.Errorf("ValidateConfig(max_keys: %v) error = %v, want one naming max_keys", value, err)
+		}
+		p := &Plugin{}
+		if err := p.Init(config); err == nil {
+			t.Errorf("Init accepted max_keys: %v, and the store's cap is %d", value, p.store.maxKeys)
+		}
+	}
+
+	for _, value := range []any{0, 2, 10000.0} {
+		config := map[string]any{"store_id": "max-keys-whole", "max_keys": value}
+		if err := (&Plugin{}).ValidateConfig(config); err != nil {
+			t.Errorf("ValidateConfig(max_keys: %v) error = %v, want nil", value, err)
 		}
 	}
 }
