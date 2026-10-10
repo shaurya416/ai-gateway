@@ -527,7 +527,8 @@ reads it the way it reads `observability.tracing.endpoint`, as plaintext to that
 host. The head sampler is
 built from `observability.tracing.sample_ratio` alone, so `OTEL_TRACES_SAMPLER`
 has no effect. (`OTEL_EXPORTER_OTLP_HEADERS` reaches the exporter through the
-SDK, not through the gateway.)
+SDK, not through the gateway, and only while `observability.tracing.headers` is
+unset: a configured header map replaces the variable rather than adding to it.)
 
 ### Ollama model list (`FERRO_OLLAMA_MODELS`)
 

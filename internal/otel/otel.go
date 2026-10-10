@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"runtime/debug"
 	"time"
 
 	"github.com/ferro-labs/ai-gateway/internal/envref"
@@ -223,8 +224,9 @@ func shutdownWithIndependentDeadlines(
 }
 
 // resolveExporters instantiates and initialises each enabled exporter.
-// Unknown names and Init errors are warned and skipped so a misconfigured
-// optional plugin cannot prevent the gateway from starting.
+// Unknown names, Init errors and a factory or Init that panics are warned and
+// skipped so a misconfigured optional plugin cannot prevent the gateway from
+// starting.
 func resolveExporters(ctx context.Context, cfgs []ExporterConfig) []observability.Exporter {
 	out := make([]observability.Exporter, 0, len(cfgs))
 	for _, ec := range cfgs {
@@ -238,7 +240,6 @@ func resolveExporters(ctx context.Context, cfgs []ExporterConfig) []observabilit
 			)
 			continue
 		}
-		ex := factory()
 		// Resolve ${VAR} references into the exporter's own config here. The Config
 		// keeps the references, so an exporter API key is never persisted to the
 		// config store nor served by GET /admin/config.
@@ -250,7 +251,8 @@ func resolveExporters(ctx context.Context, cfgs []ExporterConfig) []observabilit
 			)
 			continue
 		}
-		if err := ex.Init(ctx, exCfg); err != nil {
+		ex, err := initExporter(ctx, ec.Name, factory, exCfg)
+		if err != nil {
 			logger.Default().Warn("otel: exporter Init failed; skipping",
 				"name", ec.Name,
 				"error", err,
@@ -260,6 +262,44 @@ func resolveExporters(ctx context.Context, cfgs []ExporterConfig) []observabilit
 		out = append(out, ex)
 	}
 	return out
+}
+
+// errExporterPanicked is the error an exporter's lifecycle call is reported as
+// when it panicked rather than returning one.
+var errExporterPanicked = errors.New("exporter panicked")
+
+// initExporter builds one exporter from its factory and initialises it,
+// turning a panic in either into an error.
+//
+// Exporters are third-party plugin code, and the commonest way one breaks on a
+// missing setting is a type assertion on its config map rather than a returned
+// error. Export is already contained for that reason (see exportEvent); Init
+// runs before the listener binds, so an uncontained panic here does not cost one
+// event but the whole gateway, over an optional integration the operator was
+// told is skipped when it fails.
+func initExporter(ctx context.Context, name string, factory observability.ExporterFactory, cfg map[string]any) (ex observability.Exporter, err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			logExporterPanic(name, "init", recovered)
+			ex, err = nil, errExporterPanicked
+		}
+	}()
+	ex = factory()
+	if err := ex.Init(ctx, cfg); err != nil {
+		return nil, err
+	}
+	return ex, nil
+}
+
+// logExporterPanic records a panic recovered from an exporter's lifecycle call,
+// with the stack, against the exporter's name and the phase it was in.
+func logExporterPanic(name, phase string, recovered any) {
+	logger.Default().Error("otel: exporter panicked",
+		"exporter", name,
+		"phase", phase,
+		"panic", recovered,
+		"stack", string(debug.Stack()),
+	)
 }
 
 // newSpanExporter constructs the OTLP span exporter for the configured

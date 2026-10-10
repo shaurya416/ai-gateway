@@ -101,7 +101,11 @@ observability:
       Langsmith-Project: ferrogw
 ```
 
-The standard `OTEL_EXPORTER_OTLP_HEADERS` environment variable also applies.
+The standard `OTEL_EXPORTER_OTLP_HEADERS` environment variable applies only
+while `headers` is unset: a configured `headers` map replaces the variable
+rather than adding to it, so keep all of one backend's headers in one of the
+two places. An API key in the variable and a project header in `headers`
+exports without the key.
 
 ## Try it locally with Jaeger
 

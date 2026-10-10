@@ -2,6 +2,7 @@ package otel
 
 import (
 	"context"
+	"fmt"
 	"runtime/debug"
 	"slices"
 	"sync"
@@ -310,11 +311,26 @@ func (p *otelProvider) Shutdown(ctx context.Context) error {
 
 	var firstErr error
 	for _, ex := range exporters {
-		if err := ex.Shutdown(ctx); err != nil && firstErr == nil {
+		if err := shutdownExporter(ctx, ex); err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}
 	return firstErr
+}
+
+// shutdownExporter shuts one exporter down, reporting a panic as an error. An
+// uncontained panic here ended the process mid-shutdown, so the exporters
+// behind it were never shut down and the TracerProvider drain that follows in
+// the ShutdownFunc never ran, dropping every span still buffered.
+func shutdownExporter(ctx context.Context, ex observability.Exporter) (err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			name := ex.Name()
+			logExporterPanic(name, "shutdown", recovered)
+			err = fmt.Errorf("exporter %q: %w", name, errExporterPanicked)
+		}
+	}()
+	return ex.Shutdown(ctx)
 }
 
 // otelSpan wraps an OTel span and applies the schema-defined attribute

@@ -225,8 +225,9 @@ type TracingConfig struct {
 	// by the admin config API; the secret is resolved from the environment at
 	// export time and never stored. A literal value IS persisted verbatim and
 	// exposed via /admin/config, so do not hard-code raw secrets here. The
-	// standard OTEL_EXPORTER_OTLP_HEADERS environment variable also applies per
-	// OTel convention.
+	// standard OTEL_EXPORTER_OTLP_HEADERS environment variable applies only
+	// while this map is empty: a configured map replaces it rather than adding
+	// to it.
 	Headers map[string]string `json:"headers,omitempty" yaml:"headers,omitempty"`
 	// AttemptSpans opens one CLIENT child span, gateway.routing.attempt, per
 	// routing-layer attempt — retries and failovers included — carrying

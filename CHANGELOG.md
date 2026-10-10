@@ -109,6 +109,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   could be proxied, so they sent the request under that provider's credential
   to a path its upstream does not serve — anthropic, gemini, azure-openai — and
   relayed whatever it answered.
+- An observability exporter whose factory, `Init` or `Shutdown` panics no
+  longer takes the gateway down. `observability.exporters` entries that fail
+  are documented as logged and skipped, and an `Init` that returned an error
+  was — but one that panicked, the usual shape of an exporter type-asserting a
+  config key the operator left out, crashed startup before the listener bound,
+  and a panicking `Shutdown` ended the process mid-shutdown before the trace
+  pipeline drained, dropping every span still buffered. Each panic is now
+  recovered and logged at error level with the exporter's name and stack: one
+  during construction or `Init` skips that exporter like any other failure,
+  and one during `Shutdown` is returned as a shutdown error while the remaining
+  exporters and the trace pipeline still shut down.
+- The tracing docs no longer say `OTEL_EXPORTER_OTLP_HEADERS` applies
+  alongside `observability.tracing.headers`. A configured header map replaces
+  the variable rather than adding to it, so a deployment that kept its
+  collector API key in the variable and a project header in config exported
+  without the key and had every batch rejected. The observability README,
+  `AGENTS.md` and the config field docs now state that precedence.
 - A request whose model carries a NUL byte or bytes that are not UTF-8 is no
   longer dropped from a Postgres request log. A JSON model of
   `"gpt-4o\u0000x"` decodes to a NUL, a multipart `model` field can hold any

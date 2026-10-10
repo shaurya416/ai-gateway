@@ -52,6 +52,9 @@ type Config struct {
 	// export request. Values may contain ${ENV_VAR} references that are
 	// resolved at exporter-build time (not at config-load time) so that
 	// secrets are never stored literally in the in-memory config.
+	//
+	// When at least one header resolves, the map replaces the headers the SDK
+	// read from OTEL_EXPORTER_OTLP_HEADERS rather than adding to them.
 	Headers map[string]string `yaml:"headers" json:"headers"`
 }
 
