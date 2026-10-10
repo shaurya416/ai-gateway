@@ -33,7 +33,8 @@ type CostResult struct {
 	// Priced is false when the catalog entry carries no price for the field its
 	// mode bills off: input tokens for chat and responses, embedding tokens for
 	// embeddings, per-tile or (failing that, and only against reported usage)
-	// per-token for images, per-minute or per-character for audio.
+	// per-token for images, per-minute or per-character for audio — the audio
+	// rates only against a reported duration or character count.
 	Priced bool
 }
 
@@ -48,7 +49,10 @@ func perM(price *float64, n int) float64 {
 
 // Calculate computes the full cost for a completed request.
 // modelKey should be "provider/model-id"; a bare model ID is also accepted
-// and resolved via the reverse index built at catalog load time.
+// and resolved via the reverse index built at catalog load time. A
+// "provider/model-id" key absent from the provider's rows resolves to another
+// row only when that row is the one carrying "provider/model-id" as its model
+// ID; when several rows carry it, the model is unpriced.
 func Calculate(catalog Catalog, modelKey string, usage Usage) CostResult {
 	model, ok := catalog.GetForPricing(modelKey)
 	if !ok {
@@ -120,15 +124,20 @@ func Calculate(catalog Catalog, modelKey string, usage Usage) CostResult {
 			r.OutputUSD = perM(p.OutputPerMTokens, usage.CompletionTokens)
 		}
 
+	// The audio modes bill off a measurement — seconds of input, characters of
+	// output — and require one, for the reason the image token arm does: the
+	// transcription and speech surfaces report neither, so pricing the absent
+	// figure recorded every whisper-1 transcription as a priced $0.00. No
+	// measurement means unpriced.
 	case ModeAudioIn:
-		r.Priced = p.AudioInputPerMinute != nil
 		if p.AudioInputPerMinute != nil && usage.AudioInputSecs > 0 {
+			r.Priced = true
 			r.AudioUSD = *p.AudioInputPerMinute * usage.AudioInputSecs / 60
 		}
 
 	case ModeAudioOut:
-		r.Priced = p.AudioOutputPerCharacter != nil
 		if p.AudioOutputPerCharacter != nil && usage.AudioOutputChars > 0 {
+			r.Priced = true
 			r.AudioUSD = *p.AudioOutputPerCharacter * float64(usage.AudioOutputChars)
 		}
 	}

@@ -695,6 +695,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the tool had worked, while the audit record and span carried no reason. The
   model now receives the fixed `{"error":"the tool call failed"}` payload, and
   the audit record and span name the missing content.
+- A request whose model several catalog providers carry under the same model
+  ID is no longer priced at whichever of their rates the process happened to
+  pick. Providers file other vendors' models under model IDs that spell
+  `vendor/model` — eight carry `openai/gpt-oss-120b` — and a
+  `provider/model` key missing from the provider's own rows fell through to the
+  index built for bare model IDs, which kept the first row a map iteration
+  reached. `gpt-oss-120b` served through `openai` (an `OPENAI_BASE_URL` pointed
+  at a self-hosted server) was costed at anything from $0.05 to $15,000 per
+  million input tokens, differently from one process start to the next, and
+  `cost-optimized` ranked targets on that figure; a `qwen` request for
+  `qwen3-235b-a22b-instruct-2507` took one of two other providers' prices the
+  same way. Such a key now resolves only when exactly one row carries it, so
+  these requests are recorded unpriced, and `/v1/models` lists such a model
+  without catalog metadata rather than with one of those rows'; a model ID a
+  single row carries resolves as before.
+- `models.Calculate` prices the audio modes only against a reported duration
+  or character count. It marked an audio request priced whenever the catalog
+  row carried a per-minute or per-character rate — `whisper-1` and the Groq
+  Whisper models among 45 such rows — so a caller passing no measurement got a
+  priced $0.00 for a request the provider bills. The gateway's own audio
+  surfaces already record such requests unpriced (see the transcription entry
+  above); this makes the calculator give the same answer to every caller, as
+  the image token rates already price only reported usage.
+- `ferrogw admin keys list` reports a revoked key as revoked. The `REVOKED`
+  column read a `revoked` field the Admin API does not send, so it printed `no`
+  for every key, including one `ferrogw admin keys revoke` had just revoked. It
+  now reads `revoked_at`, the field the dashboard reads.
 
 ## [1.5.9] — 2026-09-18
 

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"os"
@@ -8,6 +9,9 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/ferro-labs/ai-gateway/internal/admin/model"
+	"github.com/ferro-labs/ai-gateway/internal/admin/repository"
 )
 
 func TestToSlice(t *testing.T) {
@@ -106,10 +110,9 @@ func TestFmtNum(t *testing.T) {
 func TestMapHelpers(t *testing.T) {
 	t.Parallel()
 	m := map[string]any{
-		"name":    "openai",
-		"revoked": true,
-		"count":   float64(7),
-		"nilval":  nil,
+		"name":   "openai",
+		"count":  float64(7),
+		"nilval": nil,
 	}
 
 	if got := str(m, "name"); got != "openai" {
@@ -120,12 +123,6 @@ func TestMapHelpers(t *testing.T) {
 	}
 	if got := str(m, "nilval"); got != "" {
 		t.Errorf("str(nil) = %q, want empty", got)
-	}
-	if got := strBool(m, "revoked"); got != "yes" {
-		t.Errorf("strBool(true) = %q, want yes", got)
-	}
-	if got := strBool(m, "missing"); got != "no" {
-		t.Errorf("strBool(missing) = %q, want no", got)
 	}
 	if got := numVal(m, "count"); got != 7 {
 		t.Errorf("numVal = %v, want 7", got)
@@ -194,7 +191,7 @@ func TestJSONSlice_Rendering(t *testing.T) {
 
 func TestRunKeysList(t *testing.T) {
 	srv := stubGateway(t, map[string]http.HandlerFunc{
-		"/admin/keys": jsonHandler(http.StatusOK, `[{"id":"k1","name":"prod","scopes":["admin","read_only"],"revoked":false}]`),
+		"/admin/keys": jsonHandler(http.StatusOK, `[{"id":"k1","name":"prod","scopes":["admin","read_only"],"active":true}]`),
 	})
 	cmd, out := newHandlerCmd(t, srv.URL, "table")
 
@@ -205,6 +202,58 @@ func TestRunKeysList(t *testing.T) {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("output missing %q:\n%s", want, out.String())
 		}
+	}
+}
+
+// TestRunKeysList_RevokedColumnReadsTheServedKey drives the REVOKED column from
+// what GET /admin/keys actually serves: the key store's own records, encoded as
+// the handler encodes them. The API carries revoked_at and no "revoked" flag,
+// so a column reading the flag printed "no" for a key `keys revoke` had just
+// revoked.
+func TestRunKeysList_RevokedColumnReadsTheServedKey(t *testing.T) {
+	ctx := context.Background()
+	store := repository.NewKeyStore()
+	live, err := store.Create(ctx, "live-key", []string{model.ScopeReadOnly}, nil)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	dead, err := store.Create(ctx, "dead-key", []string{model.ScopeReadOnly}, nil)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if err := store.Revoke(ctx, dead.ID); err != nil {
+		t.Fatalf("revoke: %v", err)
+	}
+	keys, err := store.List(ctx)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	body, err := json.Marshal(keys)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	srv := stubGateway(t, map[string]http.HandlerFunc{
+		"/admin/keys": jsonHandler(http.StatusOK, string(body)),
+	})
+	cmd, out := newHandlerCmd(t, srv.URL, "table")
+	if err := runKeysList(cmd, nil); err != nil {
+		t.Fatalf("runKeysList: %v", err)
+	}
+
+	revoked := map[string]string{}
+	for _, line := range strings.Split(out.String(), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		revoked[fields[0]] = fields[len(fields)-1]
+	}
+	if got := revoked[dead.ID]; got != "yes" {
+		t.Errorf("REVOKED for the revoked key = %q, want yes\n%s", got, out.String())
+	}
+	if got := revoked[live.ID]; got != "no" {
+		t.Errorf("REVOKED for the live key = %q, want no\n%s", got, out.String())
 	}
 }
 

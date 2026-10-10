@@ -625,6 +625,107 @@ func TestCatalogGetConcurrentBuildIndex(t *testing.T) {
 	wg.Wait()
 }
 
+// A "provider/model" key the provider's own rows do not carry resolves through
+// the model-ID index only when one row answers it. Several providers file other
+// vendors' models under model IDs that spell "vendor/model" — eight carry
+// openai/gpt-oss-120b — and taking whichever row the index recorded first
+// priced a request routed to openai at a rate chosen by map iteration order:
+// $0.15 on one process start, $15,000 on the next.
+func TestCatalogQualifiedKeyCarriedBySeveralProvidersIsUnresolved(t *testing.T) {
+	c := Catalog{
+		"openai/gpt-4o": {
+			Provider: "openai",
+			ModelID:  "gpt-4o",
+			Mode:     ModeChat,
+			Pricing:  Pricing{InputPerMTokens: ptrF(2.5)},
+		},
+		"groq/openai/gpt-oss-120b": {
+			Provider: "groq",
+			ModelID:  "openai/gpt-oss-120b",
+			Mode:     ModeChat,
+			Pricing:  Pricing{InputPerMTokens: ptrF(0.15)},
+		},
+		"wandb/openai/gpt-oss-120b": {
+			Provider: "wandb",
+			ModelID:  "openai/gpt-oss-120b",
+			Mode:     ModeChat,
+			Pricing:  Pricing{InputPerMTokens: ptrF(15000)},
+		},
+		"vertex_ai/gemini/gemini-2.5-flash-image": {
+			Provider: "vertex_ai",
+			ModelID:  "gemini/gemini-2.5-flash-image",
+			Mode:     ModeImage,
+			Pricing:  Pricing{ImagePerTile: ptrF(0.039)},
+		},
+	}
+
+	// Indexed and unindexed: the scan that backs a stale or missing index must
+	// give the same answer as the index.
+	for _, indexed := range []bool{true, false} {
+		if indexed {
+			BuildIndex(c)
+		} else {
+			BuildIndex(Catalog{})
+		}
+
+		if m, ok := c.Get("openai/gpt-oss-120b"); ok {
+			t.Errorf("indexed=%v: Get(openai/gpt-oss-120b) = %s/%s, want not found: two providers carry it and neither is openai", indexed, m.Provider, m.ModelID)
+		}
+		if got := Calculate(c, "openai/gpt-oss-120b", Usage{PromptTokens: 1_000_000}); got.ModelFound || got.Priced || got.TotalUSD != 0 {
+			t.Errorf("indexed=%v: Calculate(openai/gpt-oss-120b) = %+v, want an unknown model, not one of two providers' prices", indexed, got)
+		}
+
+		// The rows stay reachable under their own providers.
+		if m, ok := c.Get("groq/openai/gpt-oss-120b"); !ok || m.Provider != "groq" {
+			t.Errorf("indexed=%v: Get(groq/openai/gpt-oss-120b) = %+v, %v; want the groq row", indexed, m, ok)
+		}
+		// One row carrying the model ID still answers it.
+		if got := Calculate(c, "gemini/gemini-2.5-flash-image", Usage{ImageCount: 1}); !got.Priced || got.TotalUSD != 0.039 {
+			t.Errorf("indexed=%v: Calculate(gemini/gemini-2.5-flash-image) = %+v, want the sole row's per-image price", indexed, got)
+		}
+		// A bare model ID resolves as before.
+		if _, ok := c.Get("gpt-4o"); !ok {
+			t.Errorf("indexed=%v: Get(gpt-4o) should resolve a bare model ID", indexed)
+		}
+	}
+}
+
+// The same property over the embedded catalog: a qualified key the catalog
+// does not carry as a key, and that several rows carry as a model ID, resolves
+// to none of them. The embedded catalog has 75 such model IDs, and the rows
+// carrying 71 of them disagree on the price.
+func TestEmbeddedCatalogAmbiguousQualifiedKeysAreUnresolved(t *testing.T) {
+	c, err := loadEmbedded()
+	if err != nil {
+		t.Fatalf("loadEmbedded: %v", err)
+	}
+	carriers := make(map[string]int)
+	for _, m := range c {
+		if strings.Contains(m.ModelID, "/") {
+			carriers[m.ModelID]++
+		}
+	}
+
+	checked := 0
+	for id, n := range carriers {
+		if _, isKey := c[id]; isKey || n < 2 {
+			continue
+		}
+		checked++
+		for _, lookup := range []func(string) (Model, bool){c.Get, c.GetForPricing} {
+			// A row reached through the provider's own alias chain is a different
+			// model ID and a legitimate answer; one carrying the key itself as its
+			// model ID is one of the several candidates.
+			if got, found := lookup(id); found && got.ModelID == id {
+				t.Errorf("%s resolved to %s/%s, one of %d rows carrying it", id, got.Provider, got.ModelID, n)
+			}
+		}
+	}
+	if checked == 0 {
+		t.Fatal("the embedded catalog no longer carries a model ID under several providers; this test proves nothing")
+	}
+}
+
 // TestIsDeprecated checks that both "deprecated" and "legacy" statuses are
 // treated as deprecated, while "ga" and "preview" are not.
 func TestIsDeprecated(t *testing.T) {

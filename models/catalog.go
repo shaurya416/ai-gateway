@@ -622,6 +622,16 @@ func (c Catalog) resolve(key string, forPricing bool) (Model, bool) {
 	if m, ok := c.resolveAliased(key, forPricing); ok {
 		return m, true
 	}
+	// A qualified key the two lookups above missed can still name a row whose
+	// model ID spells "provider/model" — the only row for gemini's
+	// gemini-2.5-flash-image is vertex_ai's gemini/gemini-2.5-flash-image. It
+	// is answered only when exactly one row carries that model ID. Eight
+	// providers carry openai/gpt-oss-120b, at input rates from $0.05 to $15,000
+	// per million, and taking whichever the index recorded first priced the
+	// same request differently from one process start to the next.
+	if qualified && provider != "" && modelID != "" {
+		return c.soleRowWithModelID(key)
+	}
 	// Bare model ID: use the reverse index for constant-time lookup.
 	modelIDIndexMu.RLock()
 	if idxKey, ok := modelIDIndex[key]; ok {
@@ -640,6 +650,24 @@ func (c Catalog) resolve(key string, forPricing bool) (Model, bool) {
 		}
 	}
 	return Model{}, false
+}
+
+// soleRowWithModelID returns the one row whose model ID is id. Several rows
+// carrying it is no answer: each is another provider's price for the model,
+// and none of them is more the requested one than the rest.
+func (c Catalog) soleRowWithModelID(id string) (Model, bool) {
+	var sole Model
+	found := 0
+	for _, m := range c {
+		if m.ModelID != id {
+			continue
+		}
+		if found++; found > 1 {
+			return Model{}, false
+		}
+		sole = m
+	}
+	return sole, found == 1
 }
 
 // CatalogPrefixesFor returns the catalog key-prefix chain for a gateway provider

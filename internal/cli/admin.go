@@ -46,7 +46,7 @@ func runKeysList(cmd *cobra.Command, _ []string) error {
 		rowFn: func(m map[string]any) []string {
 			return []string{
 				str(m, "id"), str(m, "name"), strList(m, "scopes"),
-				fmtTime(m, "expires_at"), strBool(m, "revoked"),
+				fmtTime(m, "expires_at"), revokedCell(m),
 			}
 		},
 	})
@@ -424,12 +424,13 @@ func strList(m map[string]any, key string) string {
 	return strings.Join(parts, ",")
 }
 
-// strBool prints "yes" or "no" for a boolean field.
-func strBool(m map[string]any, key string) string {
-	if v, ok := m[key]; ok {
-		if b, ok := v.(bool); ok && b {
-			return boolYes
-		}
+// revokedCell prints "yes" for a revoked API key. The Admin API carries no
+// revoked flag: a key is revoked when revoked_at is set, which is the field the
+// dashboard reads too. Reading a "revoked" boolean printed "no" for every key,
+// including the ones `keys revoke` had just revoked.
+func revokedCell(m map[string]any) string {
+	if v, ok := m["revoked_at"]; ok && v != nil && v != "" {
+		return boolYes
 	}
 	return boolNo
 }

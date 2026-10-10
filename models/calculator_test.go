@@ -324,6 +324,35 @@ func TestCalculateAudioOut(t *testing.T) {
 	}
 }
 
+// The transcription surface prices with an empty Usage: nothing on the path
+// measures the audio's duration. Against the embedded catalog's per-minute
+// whisper-1 row that read as a priced $0.00 — a cost of zero on the request-log
+// row, the span and the completed event, for a request the provider bills.
+func TestCalculateEmbeddedWhisperWithoutDurationIsUnpriced(t *testing.T) {
+	c, err := loadEmbedded()
+	if err != nil {
+		t.Fatalf("loadEmbedded: %v", err)
+	}
+	m, ok := c.GetForPricing("openai/whisper-1")
+	if !ok || m.Mode != ModeAudioIn || m.Pricing.AudioInputPerMinute == nil {
+		t.Fatalf("embedded openai/whisper-1 = %+v, %v; want an audio_in row with a per-minute rate", m, ok)
+	}
+
+	got := Calculate(c, "openai/whisper-1", Usage{})
+	if !got.ModelFound {
+		t.Fatal("ModelFound should be true")
+	}
+	if got.Priced {
+		t.Errorf("Priced = true with TotalUSD = %v for a transcription whose duration nobody measured; want unpriced", got.TotalUSD)
+	}
+
+	// A measured duration is still billed at the row's rate.
+	minute := Calculate(c, "openai/whisper-1", Usage{AudioInputSecs: 60})
+	if !minute.Priced || !approxEqual(minute.TotalUSD, *m.Pricing.AudioInputPerMinute, 1e-12) {
+		t.Errorf("one measured minute = %+v; want priced at %v", minute, *m.Pricing.AudioInputPerMinute)
+	}
+}
+
 // ---- Model not found -----------------------------------------------------
 
 func TestCalculateModelNotFound(t *testing.T) {
@@ -628,6 +657,15 @@ func TestCalculatePricedFollowsTheModesOwnPriceField(t *testing.T) {
 			usage:   Usage{AudioInputSecs: 60},
 		},
 		{
+			// The transcription surface reports no duration. A per-minute rate
+			// priced against that absent figure is the known-zero this flag
+			// exists to prevent, recorded on every transcription.
+			name:    "audio in with a per-minute price but no reported duration",
+			mode:    ModeAudioIn,
+			pricing: Pricing{AudioInputPerMinute: ptr(0.006)},
+			usage:   Usage{},
+		},
+		{
 			name:       "audio out with a per-character price",
 			mode:       ModeAudioOut,
 			pricing:    Pricing{AudioOutputPerCharacter: ptr(0.00003)},
@@ -640,6 +678,13 @@ func TestCalculatePricedFollowsTheModesOwnPriceField(t *testing.T) {
 			mode:    ModeAudioOut,
 			pricing: Pricing{},
 			usage:   Usage{AudioOutputChars: 100},
+		},
+		{
+			// The speech surface reports no character count either.
+			name:    "audio out with a per-character price but no reported character count",
+			mode:    ModeAudioOut,
+			pricing: Pricing{AudioOutputPerCharacter: ptr(0.00003)},
+			usage:   Usage{},
 		},
 		{
 			name:       "chat is unchanged: input price decides",
