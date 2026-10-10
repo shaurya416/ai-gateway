@@ -11,14 +11,7 @@ import (
 func TestRunDoctor(t *testing.T) {
 	// clearProviderKeys blanks every provider env var doctor probes so host
 	// environment leakage does not skew the "N found" count.
-	clearProviderKeys := func(t *testing.T) {
-		for _, k := range []string{
-			"OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY",
-			"GROQ_API_KEY", "MISTRAL_API_KEY",
-		} {
-			t.Setenv(k, "")
-		}
-	}
+	clearProviderKeys := clearProviderEnv
 
 	t.Run("reports keys, config, auth and healthy connectivity", func(t *testing.T) {
 		srv := stubGateway(t, map[string]http.HandlerFunc{
@@ -190,6 +183,58 @@ func TestRunDoctorReadsTheEnvironmentAsServeDoes(t *testing.T) {
 		}
 		if strings.Contains(out.String(), "MASTER_KEY is set") || !strings.Contains(out.String(), "MASTER_KEY not set") {
 			t.Errorf("doctor reported a master key serve does not have:\n%s", out.String())
+		}
+	})
+}
+
+// doctor reported provider credentials for five providers only. A deployment
+// whose credentials are for any of the other built-in providers — Azure OpenAI,
+// Bedrock, DeepSeek, a local Ollama — was told "no provider API keys detected",
+// while serve registers every one of them and routes to it. doctor now asks the
+// same question serve and init ask (providers.ProviderConfigFromEnv), so what
+// it reports found is what serve registers.
+func TestRunDoctorReportsEveryCredentialedProvider(t *testing.T) {
+	srv := stubGateway(t, map[string]http.HandlerFunc{
+		"/health": jsonHandler(http.StatusOK, `{"status":"ok"}`),
+	})
+
+	t.Run("a credential outside the first five", func(t *testing.T) {
+		cmd, out := newHandlerCmd(t, srv.URL, "table")
+		clearProviderEnv(t)
+		t.Setenv("GATEWAY_CONFIG", "")
+		t.Setenv("DEEPSEEK_API_KEY", "sk-test")
+
+		if err := runDoctor(cmd, nil); err != nil {
+			t.Fatalf("runDoctor: %v", err)
+		}
+		got := out.String()
+		if strings.Contains(got, "no provider API keys detected") {
+			t.Fatalf("doctor reported no credentials for a deployment serve registers deepseek in:\n%s", got)
+		}
+		if !strings.Contains(got, SymOK+" deepseek") || !strings.Contains(got, "1 found") {
+			t.Errorf("doctor did not report the deepseek credential:\n%s", got)
+		}
+	})
+
+	t.Run("one counted the way serve registers it", func(t *testing.T) {
+		cmd, out := newHandlerCmd(t, srv.URL, "table")
+		clearProviderEnv(t)
+		t.Setenv("GATEWAY_CONFIG", "")
+		t.Setenv("OPENAI_API_KEY", "sk-test")
+		// Azure OpenAI needs its endpoint and deployment as well: a key alone
+		// registers nothing, so it is not reported found either.
+		t.Setenv("AZURE_OPENAI_API_KEY", "az-test")
+		t.Setenv("AWS_REGION", "us-east-1")
+
+		if err := runDoctor(cmd, nil); err != nil {
+			t.Fatalf("runDoctor: %v", err)
+		}
+		got := out.String()
+		if !strings.Contains(got, SymOK+" bedrock") || !strings.Contains(got, "2 found") {
+			t.Errorf("want openai and bedrock found, and nothing else:\n%s", got)
+		}
+		if strings.Contains(got, "azure-openai") {
+			t.Errorf("doctor reported an azure-openai credential serve would not register:\n%s", got)
 		}
 	})
 }

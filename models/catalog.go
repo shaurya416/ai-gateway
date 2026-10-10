@@ -308,7 +308,10 @@ func LoadWithInfo() (LoadResult, error) {
 // LoadWithInfoContext is LoadWithInfo with a caller-supplied context bounding
 // the remote fetch.
 func LoadWithInfoContext(ctx context.Context) (LoadResult, error) {
-	catalogURL := os.Getenv(CatalogURLEnv)
+	// Trimmed: a value read from a file or a Secret keeps its trailing newline,
+	// which no URL contains, and verbatim it failed every load, startup and
+	// each refresh, onto the embedded catalog instead of the configured one.
+	catalogURL := strings.TrimSpace(os.Getenv(CatalogURLEnv))
 	if catalogURL == "" {
 		catalogURL = defaultCatalogURL
 	}

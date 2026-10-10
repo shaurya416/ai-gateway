@@ -67,11 +67,17 @@ func corsOriginsWildcard(value string) bool {
 // never widens the allowlist; left in, `"https://app.example.com"` is an origin
 // no browser sends. The wildcard check reads the same list, so the two cannot
 // disagree about what was configured.
+//
+// A trailing slash goes for the same reason. A browser serialises Origin as
+// scheme://host[:port] with no path, so `https://app.example.com/` — the form
+// an address bar shows — matched no request, and every cross-origin call was
+// denied with nothing logged.
 func corsOriginList(value string) []string {
 	parts := strings.Split(value, ",")
 	origins := make([]string, 0, len(parts))
 	for _, origin := range parts {
-		origins = append(origins, strings.Trim(strings.TrimSpace(origin), `"'`))
+		origin = strings.Trim(strings.TrimSpace(origin), `"'`)
+		origins = append(origins, strings.TrimRight(origin, "/"))
 	}
 	return origins
 }

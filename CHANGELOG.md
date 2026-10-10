@@ -99,6 +99,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   which the target refused every request on every surface, chat included, with
   `503` until the breaker's timeout — a caller's malformed body took the target
   down for everyone.
+- A `CORS_ORIGINS` entry written with a trailing slash now allows its origin.
+  A browser sends `Origin` as `scheme://host[:port]` with no path, so
+  `https://app.example.com/` — the form an address bar shows — matched no
+  request: every cross-origin call from that application was denied, and
+  startup logged nothing, because the entry is neither empty nor a wildcard.
+  A trailing `/` is now stripped from each entry along with the surrounding
+  whitespace and quotes already stripped.
+- `FERRO_MODEL_CATALOG_URL` is now read with surrounding whitespace trimmed.
+  A value read from a file or a Kubernetes Secret keeps its trailing newline,
+  which made the URL unparseable, and a trailing space requested
+  `/catalog.json%20`, so every catalog load — at startup and on each 24-hour
+  refresh — fell back to the embedded catalog, and requests were priced
+  against it instead of the configured catalog, with only a warning logged. A
+  whitespace-only value now selects the default catalog, as an unset one does.
+- `ferrogw doctor` now reports a credential for every built-in provider. It
+  checked the API-key variables of five providers only, so a deployment whose
+  credentials were for any other provider — Azure OpenAI, Bedrock, DeepSeek,
+  a local Ollama — was told `no provider API keys detected`, while `serve`
+  registered and routed to those providers. doctor now detects credentials
+  with the same check `serve` and `ferrogw init` apply, lists any provider
+  found beyond the five it always shows, and counts all of them.
 - `ferrogw admin config set --file` now sends the file as written. It decoded
   the file and sent the decoded value re-encoded, which collapses a repeated
   key to its last occurrence, so a file listing `"plugins"` twice — a guardrail

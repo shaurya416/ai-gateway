@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
@@ -25,26 +26,27 @@ func runDoctor(cmd *cobra.Command, _ []string) error {
 	out := cmd.OutOrStdout()
 	_, _ = fmt.Fprintln(out, "  Provider API Keys")
 
-	topProviders := []struct {
-		name   string
-		envKey string
-	}{
-		{"openai", "OPENAI_API_KEY"},
-		{"anthropic", "ANTHROPIC_API_KEY"},
-		{"gemini", "GEMINI_API_KEY"},
-		{"groq", "GROQ_API_KEY"},
-		{"mistral", "MISTRAL_API_KEY"},
-	}
-
-	found := 0
-	for _, p := range topProviders {
-		if os.Getenv(p.envKey) != "" {
-			_, _ = fmt.Fprintf(out, "    %s %s\n", Clr(ColorGreen, SymOK), p.name)
-			found++
+	// Detected with the gate serve registers providers through
+	// (credentialedProviders), across every built-in provider. Checking five
+	// variables reported "no provider API keys detected" to a deployment whose
+	// credentials were for any of the others, which serve registers and routes
+	// to. The five are always listed, as the startup banner lists them; any
+	// other provider is listed when it is found.
+	topProviders := []string{"openai", "anthropic", "gemini", "groq", "mistral"}
+	detected := credentialedProviders()
+	for _, name := range topProviders {
+		if slices.Contains(detected, name) {
+			_, _ = fmt.Fprintf(out, "    %s %s\n", Clr(ColorGreen, SymOK), name)
 		} else {
-			_, _ = fmt.Fprintf(out, "    %s %s\n", Clr(ColorDim, SymDASH), p.name)
+			_, _ = fmt.Fprintf(out, "    %s %s\n", Clr(ColorDim, SymDASH), name)
 		}
 	}
+	for _, name := range detected {
+		if !slices.Contains(topProviders, name) {
+			_, _ = fmt.Fprintf(out, "    %s %s\n", Clr(ColorGreen, SymOK), name)
+		}
+	}
+	found := len(detected)
 
 	if found == 0 {
 		_, _ = fmt.Fprintf(out, "\n    %s no provider API keys detected\n", Clr(ColorYellow, SymWARN))

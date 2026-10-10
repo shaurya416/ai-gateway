@@ -343,6 +343,63 @@ func TestParseKeepsADocumentWithOneModelRow(t *testing.T) {
 	}
 }
 
+// TestLoadWithInfoTrimsTheCatalogURL is the regression for an override that
+// carries surrounding whitespace — the trailing newline a value read from a
+// file or a Kubernetes Secret keeps, or the space an env file leaves. Used
+// verbatim, the newline made the URL unparseable and a trailing space asked for
+// /catalog.json%20, so every load, startup and each refresh, fell back to the
+// embedded catalog and priced against it instead of the configured one.
+func TestLoadWithInfoTrimsTheCatalogURL(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/catalog.json" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"test/custom":{"provider":"test","model_id":"custom","mode":"chat"}}`))
+	}))
+	t.Cleanup(server.Close)
+	catalogURL := server.URL + "/catalog.json"
+
+	for name, value := range map[string]string{
+		"trailing newline":   catalogURL + "\n",
+		"surrounding spaces": " " + catalogURL + " ",
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv(CatalogURLEnv, value)
+
+			result, err := LoadWithInfo()
+			if err != nil {
+				t.Fatalf("LoadWithInfo returned error: %v", err)
+			}
+			if result.Source != LoadSourceRemote {
+				t.Fatalf("Source = %q, want %q: the configured catalog was not used", result.Source, LoadSourceRemote)
+			}
+			if result.URL != catalogURL {
+				t.Fatalf("URL = %q, want %q", result.URL, catalogURL)
+			}
+			if _, ok := result.Catalog.Get("test/custom"); !ok {
+				t.Fatal("the configured catalog's model is missing")
+			}
+		})
+	}
+}
+
+// A whitespace-only override is no override: the default catalog is fetched,
+// as it is when the variable is unset, rather than an empty URL being refused.
+func TestLoadWithInfoTreatsABlankCatalogURLAsUnset(t *testing.T) {
+	t.Setenv(CatalogURLEnv, " \n")
+	t.Setenv(CatalogFetchTimeoutEnv, "0")
+
+	result, err := LoadWithInfo()
+	if err != nil {
+		t.Fatalf("LoadWithInfo returned error: %v", err)
+	}
+	if result.URL != defaultCatalogURL {
+		t.Fatalf("URL = %q, want the default %q", result.URL, defaultCatalogURL)
+	}
+}
+
 func TestLoadWithInfoFallsBackForInvalidOverrideURL(t *testing.T) {
 	t.Setenv(CatalogURLEnv, "file:///tmp/catalog.json")
 
