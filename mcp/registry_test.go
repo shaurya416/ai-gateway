@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"sync"
 	"testing"
+	"time"
 )
 
 // newMockServer builds a minimal MCP server exposing the given tools.
@@ -259,6 +260,87 @@ func TestRegistryWithdrawnServerReleasesItsToolNames(t *testing.T) {
 	// indexed only so its metric label survives (see boundedToolLabel).
 	if _, ok := reg.FindToolServer("solo_tool"); ok {
 		t.Error("solo_tool resolves although only the withdrawn server exposed it")
+	}
+}
+
+// listingClient advertises tools and answers every call. A non-nil gate holds
+// its handshake until the gate is closed.
+type listingClient struct {
+	countingClient
+	tools []Tool
+	gate  chan struct{}
+}
+
+func (c *listingClient) Initialize(ctx context.Context) (*ServerInfo, error) {
+	if c.gate != nil {
+		select {
+		case <-c.gate:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	return &ServerInfo{}, nil
+}
+
+func (c *listingClient) ListTools(context.Context) ([]Tool, error) { return c.tools, nil }
+
+// The same holds the other way round: a server that becomes ready after the
+// holder of a tool name was withdrawn takes the name. The handshake indexed by
+// registration order alone, so a backup finishing its handshake after the
+// primary had died left the name pointing at the dead primary: AllTools offered
+// the backup's tool, FindToolServer refused to resolve it, and the turn calling
+// it went back to the caller as tool_calls for a tool the caller never declared
+// — until the next configuration reload.
+func TestRegistryServerReadyAfterAWithdrawalTakesItsToolNames(t *testing.T) {
+	primary := &listingClient{tools: []Tool{{Name: "shared_tool"}}}
+	backup := &listingClient{tools: []Tool{{Name: "shared_tool"}}, gate: make(chan struct{})}
+
+	reg := NewRegistry(nil)
+	for _, s := range []struct {
+		name   string
+		client mcpClient
+	}{{"primary", primary}, {"backup", backup}} {
+		reg.serverIndex[s.name] = len(reg.regOrder)
+		reg.regOrder = append(reg.regOrder, s.name)
+		reg.servers[s.name] = &serverEntry{config: ServerConfig{Name: s.name}, client: s.client}
+	}
+
+	initDone := make(chan struct{})
+	go func() {
+		defer close(initDone)
+		reg.InitializeAll(context.Background(), func(name string, err error) {
+			t.Errorf("init %s: %v", name, err)
+		})
+	}()
+	waitUntil(t, 5*time.Second, "primary ready", func() bool { return reg.IsReady("primary") })
+	// The primary dies while the backup is still in its handshake.
+	reg.markUnready("primary", primary, errors.New("transport gone"))
+	close(backup.gate)
+	<-initDone
+
+	for _, tool := range reg.AllTools() {
+		if !reg.Owns(tool.Name) {
+			t.Errorf("AllTools advertises %q, which FindToolServer does not resolve", tool.Name)
+		}
+	}
+	client, ok := reg.FindToolServer("shared_tool")
+	if !ok {
+		t.Fatal("shared_tool does not resolve although the backup exposes it and is ready")
+	}
+	if client != mcpClient(backup) {
+		t.Error("shared_tool resolves to the withdrawn primary")
+	}
+
+	exec := NewExecutor(reg, 5, nil)
+	resp := toolCallResponse("shared_tool")
+	if !exec.ShouldContinueLoop(resp, 0) {
+		t.Fatal("the loop stops on a call to a tool a ready server exposes")
+	}
+	if _, err := exec.ResolvePendingToolCalls(context.Background(), resp); err != nil {
+		t.Fatalf("ResolvePendingToolCalls: %v", err)
+	}
+	if backup.callCount() != 1 || primary.callCount() != 0 {
+		t.Errorf("calls: backup %d, primary %d; want the backup to serve the call", backup.callCount(), primary.callCount())
 	}
 }
 

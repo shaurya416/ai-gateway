@@ -339,8 +339,9 @@ func (e *Executor) executeToolCall(ctx context.Context, tc core.ToolCall) core.M
 		// A broken pipe counts as much as a closed transport: it is the shape a
 		// death takes when a descendant still holds the pipes open, so the
 		// transport never noticed and the write failed instead. See
-		// isTransportDead for what deliberately does not qualify.
-		if isTransportDead(err) {
+		// isTransportDead for what deliberately does not qualify, and
+		// withdrawsOnDeadTransport for why an HTTP server never does.
+		if isTransportDead(err) && withdrawsOnDeadTransport(client) {
 			e.registry.markUnready(serverName, client, err)
 		}
 		metricToolCallsTotal.WithLabelValues(serverName, toolName, "error").Inc()

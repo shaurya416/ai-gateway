@@ -591,19 +591,25 @@ func (r *Registry) initServer(ctx context.Context, name string) error {
 	entry.ready = true
 	entry.initializing = false
 	entry.initErr = nil
-	// Populate toolMap using a first-registered-wins conflict policy.
-	// If the slot is vacant this server claims it. If another server already
-	// holds the slot we override only when our registration index is lower
-	// (i.e. we were registered earlier and therefore have higher priority).
+	// Populate toolMap using a first-registered-wins conflict policy among
+	// ready servers. If the slot is vacant this server claims it. If another
+	// server already holds the slot we override when our registration index is
+	// lower (i.e. we were registered earlier and therefore have higher
+	// priority), or when the holder has been withdrawn: a name markUnready could
+	// not hand to anyone stays pointing at the dead server, and keeping it there
+	// once this server can serve it left a tool AllTools advertises that
+	// FindToolServer refused to resolve.
 	ourIdx := r.serverIndex[name]
 	for _, t := range tools {
-		if existing, ok := r.toolMap[t.Name]; !ok {
+		existing, ok := r.toolMap[t.Name]
+		if !ok || existing == name {
 			r.toolMap[t.Name] = name
-		} else if existing != name && r.serverIndex[existing] > ourIdx {
-			// We have higher priority; take over the mapping.
+			continue
+		}
+		if holder, held := r.servers[existing]; !held || !holder.ready || r.serverIndex[existing] > ourIdx {
 			r.toolMap[t.Name] = name
 		}
-		// else: existing server has equal-or-higher priority; keep it.
+		// else: a ready server with equal-or-higher priority holds it; keep it.
 	}
 	r.mu.Unlock()
 

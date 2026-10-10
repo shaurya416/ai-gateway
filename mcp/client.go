@@ -367,15 +367,25 @@ func (c *Client) send(ctx context.Context, method string, params any, sid string
 
 	// Bound the success-path read: read one byte past the cap so an
 	// over-limit body is detected rather than silently truncated.
-	respBody, err := io.ReadAll(io.LimitReader(httpResp.Body, maxResponseBodyBytes+1))
-	if err != nil {
-		return nil, fmt.Errorf("mcp read body: %w", err)
+	respBody := io.LimitReader(httpResp.Body, maxResponseBodyBytes+1)
+	var rpcResp *JSONRPCResponse
+	if isEventStream(httpResp.Header.Get("Content-Type")) {
+		// A request the server sends while it works on the answer is replied to
+		// on the session this request named, or for initialize on the one its
+		// answer issues.
+		replySID := sid
+		if replySID == "" {
+			replySID = httpResp.Header.Get("Mcp-Session-Id")
+		}
+		rpcResp, err = readSSEResponse(respBody, func(data string) {
+			c.answerServerMessage(ctx, replySID, data)
+		})
+	} else {
+		rpcResp, err = readJSONResponse(respBody)
 	}
-	if len(respBody) > maxResponseBodyBytes {
+	if errors.Is(err, errResponseTooLarge) {
 		return nil, fmt.Errorf("mcp response from %s exceeds %d byte limit", method, maxResponseBodyBytes)
 	}
-
-	rpcResp, err := decodeRPCResponse(httpResp.Header.Get("Content-Type"), respBody)
 	if err != nil {
 		return nil, err
 	}
@@ -393,89 +403,120 @@ func (c *Client) send(ctx context.Context, method string, params any, sid string
 	return rpcResp, nil
 }
 
-// decodeRPCResponse decodes the response to a single JSON-RPC request from a
-// body that is either a JSON object or an SSE stream.
+// errResponseTooLarge reports a response body past maxResponseBodyBytes.
+var errResponseTooLarge = errors.New("mcp response exceeds the size limit")
+
+// readJSONResponse decodes the response to a single JSON-RPC request from a body
+// that is a JSON object. body yields at most one byte past
+// maxResponseBodyBytes, so an over-limit body is detected rather than silently
+// truncated.
+func readJSONResponse(body io.Reader) (*JSONRPCResponse, error) {
+	respBody, err := io.ReadAll(body)
+	if err != nil {
+		return nil, fmt.Errorf("mcp read body: %w", err)
+	}
+	if len(respBody) > maxResponseBodyBytes {
+		return nil, errResponseTooLarge
+	}
+	var rpcResp JSONRPCResponse
+	if err := json.Unmarshal(respBody, &rpcResp); err != nil {
+		return nil, fmt.Errorf("mcp response unmarshal: %w", err)
+	}
+	return &rpcResp, nil
+}
+
+// readSSEResponse reads the response to a single JSON-RPC request from an SSE
+// stream as it arrives, and returns the first event whose data decodes to a
+// JSON-RPC result or error. body yields at most one byte past
+// maxResponseBodyBytes, the same bound as a JSON body.
 //
 // Streamable HTTP lets a server answer a POSTed request either way, and the
 // Accept header above offers both, so both must be read: a spec-conformant
 // server that chose SSE would otherwise never get past the handshake.
 //
 // The stream carries the response to this request, possibly preceded by
-// requests and notifications the server initiated. Those answer nothing the
-// gateway asked, so the first EVENT carrying a result or an error is the one to
-// take. Anything else — a keep-alive comment, an event whose data is not JSON —
-// is skipped rather than treated as a protocol failure.
-func decodeRPCResponse(contentType string, body []byte) (*JSONRPCResponse, error) {
-	if !isEventStream(contentType) {
-		var rpcResp JSONRPCResponse
-		if err := json.Unmarshal(body, &rpcResp); err != nil {
-			return nil, fmt.Errorf("mcp response unmarshal: %w", err)
-		}
-		return &rpcResp, nil
-	}
-	if resp := decodeSSEResponse(body); resp != nil {
-		return resp, nil
-	}
-	return nil, errors.New("mcp sse response carried no result")
-}
-
-// decodeSSEResponse returns the first SSE event in body whose data decodes to a
-// JSON-RPC result or error, or nil when the stream carries none.
+// requests and notifications the server initiated. Every other event's data is
+// handed to onRequest as it arrives, which replies to it when it is a request:
+// a server may wait for that reply before it answers, and the official Go SDK
+// sends here any request a tool makes with its own context. Reading the whole
+// body before looking at it left such a server waiting on a reply the client
+// would send only once the server had finished, so the call stalled until a
+// timeout failed it. A keep-alive comment, a notification, or an event whose
+// data is not JSON needs no reply and is otherwise skipped rather than treated
+// as a protocol failure.
 //
-// It parses the already-buffered body directly instead of reaching for
-// core.SSEDataLines, for two reasons the shared helper cannot serve here:
+// The stream is still read to its end, so its connection can be reused.
+//
+// It parses the stream directly instead of reaching for core.SSEDataLines, for
+// two reasons the shared helper cannot serve here:
 //
 //   - That helper sizes a bufio.Scanner for a LIVE provider stream and caps a
-//     line at 1 MiB, while the body read above is capped at 10 MiB. An MCP
-//     result is one JSON document on one line — an embedded image or a large
-//     file read is routinely megabytes — so the two caps disagreed, and the same
-//     tool result succeeded as JSON and failed as SSE at 1 MiB. Raising the
-//     shared cap is not the fix: six provider streaming paths share it, and it
-//     is their per-stream memory bound against an untrusted upstream. Here the
-//     whole body is already in memory and already bounded, so a second, smaller
-//     bound buys nothing.
+//     line at 1 MiB, while this body is capped at 10 MiB. An MCP result is one
+//     JSON document on one line — an embedded image or a large file read is
+//     routinely megabytes — so the two caps disagreed, and the same tool result
+//     succeeded as JSON and failed as SSE at 1 MiB. Raising the shared cap is
+//     not the fix: six provider streaming paths share it, and it is their
+//     per-stream memory bound against an untrusted upstream. Here the body as a
+//     whole is already bounded, so a second, smaller bound buys nothing.
 //   - Per the SSE spec an event's data field may span several data: lines, which
 //     are joined with newlines before dispatch. Decoding each line on its own
 //     rejected a split response entirely.
-func decodeSSEResponse(body []byte) *JSONRPCResponse {
-	var data []string
+func readSSEResponse(body io.Reader, onRequest func(data string)) (*JSONRPCResponse, error) {
+	var (
+		resp *JSONRPCResponse
+		data []string
+		read int
+	)
 
-	// dispatch decodes the accumulated data field of one event and clears it.
-	dispatch := func() *JSONRPCResponse {
+	// dispatch handles the accumulated data field of one event and clears it.
+	dispatch := func() {
 		joined := strings.Join(data, "\n")
 		data = data[:0]
 		var rpcResp JSONRPCResponse
-		if err := json.Unmarshal([]byte(joined), &rpcResp); err != nil {
-			return nil
+		if err := json.Unmarshal([]byte(joined), &rpcResp); err == nil && (rpcResp.Result != nil || rpcResp.Error != nil) {
+			if resp == nil {
+				resp = &rpcResp
+			}
+			return
 		}
-		if rpcResp.Result == nil && rpcResp.Error == nil {
-			return nil
-		}
-		return &rpcResp
+		onRequest(joined)
 	}
 
-	for raw := range strings.Lines(string(body)) {
+	br := bufio.NewReader(body)
+	for {
+		raw, err := br.ReadString('\n')
+		read += len(raw)
+		if read > maxResponseBodyBytes {
+			return nil, errResponseTooLarge
+		}
 		line := strings.TrimRight(raw, "\r\n")
-		if line == "" { // a blank line dispatches the event
-			if resp := dispatch(); resp != nil {
-				return resp
+		if line == "" {
+			if raw != "" && len(data) > 0 { // a blank line dispatches the event
+				dispatch()
 			}
-			continue
+		} else if value, ok := strings.CutPrefix(line, "data:"); ok {
+			// The SSE spec strips a single optional space after the colon.
+			data = append(data, strings.TrimPrefix(value, " "))
 		}
-		value, ok := strings.CutPrefix(line, "data:")
-		if !ok { // a comment, or a field the gateway does not use
-			continue
+		// Anything else is a comment, or a field the gateway does not use.
+
+		if errors.Is(err, io.EOF) {
+			break
 		}
-		// The SSE spec strips a single optional space after the colon.
-		data = append(data, strings.TrimPrefix(value, " "))
+		if err != nil {
+			return nil, fmt.Errorf("mcp read body: %w", err)
+		}
 	}
 	// The spec discards an event that no blank line terminated. Dispatch it
 	// anyway: a server that ends its body straight after the last data: line has
 	// still delivered the answer, and the stricter reading would fail the call.
 	if len(data) > 0 {
-		return dispatch()
+		dispatch()
 	}
-	return nil
+	if resp == nil {
+		return nil, errors.New("mcp sse response carried no result")
+	}
+	return resp, nil
 }
 
 // isEventStream reports whether a Content-Type names the SSE media type,

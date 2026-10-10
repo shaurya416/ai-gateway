@@ -47,8 +47,28 @@ type pinger interface {
 // Nothing else belongs here. A timeout, a refused connection, or a malformed
 // frame can all resolve on their own, and withdrawing a server is terminal
 // until the next configuration reload.
+//
+// Both readings are about a stdio pipe. An HTTP client's error can carry EPIPE
+// too, and means less there — see withdrawsOnDeadTransport.
 func isTransportDead(err error) bool {
 	return errors.Is(err, transport.ErrTransportClosed) ||
 		errors.Is(err, syscall.EPIPE) ||
 		errors.Is(err, io.ErrClosedPipe)
+}
+
+// withdrawsOnDeadTransport reports whether a dead transport is grounds for
+// withdrawing the server behind it.
+//
+// It is for stdio, whose pipes are the server process: once they break, the
+// process has gone. It is not for the HTTP transport. net/http reports a
+// connection the server reset mid-upload — a server restarting, or a proxy
+// refusing a large body — as a write that failed with EPIPE in a share of
+// cases, and that connection is all it speaks for: the next request opens
+// another. Nothing re-initializes a withdrawn server, so withdrawing on it took
+// the server's tools away until the next configuration reload and, for a
+// required server, held /readyz at 503 while the server was answering again.
+// Death after the handshake is detected for stdio servers only.
+func withdrawsOnDeadTransport(c mcpClient) bool {
+	_, isHTTP := c.(*Client)
+	return !isHTTP
 }

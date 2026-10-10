@@ -1759,6 +1759,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   calls of a turn that ended the request at once — a budget refusing the next
   turn, a provider failing fast — were left with no audit record. The context
   keeps the request's values, as the gateway's event hooks already do.
+- An HTTP MCP server is no longer withdrawn by one broken connection. A tool
+  call whose connection the server reset mid-upload — the server restarting,
+  or a proxy refusing a large body — fails in some cases with a broken-pipe
+  write error, which is how a stdio server's death shows, and the executor
+  withdrew the server on it: its tools stopped being advertised and, since
+  nothing re-initializes a server once withdrawn, stayed that way until the
+  next configuration reload, holding `/readyz` at `503` for a `required`
+  server that was answering again within seconds. The call still fails, and
+  the next one is sent to the server as before. Death after the handshake is
+  detected for stdio servers only, as documented.
+- An MCP tool that a server shares with another is no longer left
+  unresolvable when the first server is withdrawn before the second finishes
+  its handshake. Tool names were indexed by registration order alone, so the
+  name stayed with the withdrawn server: the model was offered the tool, the
+  gateway could not run it, and the response went back to the caller as
+  `tool_calls` for a tool it had never declared, until the next configuration
+  reload. A server that becomes ready now takes a tool name from a withdrawn
+  holder, as a withdrawal already hands it to a ready one.
+- An HTTP MCP server that sends a request of its own while answering a tool
+  call — a `ping`, or a `roots/list` — now has it answered, and the tool call
+  completes. A server answering over SSE may send requests on that stream ahead
+  of the answer, and the official Go SDK sends there any request a tool makes
+  with its request's context; the gateway read the whole stream before looking
+  at it, so a server waiting for the reply could not finish, and the call
+  stalled until a timeout failed it, though the same tool served over stdio was
+  answered at once. Such a request is now answered as it arrives, as on the
+  session's event stream: `ping` with an empty result, anything else refused
+  as an unknown method.
 - A chat, Responses or embeddings request whose provider reported no token
   usage is recorded unpriced instead of as a priced $0.00. Cost calculation
   marked such a request priced whenever the catalog carried the model's rate,
