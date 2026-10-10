@@ -83,6 +83,13 @@ func (p *cbProvider) Complete(ctx context.Context, req providers.Request) (resp 
 //     an answer from the provider. Blamed, a few oversized uploads from one
 //     caller opened the circuit and refused every caller's traffic to a healthy
 //     target; it is named here for the same reason as the rejection above.
+//   - A provider's typed statement that the prompt exceeded its context window
+//     (providers.IsContextLengthError) is about the prompt, not the target: the
+//     target answered at once and serves every prompt that fits. Pool modes fail
+//     such a request over to a sibling with a larger window; counting it here let
+//     a run of long prompts — or any caller sending a few on purpose — open the
+//     circuit and take every request, short ones included, off a healthy
+//     target. It has no error_type of its own either, so it is named here too.
 //   - Rate limits are expected and temporary, and stay excluded.
 func shouldRecordCircuitBreakerFailure(ctx context.Context, err error) bool {
 	if err == nil {
@@ -95,6 +102,9 @@ func shouldRecordCircuitBreakerFailure(ctx context.Context, err error) bool {
 	}
 	var tooLarge *http.MaxBytesError
 	if errors.As(err, &tooLarge) {
+		return false
+	}
+	if providers.IsContextLengthError(err) {
 		return false
 	}
 

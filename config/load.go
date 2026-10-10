@@ -720,6 +720,19 @@ func validateContentConditions(conditions []ContentCondition, targets []Target) 
 			return fmt.Errorf("content_conditions[%d]: unknown type %q; valid types: %s",
 				i, c.Type, strings.Join(ContentConditionTypes(), ", "))
 		}
+		// The same hole an empty model_prefix was: every string contains the
+		// empty string and the empty pattern matches every prompt, so an empty
+		// prompt_contains or prompt_regex swallows every rule below it, and an
+		// empty prompt_not_contains can match no prompt at all. An omitted
+		// `value` decodes to exactly this, and nothing at request time says why
+		// the routing collapsed. A deliberate catch-all is written as ".*".
+		if c.Value == "" {
+			effect := "matches every prompt"
+			if c.Type == ContentConditionPromptNotContains {
+				effect = "matches no prompt"
+			}
+			return fmt.Errorf("content_conditions[%d]: type %q requires a non-empty value; an empty value %s", i, c.Type, effect)
+		}
 		if c.Type == ContentConditionPromptRegex {
 			if _, err := regexp.Compile(c.Value); err != nil {
 				return fmt.Errorf("content_conditions[%d]: invalid regex %q: %w", i, c.Value, err)

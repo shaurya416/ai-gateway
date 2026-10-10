@@ -27,6 +27,7 @@ package streamwrap
 import (
 	"cmp"
 	"context"
+	"slices"
 	"time"
 
 	"github.com/ferro-labs/ai-gateway/internal/events"
@@ -273,6 +274,9 @@ func Meter(ctx context.Context, src <-chan providers.StreamChunk, start time.Tim
 			Provider: meta.Provider,
 			Model:    meta.Model,
 		}
+		// choiceSlots indexes resp.Choices by stream index once a stream opens
+		// its choices out of order; nil for every dense stream. See choiceAt.
+		var choiceSlots map[int]int
 
 	loop:
 		for {
@@ -326,7 +330,7 @@ func Meter(ctx context.Context, src <-chan providers.StreamChunk, start time.Tim
 			if chunk.Usage != nil && (chunk.Usage.TotalTokens > 0 || chunk.Usage.PromptTokens > 0) {
 				usage = *chunk.Usage
 			}
-			applyChunkToResponse(&resp, chunk)
+			applyChunkToResponse(&resp, &choiceSlots, chunk)
 			if chunk.Error != nil {
 				streamErr = chunk.Error
 			}
@@ -387,6 +391,7 @@ func Meter(ctx context.Context, src <-chan providers.StreamChunk, start time.Tim
 			return
 		}
 
+		sortChoices(&resp, choiceSlots)
 		resp.Usage = usage
 		if resp.Usage.TotalTokens == 0 {
 			resp.Usage.TotalTokens = resp.Usage.PromptTokens + resp.Usage.CompletionTokens
@@ -603,7 +608,10 @@ func finishStreamOnSuccess(
 	}
 }
 
-func applyChunkToResponse(resp *providers.Response, chunk providers.StreamChunk) {
+// applyChunkToResponse folds one chunk into the response assembled for the
+// after_request stage. slots is the assembly's index of choices by their stream
+// index; see choiceAt.
+func applyChunkToResponse(resp *providers.Response, slots *map[int]int, chunk providers.StreamChunk) {
 	if chunk.ID != "" && resp.ID == "" {
 		resp.ID = chunk.ID
 	}
@@ -615,15 +623,7 @@ func applyChunkToResponse(resp *providers.Response, chunk providers.StreamChunk)
 		if idx < 0 {
 			continue
 		}
-		for len(resp.Choices) <= idx {
-			resp.Choices = append(resp.Choices, providers.Choice{
-				Index: len(resp.Choices),
-				Message: providers.Message{
-					Role: "assistant",
-				},
-			})
-		}
-		choice := &resp.Choices[idx]
+		choice := choiceAt(resp, slots, idx)
 		if streamChoice.Delta.Role != "" {
 			choice.Message.Role = streamChoice.Delta.Role
 		}
@@ -635,6 +635,52 @@ func applyChunkToResponse(resp *providers.Response, chunk providers.StreamChunk)
 			choice.FinishReason = streamChoice.FinishReason
 		}
 	}
+}
+
+// choiceAt returns the assembled choice the stream addresses as idx, adding it
+// on its first fragment.
+//
+// Storage follows the choices a stream actually carries, never the index value.
+// The index is an integer the upstream writes, and growing the slice up to it let
+// a single short frame naming index 1<<26 allocate gigabytes. Every real stream
+// opens its choices densely from 0, which is answered by position with no
+// lookup; slots is built only for a stream that does not, and from then on
+// locates each choice by its index. sortChoices restores index order at the end.
+func choiceAt(resp *providers.Response, slots *map[int]int, idx int) *providers.Choice {
+	if *slots == nil {
+		if idx < len(resp.Choices) {
+			return &resp.Choices[idx]
+		}
+		if idx == len(resp.Choices) {
+			resp.Choices = append(resp.Choices, assembledChoice(idx))
+			return &resp.Choices[idx]
+		}
+		*slots = make(map[int]int, len(resp.Choices)+1)
+		for i := range resp.Choices {
+			(*slots)[i] = i
+		}
+	}
+	if i, ok := (*slots)[idx]; ok {
+		return &resp.Choices[i]
+	}
+	(*slots)[idx] = len(resp.Choices)
+	resp.Choices = append(resp.Choices, assembledChoice(idx))
+	return &resp.Choices[len(resp.Choices)-1]
+}
+
+// assembledChoice is the empty choice a stream's first fragment for idx opens.
+func assembledChoice(idx int) providers.Choice {
+	return providers.Choice{Index: idx, Message: providers.Message{Role: "assistant"}}
+}
+
+// sortChoices puts the assembled choices in index order. A dense stream is in
+// order already and slots is nil, so only a stream that opened its choices out
+// of order is sorted.
+func sortChoices(resp *providers.Response, slots map[int]int) {
+	if slots == nil {
+		return
+	}
+	slices.SortFunc(resp.Choices, func(a, b providers.Choice) int { return cmp.Compare(a.Index, b.Index) })
 }
 
 // mergeToolCallDelta folds one streaming tool-call fragment into calls. The

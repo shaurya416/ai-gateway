@@ -3,6 +3,8 @@ package aigateway
 import (
 	"context"
 	"errors"
+	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -429,6 +431,19 @@ func TestShouldRecordCircuitBreakerFailure(t *testing.T) {
 			want: true,
 		},
 		{
+			name: "prompt longer than the provider's context window",
+			ctx:  context.Background(),
+			err:  core.APIError("openai", http.StatusBadRequest, []byte(contextLengthBody)),
+			want: false,
+		},
+		{
+			// Only the typed overflow is exonerated: any other 400 still counts.
+			name: "other provider 400",
+			ctx:  context.Background(),
+			err:  core.APIError("openai", http.StatusBadRequest, []byte(`{"error":{"message":"Invalid value for 'temperature'","type":"invalid_request_error","code":null}}`)),
+			want: true,
+		},
+		{
 			// The regression: cancellation was inferred from the ERROR's wrapped
 			// sentinel rather than from the context. A provider or SDK that reports
 			// a client disconnect in its own words — no context.Canceled in the
@@ -644,6 +659,119 @@ func TestShouldRecordCircuitBreakerFailure_ClientErrorNeverBlamesProvider(t *tes
 	if shouldRecordCircuitBreakerFailure(context.Background(), err) {
 		t.Error("a reject-mode unsupported-parameter error is a client error; it must not trip the provider circuit")
 	}
+}
+
+// contextLengthBody is the OpenAI envelope for a prompt longer than the model's
+// context window — the typed error core.IsContextLengthError recognises.
+const contextLengthBody = `{"error":{"message":"This model's maximum context length is 8192 tokens.","type":"invalid_request_error","code":"context_length_exceeded"}}`
+
+// TestGateway_ContextLengthOverflowDoesNotOpenTheCircuit guards the target a
+// long prompt overflowed. The overflow is a statement about the PROMPT: the
+// target answered at once, and every prompt that fits its window it serves as
+// before. Pool modes fail such a request over to a sibling whose window is
+// larger, which is the design — but counting each overflow toward the breaker
+// meant failure_threshold long prompts in a row opened the small target's
+// circuit, and every request after that, short ones included, was taken away
+// from a healthy target. Any caller could do it on purpose with a handful of
+// oversized prompts. The stream start path resolves the same admission and is
+// covered alongside chat.
+func TestGateway_ContextLengthOverflowDoesNotOpenTheCircuit(t *testing.T) {
+	const window = 16 // prompt characters the small target's model accepts
+	overflow := func(name string, req providers.Request) error {
+		if len(req.Messages[0].Content) > window {
+			return core.APIError(name, http.StatusBadRequest, []byte(contextLengthBody))
+		}
+		return nil
+	}
+	cfg := config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeFallback},
+		Targets: []config.Target{
+			{VirtualKey: "small", CircuitBreaker: &config.CircuitBreakerConfig{FailureThreshold: 2, Timeout: "1h"}},
+			{VirtualKey: "large"},
+		},
+	}
+	long := pipelineRequest()
+	long.Messages[0].Content = strings.Repeat("x", 4*window)
+	short := pipelineRequest()
+
+	t.Run("chat", func(t *testing.T) {
+		gw, err := newTestGateway(t, cfg)
+		if err != nil {
+			t.Fatalf("new gateway: %v", err)
+		}
+		gw.RegisterProvider(&mockProvider{name: "small", models: []string{pipelineModel},
+			completeFn: func(_ context.Context, req providers.Request) (*providers.Response, error) {
+				if err := overflow("small", req); err != nil {
+					return nil, err
+				}
+				return &providers.Response{ID: "served-by-small", Model: pipelineModel}, nil
+			}})
+		gw.RegisterProvider(&mockProvider{name: "large", models: []string{pipelineModel},
+			resp: &providers.Response{ID: "served-by-large", Model: pipelineModel}})
+
+		for i := range 3 {
+			resp, err := gw.Route(context.Background(), long)
+			if err != nil || resp.ID != "served-by-large" {
+				t.Fatalf("long prompt %d: resp=%v err=%v, want the larger window to serve it", i, resp, err)
+			}
+		}
+		resp, err := gw.Route(context.Background(), short)
+		if err != nil || resp.ID != "served-by-small" {
+			t.Fatalf("short prompt: resp=%v err=%v, want the small target to serve it: overflowing prompts opened its circuit", resp, err)
+		}
+	})
+
+	t.Run("stream", func(t *testing.T) {
+		gw, err := newTestGateway(t, cfg)
+		if err != nil {
+			t.Fatalf("new gateway: %v", err)
+		}
+		streamFrom := func(id string) (<-chan providers.StreamChunk, error) {
+			ch := make(chan providers.StreamChunk, 1)
+			ch <- providers.StreamChunk{ID: id, Model: pipelineModel}
+			close(ch)
+			return ch, nil
+		}
+		gw.RegisterProvider(&mockStreamProvider{
+			mockProvider: mockProvider{name: "small", models: []string{pipelineModel}},
+			streamFn: func(_ context.Context, req providers.Request) (<-chan providers.StreamChunk, error) {
+				if err := overflow("small", req); err != nil {
+					return nil, err
+				}
+				return streamFrom("served-by-small")
+			},
+		})
+		gw.RegisterProvider(&mockStreamProvider{
+			mockProvider: mockProvider{name: "large", models: []string{pipelineModel}},
+			streamFn: func(context.Context, providers.Request) (<-chan providers.StreamChunk, error) {
+				return streamFrom("served-by-large")
+			},
+		})
+
+		firstID := func(req providers.Request) string {
+			t.Helper()
+			req.Stream = true
+			ch, err := gw.RouteStream(context.Background(), req)
+			if err != nil {
+				t.Fatalf("RouteStream: %v", err)
+			}
+			id := ""
+			for chunk := range ch {
+				if id == "" {
+					id = chunk.ID
+				}
+			}
+			return id
+		}
+		for i := range 3 {
+			if id := firstID(long); id != "served-by-large" {
+				t.Fatalf("long prompt %d served by %q, want the larger window", i, id)
+			}
+		}
+		if id := firstID(short); id != "served-by-small" {
+			t.Fatalf("short prompt served by %q, want the small target: overflowing prompts opened its circuit", id)
+		}
+	})
 }
 
 // TestGateway_WithTargetBreaker_PanicDoesNotStrandHalfOpenProbe pins the panic

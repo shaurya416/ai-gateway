@@ -359,6 +359,52 @@ func TestValidateStrategy_ValueShape(t *testing.T) {
 				Targets: twoTargets(),
 			},
 		},
+		// ── An empty content_conditions value is the model_prefix hole on the
+		// content-based mode: every prompt contains the empty string and the
+		// empty pattern matches every prompt, so the rule swallows every rule
+		// below it — or, negated, can match no prompt. An omitted `value`
+		// decodes to exactly this.
+		{
+			name: "content-based empty prompt_contains",
+			cfg: Config{
+				Strategy: StrategyConfig{Mode: ModeContentBased, ContentConditions: []ContentCondition{
+					{Type: ContentConditionPromptContains, TargetKey: "groq"},
+					{Type: ContentConditionPromptContains, Value: "python", TargetKey: "openai"},
+				}},
+				Targets: twoTargets(),
+			},
+			wantErr: `content_conditions[0]: type "prompt_contains" requires a non-empty value; an empty value matches every prompt`,
+		},
+		{
+			name: "content-based empty prompt_regex",
+			cfg: Config{
+				Strategy: StrategyConfig{Mode: ModeContentBased, ContentConditions: []ContentCondition{
+					{Type: ContentConditionPromptRegex, Value: "", TargetKey: "groq"},
+				}},
+				Targets: twoTargets(),
+			},
+			wantErr: `content_conditions[0]: type "prompt_regex" requires a non-empty value; an empty value matches every prompt`,
+		},
+		{
+			name: "content-based empty prompt_not_contains",
+			cfg: Config{
+				Strategy: StrategyConfig{Mode: ModeContentBased, ContentConditions: []ContentCondition{
+					{Type: ContentConditionPromptNotContains, Value: "", TargetKey: "groq"},
+				}},
+				Targets: twoTargets(),
+			},
+			wantErr: `content_conditions[0]: type "prompt_not_contains" requires a non-empty value; an empty value matches no prompt`,
+		},
+		{
+			name: "content-based explicit catch-all regex is legal",
+			cfg: Config{
+				Strategy: StrategyConfig{Mode: ModeContentBased, ContentConditions: []ContentCondition{
+					{Type: ContentConditionPromptContains, Value: "python", TargetKey: "openai"},
+					{Type: ContentConditionPromptRegex, Value: ".*", TargetKey: "groq"},
+				}},
+				Targets: twoTargets(),
+			},
+		},
 		// ── v1.5.5 · two arms carrying one label split traffic correctly and
 		// are indistinguishable in every record attribution writes. Compared
 		// case-insensitively: `control` and `Control` are one arm to anyone

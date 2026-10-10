@@ -405,7 +405,9 @@ type ContentCondition struct {
 	// Type is the matching rule type. It must be one of ContentConditionType*;
 	// see Condition.Key for why the set is closed.
 	Type string `json:"type" yaml:"type"`
-	// Value is the substring or regex pattern to match against.
+	// Value is the substring or regex pattern to match against. It must be
+	// non-empty: an empty one matches every prompt, or none when negated. A
+	// deliberate catch-all is the pattern ".*".
 	Value string `json:"value" yaml:"value"`
 	// TargetKey is the virtual_key of the provider to route to when this rule
 	// matches. It must name one of the configured targets. Sugar for a

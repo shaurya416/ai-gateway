@@ -141,6 +141,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   clamped: `10`, meant as ten percent, sampled every trace, and a negative
   ratio sampled none while tracing reported itself enabled. Both are now
   `ferrogw validate` and startup errors naming the value.
+- A prompt longer than a target's context window no longer counts against that
+  target's circuit breaker. Pool modes fail such a request over to a sibling
+  whose model has a larger window, but the provider's `context_length_exceeded`
+  answer was scored as a target failure, so `failure_threshold` long prompts in
+  a row opened the circuit of a target that was serving every prompt that fit:
+  from then on short prompts were taken off it too — sent to the sibling, or
+  answered `503` where no sibling serves the model — and any caller could do
+  the same on purpose with a few oversized prompts. A provider's typed
+  context-window refusal (`core.IsContextLengthError`) is now excluded from the
+  breaker, as an unsupported-parameter rejection already was, on every surface
+  and on the stream start; every other `400` still counts.
+- `strategy.content_conditions[].value` must now be non-empty. An omitted
+  `value` decoded to the empty string and loaded clean, but every prompt
+  contains the empty string and the empty pattern matches every prompt, so an
+  empty `prompt_contains` or `prompt_regex` rule caught every request with a
+  user message and swallowed every rule below it — routing collapsed to that
+  rule's target with nothing in the config, logs or traces saying why — and an
+  empty `prompt_not_contains` rule could match no such request at all. It is
+  the hole an empty `model_prefix` was on `conditional`, refused at load the
+  same way; a deliberate catch-all is written `prompt_regex: ".*"`. A stored
+  config carrying an empty value no longer loads or re-activates.
+- A streamed chat chunk's choice `index` no longer decides how much memory the
+  gateway allocates. The response assembled from a stream for the
+  `after_request` stage — the one the response cache stores and the request log
+  records — grew its choice list up to whatever index the upstream wrote, so a
+  single short frame naming index 1048576 allocated about 900 MB, and an index a
+  few hundred times larger could exhaust memory and take the process down for
+  every tenant. Choices are now assembled as the stream carries them, in index
+  order; a stream that skips an index no longer gains an empty placeholder
+  choice for it, and a stream whose choices run 0, 1, 2… is assembled exactly as
+  before.
 - A transcription or translation request (`/v1/audio/transcriptions`,
   `/v1/audio/translations`) for a model the catalog prices per minute of audio
   — `whisper-1` among them — is now recorded as unpriced instead of as a known
