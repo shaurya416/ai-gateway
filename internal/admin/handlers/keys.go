@@ -182,7 +182,11 @@ func (h *Handlers) createKey(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handlers) listKeys(w http.ResponseWriter, r *http.Request) {
-	keys := h.Keys.List(r.Context())
+	keys, err := h.Keys.List(r.Context())
+	if err != nil {
+		writeKeyStoreError(w, err)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(keys)
 }
@@ -239,8 +243,13 @@ func (h *Handlers) keyUsage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	allKeys, err := h.Keys.List(r.Context())
+	if err != nil {
+		writeKeyStoreError(w, err)
+		return
+	}
 	filteredKeys := make([]*model.APIKey, 0)
-	for _, key := range h.Keys.List(r.Context()) {
+	for _, key := range allKeys {
 		if activeFilter != "" {
 			requireActive := activeFilter == "true"
 			if key.Active != requireActive {

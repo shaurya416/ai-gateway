@@ -170,7 +170,7 @@ func (s *KeyStore) Lookup(ctx context.Context, id string) (*model.APIKey, error)
 // the dashboard's key table under a poll that changed nothing. The order matches
 // SQLStore.List's ORDER BY exactly (see keyListOrder), so switching backends
 // does not switch what the Admin API serves.
-func (s *KeyStore) List(_ context.Context) []*model.APIKey {
+func (s *KeyStore) List(_ context.Context) ([]*model.APIKey, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	keys := make([]*model.APIKey, 0, len(s.byID))
@@ -183,7 +183,8 @@ func (s *KeyStore) List(_ context.Context) []*model.APIKey {
 		}
 		return keys[i].ID > keys[j].ID
 	})
-	return keys
+	// The map cannot fail to answer, so there is never an error to report.
+	return keys, nil
 }
 
 // IsEmpty reports whether the store holds no API keys.

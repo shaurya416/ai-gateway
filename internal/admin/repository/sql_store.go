@@ -234,15 +234,19 @@ func (s *SQLStore) Lookup(ctx context.Context, id string) (*model.APIKey, error)
 // present the same keys differently.
 const keyListOrder = ` ORDER BY created_at DESC, id DESC`
 
-// List returns all API keys. The signature carries no error (fixed by the
-// admin.Store interface), so a database failure cannot be returned — it is
-// logged instead, and the partial or empty result is returned rather than being
-// presented as an authoritative empty key list.
-func (s *SQLStore) List(ctx context.Context) []*model.APIKey {
+// List returns all API keys. A query that fails, or a result set that breaks off
+// part way, is returned as an error: an empty or truncated list is exactly what a
+// store with fewer keys would return, so handing one back as the answer told an
+// operator their keys were gone.
+//
+// A single row that cannot be decoded is still skipped and logged. That row
+// cannot authenticate either — ValidateKey decodes it the same way — so leaving
+// it out describes the store's working keys, and refusing the whole list would
+// leave every other key unmanageable over one bad row.
+func (s *SQLStore) List(ctx context.Context) ([]*model.APIKey, error) {
 	rows, err := s.db.QueryContext(ctx, keyRowSelect+keyListOrder)
 	if err != nil {
-		logger.Default().Warn("admin key list: query failed", "error", err)
-		return []*model.APIKey{}
+		return nil, fmt.Errorf("list keys: %w", err)
 	}
 	defer func() {
 		_ = rows.Close()
@@ -258,9 +262,9 @@ func (s *SQLStore) List(ctx context.Context) []*model.APIKey {
 		keys = append(keys, k)
 	}
 	if err := rows.Err(); err != nil {
-		logger.Default().Warn("admin key list: iteration error", "error", err)
+		return nil, fmt.Errorf("list keys: %w", err)
 	}
-	return keys
+	return keys, nil
 }
 
 // Revoke marks an API key as inactive and records the revocation timestamp.

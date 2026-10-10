@@ -61,7 +61,11 @@ func newPostgresGuardStore(t *testing.T) repository.Store {
 	}
 	// Start from an empty api_keys table. The store's internal *sql.DB is not
 	// reachable from this package, so clear it through the exported API.
-	for _, k := range store.List(t.Context()) {
+	existing, err := store.List(t.Context())
+	if err != nil {
+		t.Fatalf("list api_keys: %v", err)
+	}
+	for _, k := range existing {
 		if err := store.Delete(t.Context(), k.ID); err != nil {
 			t.Fatalf("reset api_keys: %v", err)
 		}

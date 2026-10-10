@@ -8,6 +8,7 @@ import (
 	"github.com/ferro-labs/ai-gateway/internal/admin/model"
 	"github.com/ferro-labs/ai-gateway/internal/requestlog"
 	"github.com/ferro-labs/ai-gateway/models"
+	"github.com/ferro-labs/ai-gateway/pkg/logger"
 	"github.com/ferro-labs/ai-gateway/providers"
 )
 
@@ -48,7 +49,14 @@ func (h *Handlers) dashboard(w http.ResponseWriter, r *http.Request) {
 	providerEntries, availableProviders := h.listProviderStatus()
 	providersCount := len(providerEntries)
 
-	keys := h.Keys.List(r.Context())
+	// A key store that cannot be read fails the summary rather than reporting
+	// zero keys, exactly as an unreadable request log does below.
+	keys, err := h.Keys.List(r.Context())
+	if err != nil {
+		logger.Default().Error("admin dashboard: key list failed", "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to load dashboard summary", "server_error", "internal_error")
+		return
+	}
 	activeKeys := 0
 	expiredKeys := 0
 	totalUsage := int64(0)

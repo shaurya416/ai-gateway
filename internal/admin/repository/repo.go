@@ -29,7 +29,9 @@ type Store interface {
 	// any other error means the store could not answer. Get folds both into
 	// false, which is safe only where false already denies.
 	Lookup(ctx context.Context, id string) (*model.APIKey, error)
-	List(ctx context.Context) []*model.APIKey
+	// List returns every stored key. An error means the store could not be
+	// read, which a caller must not present as a store holding no keys.
+	List(ctx context.Context) ([]*model.APIKey, error)
 	// IsEmpty reports whether the store holds no keys. It returns an error
 	// rather than a bare bool so callers can distinguish "no keys" from a
 	// store that could not answer.

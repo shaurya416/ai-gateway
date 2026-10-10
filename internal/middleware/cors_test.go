@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	aigateway "github.com/ferro-labs/ai-gateway"
 	"github.com/ferro-labs/ai-gateway/internal/handler"
 	"github.com/ferro-labs/ai-gateway/pkg/logger"
 )
@@ -329,6 +330,50 @@ func TestCORS_PreflightAllowsEveryRequestHeaderTheGatewayReads(t *testing.T) {
 		if !allowed[strings.ToLower(header)] {
 			t.Errorf("preflight does not allow %s, so the browser blocks the request", header)
 		}
+	}
+}
+
+// TestCORS_ExposesTheResponseHeadersTheGatewaySets verifies that a browser
+// application on the allowlist can read the headers the gateway answers with.
+// A cross-origin script sees only the CORS-safelisted response headers unless
+// the rest are named in Access-Control-Expose-Headers, so without it every one
+// of these read as null: the attribution headers every routed surface returns,
+// the request id a support ticket quotes, and the Retry-After a client's
+// backoff reads on a 429.
+func TestCORS_ExposesTheResponseHeadersTheGatewaySets(t *testing.T) {
+	set := []string{
+		logger.RequestIDHeader,
+		aigateway.HeaderGatewayProvider,
+		aigateway.HeaderGatewayTarget,
+		aigateway.HeaderGatewayModel,
+		aigateway.HeaderGatewayAttempts,
+		"X-Gateway-Overhead-Ms",
+		"Retry-After",
+	}
+
+	h := CORS("https://app.example")(dummyHandler)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/chat/completions", nil)
+	req.Header.Set("Origin", "https://app.example")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	exposed := make(map[string]bool)
+	for _, header := range strings.Split(rec.Header().Get("Access-Control-Expose-Headers"), ",") {
+		exposed[strings.ToLower(strings.TrimSpace(header))] = true
+	}
+	for _, header := range set {
+		if !exposed[strings.ToLower(header)] {
+			t.Errorf("%s is not exposed, so a cross-origin caller reads it as null", header)
+		}
+	}
+
+	// An origin that is not allowed learns nothing more than it did before.
+	denied := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/chat/completions", nil)
+	denied.Header.Set("Origin", "https://attacker.example")
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, denied)
+	if got := rec.Header().Get("Access-Control-Expose-Headers"); got != "" {
+		t.Errorf("Access-Control-Expose-Headers = %q for a disallowed origin, want none", got)
 	}
 }
 

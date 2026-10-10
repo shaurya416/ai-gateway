@@ -602,3 +602,48 @@ func TestCompletionsHandler_ShimResponseIncludesCreatedAndNullLogprobs(t *testin
 		t.Fatalf("logprobs = %v, want null", logprobs)
 	}
 }
+
+// TestCompletionsHandler_ForwardsChatExpressibleParams pins that every legacy
+// field the chat surface can express reaches the provider. logit_bias was
+// decoded and then left off the chat request, so a request banning or forcing
+// tokens — the usual way to hold a one-token classification to its labels —
+// was answered 200 as though it had asked for nothing.
+func TestCompletionsHandler_ForwardsChatExpressibleParams(t *testing.T) {
+	p := &nonProxyProvider{name: "shim", models: []string{legacyTestModel}}
+	gw := shimGateway(t, p)
+	w := postCompletions(t, gw, `{"model":"`+legacyTestModel+`","prompt":"hi",`+
+		`"max_tokens":7,"temperature":0.5,"top_p":0.9,"n":2,"presence_penalty":0.1,`+
+		`"frequency_penalty":0.2,"seed":42,"user":"u-1","logit_bias":{"50256":-100,"1234":5}}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+	}
+
+	got := p.lastReq
+	if limit, ok := got.EffectiveMaxTokens(); !ok || limit != 7 {
+		t.Errorf("completion ceiling = %d (set %v), want 7", limit, ok)
+	}
+	if got.Temperature == nil || *got.Temperature != 0.5 {
+		t.Errorf("temperature = %v, want 0.5", got.Temperature)
+	}
+	if got.TopP == nil || *got.TopP != 0.9 {
+		t.Errorf("top_p = %v, want 0.9", got.TopP)
+	}
+	if got.N == nil || *got.N != 2 {
+		t.Errorf("n = %v, want 2", got.N)
+	}
+	if got.PresencePenalty == nil || *got.PresencePenalty != 0.1 {
+		t.Errorf("presence_penalty = %v, want 0.1", got.PresencePenalty)
+	}
+	if got.FrequencyPenalty == nil || *got.FrequencyPenalty != 0.2 {
+		t.Errorf("frequency_penalty = %v, want 0.2", got.FrequencyPenalty)
+	}
+	if got.Seed == nil || *got.Seed != 42 {
+		t.Errorf("seed = %v, want 42", got.Seed)
+	}
+	if got.User != "u-1" {
+		t.Errorf("user = %q, want u-1", got.User)
+	}
+	if want := map[string]float64{"50256": -100, "1234": 5}; !reflect.DeepEqual(got.LogitBias, want) {
+		t.Errorf("logit_bias = %v, want %v", got.LogitBias, want)
+	}
+}

@@ -70,8 +70,8 @@ func TestCreateKeyRejectsUnknownScope(t *testing.T) {
 
 			// A refused request must mint nothing: the whole point is that no
 			// working-looking credential exists afterwards.
-			if keys := h.Keys.List(t.Context()); len(keys) != 1 {
-				t.Errorf("expected only the caller's key to exist, got %d keys", len(keys))
+			if keys, err := h.Keys.List(t.Context()); err != nil || len(keys) != 1 {
+				t.Errorf("expected only the caller's key to exist, got %d keys (err %v)", len(keys), err)
 			}
 		})
 	}

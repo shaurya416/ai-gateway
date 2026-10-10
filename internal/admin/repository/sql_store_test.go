@@ -76,7 +76,7 @@ func runStoreContract(t *testing.T, store Store) {
 		t.Fatalf("expected last_used_at to be set after validate")
 	}
 
-	listed := store.List(context.Background())
+	listed := mustList(t, store)
 	if len(listed) != 1 {
 		t.Fatalf("expected 1 key in list, got %d", len(listed))
 	}

@@ -71,7 +71,7 @@ func TestKeyStoreListOrder_NewestFirst(t *testing.T) {
 			// Repeated, because the defect this pins is non-determinism: one
 			// read landing in the right order proves nothing.
 			for attempt := range 5 {
-				got := names(store.List(t.Context()))
+				got := names(mustList(t, store))
 				want := []string{"newest", "middle", "oldest"}
 				if !equal(got, want) {
 					t.Fatalf("attempt %d: got %v, want %v", attempt, got, want)
@@ -99,14 +99,14 @@ func TestKeyStoreListOrder_TiebreaksOnID(t *testing.T) {
 				impl.setCreatedAt(t, store, key.ID, sameInstant)
 			}
 
-			first := ids(store.List(t.Context()))
+			first := ids(mustList(t, store))
 			for i := 1; i < len(first); i++ {
 				if first[i-1] <= first[i] {
 					t.Fatalf("ids are not in descending order: %v", first)
 				}
 			}
 			for attempt := range 5 {
-				if got := ids(store.List(t.Context())); !equal(got, first) {
+				if got := ids(mustList(t, store)); !equal(got, first) {
 					t.Fatalf("attempt %d: order changed between reads: %v then %v", attempt, first, got)
 				}
 			}
@@ -150,6 +150,16 @@ func TestCountAdminKeys_RevokedRowWithActiveStillTrue(t *testing.T) {
 	if count != 0 {
 		t.Fatalf("got %d admin keys, want 0 — a revoked key authenticates nothing", count)
 	}
+}
+
+// mustList reads every key, failing the test when the store cannot be read.
+func mustList(t *testing.T, store Store) []*model.APIKey {
+	t.Helper()
+	keys, err := store.List(t.Context())
+	if err != nil {
+		t.Fatalf("list keys: %v", err)
+	}
+	return keys
 }
 
 func names(keys []*model.APIKey) []string {

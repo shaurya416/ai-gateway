@@ -147,7 +147,10 @@ func TestPostgresStore_ListMasked(t *testing.T) {
 		}
 	}
 
-	listed := store.List(t.Context())
+	listed, err := store.List(t.Context())
+	if err != nil {
+		t.Fatalf("list keys: %v", err)
+	}
 	if len(listed) != 3 {
 		t.Fatalf("expected 3 keys, got %d", len(listed))
 	}

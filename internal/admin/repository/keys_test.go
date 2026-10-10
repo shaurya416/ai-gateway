@@ -106,7 +106,7 @@ func TestList_KeysMasked(t *testing.T) {
 	}
 	_, _ = store.Create(context.Background(), "key-2", nil, nil)
 
-	keys := store.List(context.Background())
+	keys := mustList(t, store)
 	if len(keys) != 2 {
 		t.Fatalf("got %d keys, want 2", len(keys))
 	}

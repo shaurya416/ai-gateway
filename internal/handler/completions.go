@@ -174,6 +174,10 @@ func Completions(gw *aigateway.Gateway) http.HandlerFunc {
 			FrequencyPenalty: legacyReq.FrequencyPenalty,
 			Seed:             legacyReq.Seed,
 			User:             legacyReq.User,
+			// The same token-id → bias map on both surfaces. Decoded and then
+			// left off here, it answered 200 to a request whose token
+			// constraint had not been applied.
+			LogitBias: legacyReq.LogitBias,
 		}
 		metadata, err := routingMetadata(r.Header)
 		if err != nil {

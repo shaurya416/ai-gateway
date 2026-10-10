@@ -173,6 +173,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unsupported, so not even `drop` removed it. A provider whose capability
   matrix marks `max_completion_tokens` unsupported now receives the ceiling as
   `max_tokens` alone.
+- `GET /admin/keys`, `GET /admin/keys/usage` and `GET /admin/dashboard` now
+  answer `500` when the key store cannot be read, instead of `200` with no
+  keys. The SQL store's key listing logged a failed query and returned an empty
+  list — and a result set that broke off part way returned the rows read so
+  far — so during a database outage an operator signed in with `MASTER_KEY`,
+  the one credential that still authenticates then, was told every key was
+  gone. A failed listing is now an error the handlers report; a single row that
+  cannot be decoded is still skipped and logged, as before.
+- `/v1/completions` now forwards `logit_bias`. The field was decoded and then
+  left off the chat request the endpoint routes, so a request constraining its
+  output tokens — the usual way to hold a one-token classification to its
+  labels — was answered `200` with the constraint never applied. It now reaches
+  the provider exactly as it does on `/v1/chat/completions`, and a provider
+  that cannot express it is handled by `compatibility.on_unsupported_param`.
+- A browser application on a `CORS_ORIGINS` origin can now read the headers
+  the gateway answers with. No `Access-Control-Expose-Headers` was sent, and a
+  browser hides every response header outside the CORS-safelisted few unless it
+  is named there, so a cross-origin script read `X-Request-ID`, the
+  `X-Gateway-Provider`/`-Target`/`-Model`/`-Attempts` attribution headers,
+  `X-Gateway-Overhead-Ms` and `Retry-After` as null — the last leaving a `429`
+  with no wait for the client's backoff to honour. All seven are now exposed to
+  an allowed origin; a disallowed origin still receives no CORS headers at all.
 
 ## [1.5.9] — 2026-09-18
 
