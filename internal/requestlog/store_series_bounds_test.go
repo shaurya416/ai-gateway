@@ -45,3 +45,63 @@ func TestAppendSeries_ClampsHostileBucketCounts(t *testing.T) {
 		})
 	}
 }
+
+// TestStats_TruncatedScanPercentilesCoverTheSeriesRows is the regression test
+// for the percentiles reaching one row past a truncated scan. The scan reads one
+// row more than the cap, only to learn that the window held more, and that row's
+// duration and time to first token were collected before the cap was checked —
+// so a truncated window's percentiles counted a row the series leaves out,
+// though they are documented as covering the same rows.
+func TestStats_TruncatedScanPercentilesCoverTheSeriesRows(t *testing.T) {
+	w, err := NewSQLiteWriter(t.Context(), filepath.Join(t.TempDir(), "requests.db"))
+	if err != nil {
+		t.Fatalf("new sqlite writer: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := w.Close(); err != nil {
+			t.Errorf("close request log writer: %v", err)
+		}
+	})
+
+	original := seriesScanLimit
+	seriesScanLimit = 3
+	t.Cleanup(func() { seriesScanLimit = original })
+
+	// Newest first: three requests the scan keeps, then the oldest — the row
+	// past the cap — carrying an outlier duration and time to first token.
+	now := time.Now().UTC()
+	for i, ms := range []float64{10, 20, 30, 5000} {
+		entry := Entry{
+			Stage: "after_request", Model: "gpt-4o", Provider: "openai",
+			CreatedAt:  now.Add(-time.Duration(i+1) * time.Minute),
+			DurationMs: floatPtr(ms),
+			TTFTMs:     floatPtr(ms / 2),
+		}
+		if err := w.Write(t.Context(), entry); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+	}
+
+	since := now.Add(-time.Hour)
+	got, err := w.Stats(t.Context(), Query{Since: &since, SeriesBuckets: 4})
+	if err != nil {
+		t.Fatalf("stats: %v", err)
+	}
+	if !got.SeriesTruncated {
+		t.Fatal("a scan past the lowered cap must report truncation")
+	}
+
+	var requests int
+	for _, point := range got.Series {
+		requests += point.Requests
+	}
+	if requests != seriesScanLimit {
+		t.Fatalf("series covers %d requests, want the %d the scan kept", requests, seriesScanLimit)
+	}
+	if got.LatencyMs == nil || got.LatencyMs.Count != requests || got.LatencyMs.Max != 30 {
+		t.Fatalf("latency percentiles = %+v, want %d durations with max 30: the row past the cap is not in the series", got.LatencyMs, requests)
+	}
+	if got.TTFTMs == nil || got.TTFTMs.Count != requests || got.TTFTMs.Max != 15 {
+		t.Fatalf("TTFT percentiles = %+v, want %d values with max 15: the row past the cap is not in the series", got.TTFTMs, requests)
+	}
+}

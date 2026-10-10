@@ -517,6 +517,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reached the upstream as no count at all and was generated, billed and
   answered `200` at the upstream's default count; a negative `n` was forwarded
   for the upstream to refuse.
+- An observability exporter that honours its context is now held to
+  `observability.tracing.shutdown_grace` for every event it is handed at
+  shutdown. The dispatch worker chose between the queue and the shutdown signal
+  at random, so an event still queued when shutdown began could be exported
+  under a context with no deadline, and an `Export` already running when it
+  began was never bounded at all: an exporter waiting on a backend that had
+  stopped answering never returned, and was still running when that exporter's
+  `Shutdown` was called. Every event taken after shutdown begins now
+  carries the shutdown deadline, and the context of an `Export` still running
+  when the grace runs out is cancelled.
+- A request identity carrying a C1 control character is now ignored, as the
+  request-identity rules already said of every control character. The check
+  read the value byte by byte and recognised only the ASCII controls, while
+  U+0080–U+009F are encoded as two bytes from 0x80 up, so an `X-User-ID`,
+  `X-Session-ID`, `baggage` entry or body `user` holding one — NEL (U+0085),
+  which many line-oriented readers split a line on, among them — was recorded
+  on the request span, exporter events and request-log rows. Such a value is
+  now dropped like any other unusable id.
+- Request-log latency and time-to-first-token percentiles for a window holding
+  more rows than the stats scan reads now cover the rows the time series
+  covers. The scan reads one row past its cap only to learn the window was
+  larger, and that row's measurements were taken before the cap was checked,
+  so `latency_ms` and `ttft_ms` counted one row the series leaves out — older
+  than the series' `start`, and free to set the reported maximum. The extra
+  row now only marks the scan truncated.
 - A provider response reporting a negative token count no longer turns the
   request into a panic. The counters behind `gateway_tokens_input_total`,
   `gateway_tokens_output_total` and `gateway_request_cost_usd_total` were fed

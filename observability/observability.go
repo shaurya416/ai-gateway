@@ -168,8 +168,10 @@ type Exporter interface {
 	//
 	// Events are delivered asynchronously, so ctx is not the request's context
 	// and carries none of its values: the request identity is read from evt
-	// (User, SessionID, Metadata), never from ctx. A returned error is logged
-	// by the gateway, sampled, against the exporter's name.
+	// (User, SessionID, Metadata), never from ctx. Once shutdown begins, ctx
+	// carries the shutdown deadline, and the ctx of an Export still running
+	// when it passes is cancelled. A returned error is logged by the gateway,
+	// sampled, against the exporter's name.
 	Export(ctx context.Context, evt Event) error
 
 	// Shutdown drains the exporter's buffers within the supplied

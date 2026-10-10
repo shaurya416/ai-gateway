@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/ferro-labs/ai-gateway/observability"
@@ -61,13 +62,19 @@ func requestIdentityFromHeaders(ctx context.Context, h http.Header) observabilit
 // for the reason a long one is: two different byte strings would repair to the
 // same id. Kept, it reached the span as-is and failed the OTLP export of every
 // span batched with it.
+//
+// Control characters are judged per rune, not per byte. A byte check sees only
+// the ASCII ones, while the C1 controls U+0080–U+009F — NEL among them, which
+// many line-oriented readers split a line on — arrive as two bytes from 0x80 up
+// and passed it, reaching the span and the request-log row from a header, a
+// percent-encoded baggage entry or the body `user` alike.
 func IdentityValue(v string) string {
 	v = strings.TrimSpace(v)
 	if v == "" || len(v) > maxIdentityValueLen || !utf8.ValidString(v) {
 		return ""
 	}
-	for i := 0; i < len(v); i++ {
-		if v[i] < 0x20 || v[i] == 0x7f {
+	for _, r := range v {
+		if unicode.IsControl(r) {
 			return ""
 		}
 	}

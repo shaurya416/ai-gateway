@@ -267,15 +267,18 @@ func (w *SQLWriter) appendSeries(ctx context.Context, result *StatsResult, where
 		if err := rows.Scan(&at, &stage, &promptTokens, &outputTokens, &errMessage, &durationMs, &ttftMs); err != nil {
 			return fmt.Errorf("scan request log series row: %w", err)
 		}
+		// The row past the cap only proves the scan was cut short. It is
+		// checked for before anything is taken from it, so the percentiles
+		// cover exactly the rows the series does.
+		if len(events) == seriesScanLimit {
+			result.SeriesTruncated = true
+			break
+		}
 		if durationMs.Valid {
 			durations = append(durations, durationMs.Float64)
 		}
 		if ttftMs.Valid {
 			ttfts = append(ttfts, ttftMs.Float64)
-		}
-		if len(events) == seriesScanLimit {
-			result.SeriesTruncated = true
-			break
 		}
 		events = append(events, event{
 			at: at.UTC(),

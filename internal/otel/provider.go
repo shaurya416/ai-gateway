@@ -29,7 +29,7 @@ type otelProvider struct {
 	privacyLevel string
 	redactor     *redact.Redactor
 
-	// mu guards exporters, eventQ, done, workerDone, and drainCtx.
+	// mu guards exporters, eventQ, done, workerDone, drainCtx, and stopExports.
 	mu        sync.RWMutex
 	exporters []observability.Exporter
 
@@ -39,13 +39,18 @@ type otelProvider struct {
 	// workerDone is closed once the worker goroutine exits.
 	// done signals the worker to stop accepting new events and drain.
 	// drainCtx is set under mu immediately before closing done; the worker
-	// reads it under mu in the drain branch so that in-flight Export calls
-	// during drain honour the Shutdown deadline.
-	eventQ     chan observability.Event
-	done       chan struct{}
-	workerDone chan struct{}
-	drainCtx   context.Context // written before close(done); read by drain branch
-	startOnce  sync.Once
+	// reads it under mu for every event it takes once done is closed, so that
+	// Export calls during drain honour the Shutdown deadline.
+	// stopExports cancels the detached context steady-state Export calls run
+	// under; Shutdown calls it once it stops waiting on the worker, so an
+	// Export already in flight when shutdown began is bounded by the same
+	// deadline as the drain behind it.
+	eventQ      chan observability.Event
+	done        chan struct{}
+	workerDone  chan struct{}
+	drainCtx    context.Context // written before close(done); read once done is closed
+	stopExports context.CancelFunc
+	startOnce   sync.Once
 
 	// dropCount tracks the total number of events dropped due to a full
 	// queue. It exists only to sample the log line — a warning every 64 drops,
@@ -167,26 +172,30 @@ func (p *otelProvider) AttachExporters(exporters []observability.Exporter) {
 		q := make(chan observability.Event, eventQueueCapacity)
 		done := make(chan struct{})
 		workerDone := make(chan struct{})
+		exportCtx, stopExports := context.WithCancel(context.Background())
 
 		p.mu.Lock()
 		p.exporters = snap
 		p.eventQ = q
 		p.done = done
 		p.workerDone = workerDone
+		p.stopExports = stopExports
 		p.mu.Unlock()
 
-		go p.runWorker(snap, q, done, workerDone)
+		go p.runWorker(exportCtx, snap, q, done, workerDone)
 	})
 }
 
 // runWorker is the single background goroutine that drains eventQ and calls
-// each exporter's Export. Steady-state dispatch uses context.Background() so
-// events are delivered even after the originating request context has been
-// cancelled. Drain-phase dispatch (after the done channel is closed) uses the
-// drainCtx set by Shutdown so that Export calls are bounded by the shutdown
-// deadline. Exporters that ignore ctx can still outlive shutdown; that is on
-// them.
+// each exporter's Export. Steady-state dispatch uses exportCtx, which is
+// detached from every request so events are delivered even after the
+// originating request context has been cancelled, and which Shutdown cancels
+// once it stops waiting. Every event taken after the done channel is closed
+// is dispatched under the drainCtx set by Shutdown, so those Export calls are
+// bounded by the shutdown deadline. Exporters that ignore ctx can still
+// outlive shutdown; that is on them.
 func (p *otelProvider) runWorker(
+	exportCtx context.Context,
 	exporters []observability.Exporter,
 	q <-chan observability.Event,
 	done <-chan struct{},
@@ -203,20 +212,21 @@ func (p *otelProvider) runWorker(
 				// Channel closed — should not happen (we never close q), but be safe.
 				return
 			}
-			// Steady-state: use background context so request cancellation
-			// never drops an in-flight event.
-			p.dispatchEvent(context.Background(), exporters, failures, evt)
-		case <-done:
-			// Drain remaining buffered events before exiting. Read drainCtx
-			// under the read-lock to establish a clear happens-before with the
-			// Shutdown write (which sets drainCtx under the write-lock before
-			// closing done).
-			p.mu.RLock()
-			dCtx := p.drainCtx
-			p.mu.RUnlock()
-			if dCtx == nil {
-				dCtx = context.Background()
+			// select picks at random among ready cases, so with events still
+			// queued this case keeps winning about half the time after Shutdown
+			// has closed done. An event taken then is part of the drain and is
+			// exported under the drain's deadline, not the steady-state context
+			// that has none.
+			ctx := exportCtx
+			select {
+			case <-done:
+				ctx = p.drainContext()
+			default:
 			}
+			p.dispatchEvent(ctx, exporters, failures, evt)
+		case <-done:
+			// Drain remaining buffered events before exiting.
+			dCtx := p.drainContext()
 			for {
 				select {
 				case evt := <-q:
@@ -229,9 +239,22 @@ func (p *otelProvider) runWorker(
 	}
 }
 
+// drainContext returns the context Shutdown handed the drain. It is read under
+// the read-lock to establish a clear happens-before with the Shutdown write,
+// which sets drainCtx under the write-lock before closing done.
+func (p *otelProvider) drainContext() context.Context {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if p.drainCtx == nil {
+		return context.Background()
+	}
+	return p.drainCtx
+}
+
 // dispatchEvent fans a single event out to the exporters using the supplied
-// context. Steady-state callers pass context.Background(); the drain branch
-// passes the Shutdown context so slow exporters honour the deadline. An
+// context. Steady-state callers pass the worker's detached export context; an
+// event taken once Shutdown has begun gets the Shutdown context, so slow
+// exporters honour the deadline. An
 // attempt event reaches only the exporters that asked for attempts; every
 // other event reaches them all.
 //
@@ -306,9 +329,10 @@ func exportEvent(ctx context.Context, ex observability.Exporter, evt observabili
 // no longer than ctx allows (see shutdownExporter). Safe to call multiple
 // times — subsequent calls are no-ops.
 //
-// The shutdown context is threaded into the drain dispatch so a blocked
-// exporter Export is bounded by the shutdown deadline (ctx-aware exporters
-// will return; exporters that ignore ctx may still outlive shutdown).
+// The shutdown context is threaded into the drain dispatch, and the context an
+// Export already in flight runs under is cancelled once Shutdown stops waiting,
+// so a blocked exporter Export is bounded by the shutdown deadline (ctx-aware
+// exporters will return; exporters that ignore ctx may still outlive shutdown).
 // After Shutdown returns, RecordEvent becomes a clean no-op.
 //
 // A drain the deadline cuts short is returned as an error wrapping ctx's,
@@ -321,6 +345,7 @@ func (p *otelProvider) Shutdown(ctx context.Context) error {
 	workerDone := p.workerDone
 	queue := p.eventQ
 	exporters := p.exporters
+	stopExports := p.stopExports
 	// Set drainCtx before closing done so the worker's drain branch reads the
 	// correct context (happens-before via the mutex).
 	p.drainCtx = ctx
@@ -350,6 +375,11 @@ func (p *otelProvider) Shutdown(ctx context.Context) error {
 					len(queue), ctx.Err())
 			}
 		}
+		// An Export taken off the queue before done was closed still runs under
+		// the steady-state context, which has no deadline. Cancelling it here
+		// bounds that call by the shutdown deadline too; when the worker has
+		// already finished it only releases the context.
+		stopExports()
 	}
 
 	for _, ex := range exporters {

@@ -84,3 +84,40 @@ func TestMiddleware_NoIdentityInputsLeavesContextZero(t *testing.T) {
 		t.Fatalf("identity = %+v, want zero", got)
 	}
 }
+
+// TestIdentityValue_RejectsC1ControlCharacters is the regression test for the
+// control-character rule reading bytes instead of runes. The C1 controls
+// U+0080–U+009F are UTF-8 encoded as two bytes from 0x80 up, so a byte check
+// never saw them: NEL (U+0085), which many line-oriented readers split a line
+// on, passed from a header, from a percent-encoded baggage entry, and — through
+// the same rule — from the body `user` field.
+func TestIdentityValue_RejectsC1ControlCharacters(t *testing.T) {
+	for name, value := range map[string]string{
+		"next line":           "ali\u0085ce",
+		"single shift three":  "ali\u008fce",
+		"application command": "ali\u009fce",
+		"padding character":   "ali\u0080ce",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := IdentityValue(value); got != "" {
+				t.Errorf("IdentityValue(%q) = %q, want it dropped", value, got)
+			}
+			got := identityThroughMiddleware(t, func(h http.Header) { h.Set("X-User-ID", value) })
+			if !got.IsZero() {
+				t.Errorf("identity from X-User-ID = %+v, want zero", got)
+			}
+		})
+	}
+
+	got := identityThroughMiddleware(t, func(h http.Header) {
+		h.Set("baggage", "user.id=ali%C2%85ce,session.id=sess%C2%85ion")
+	})
+	if !got.IsZero() {
+		t.Errorf("identity from baggage = %+v, want zero", got)
+	}
+
+	// Ordinary non-ASCII text is still an id.
+	if got := IdentityValue("José-Ünal"); got != "José-Ünal" {
+		t.Errorf("IdentityValue(%q) = %q, want it kept", "José-Ünal", got)
+	}
+}
