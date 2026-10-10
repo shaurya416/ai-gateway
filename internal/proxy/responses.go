@@ -39,7 +39,13 @@ func ResponsesCreate(src ResponsesSource) http.HandlerFunc {
 			return
 		}
 
-		model, maxOutputTokens := peekResponsesFields(r)
+		model, maxOutputTokens, ambiguous := peekResponsesFields(r)
+		if ambiguous {
+			apierror.WriteOpenAI(w, http.StatusBadRequest,
+				"model and max_output_tokens must be spelled exactly as named; the body carries another spelling of one",
+				"invalid_request_error", "invalid_request")
+			return
+		}
 
 		p, ok := resolveResponsesProvider(r, src, model)
 		if !ok {
@@ -187,19 +193,38 @@ func resolveResponsesProvider(r *http.Request, src providers.ProviderSource, mod
 // ceiling a guardrail caps) — then restores the body so it forwards intact. A
 // body past the projection cap yields zero values; the guardrail projection
 // (projectBody) refuses it separately when a content guardrail is configured.
-func peekResponsesFields(r *http.Request) (model string, maxOutputTokens int) {
+//
+// The keys are matched exactly, and a body that also carries another spelling
+// of either is reported ambiguous rather than read. Decoded into a struct,
+// encoding/json matches a key in any letter case, so a body carrying
+// "max_output_tokens": 100000 followed by "Max_Output_Tokens": 10 was governed
+// on 10 — approved by a max-token guardrail — while an upstream whose parser
+// matches exactly generated against 100000, and a trailing "MODEL" chose the
+// routing and pricing model while that upstream ran the "model" one. Reading
+// only the exact key does not settle it either: an upstream that folds case as
+// encoding/json does honours the other spelling. Which one a given upstream
+// reads is not something the gateway can know, so it refuses to guess.
+func peekResponsesFields(r *http.Request) (model string, maxOutputTokens int, ambiguous bool) {
 	if r.Body == nil || r.ContentLength == 0 {
-		return "", 0
+		return "", 0, false
 	}
 	buf, err := io.ReadAll(io.LimitReader(r.Body, projectionCap+1))
 	r.Body = io.NopCloser(io.MultiReader(bytes.NewReader(buf), r.Body))
 	if err != nil || len(buf) > projectionCap {
-		return "", 0
+		return "", 0, false
 	}
-	var fields struct {
-		Model           string `json:"model"`
-		MaxOutputTokens int    `json:"max_output_tokens"`
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(buf, &fields) != nil {
+		return "", 0, false
 	}
-	_ = json.Unmarshal(buf, &fields)
-	return fields.Model, fields.MaxOutputTokens
+	for key := range fields {
+		for _, governed := range [...]string{"model", "max_output_tokens"} {
+			if key != governed && strings.EqualFold(key, governed) {
+				return "", 0, true
+			}
+		}
+	}
+	_ = json.Unmarshal(fields["model"], &model)
+	_ = json.Unmarshal(fields["max_output_tokens"], &maxOutputTokens)
+	return model, maxOutputTokens, false
 }

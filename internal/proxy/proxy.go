@@ -6,13 +6,13 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
-	"strconv"
 	"strings"
 	"time"
 
@@ -821,6 +821,12 @@ func (s *topLevelModelScanner) nextNonSpaceByte() (byte, error) {
 	}
 }
 
+// readJSONString reads the rest of a JSON string whose opening quote has been
+// consumed. An escaped string is decoded by encoding/json, so the escape
+// grammar is JSON's rather than Go's: strconv.Unquote has no \/ and refuses a
+// \u surrogate pair, so an escaped slash (PHP's json_encode default) or an
+// escaped emoji (Python's json.dumps default) anywhere up to and including the
+// model would fail the whole scan.
 func (s *topLevelModelScanner) readJSONString() (string, error) {
 	buf := make([]byte, 0, 32)
 	escaped := false
@@ -841,7 +847,13 @@ func (s *topLevelModelScanner) readJSONString() (string, error) {
 			if bytes.IndexByte(buf, '\\') == -1 {
 				return string(buf), nil
 			}
-			return strconv.Unquote(`"` + string(buf) + `"`)
+			quoted := make([]byte, 0, len(buf)+2)
+			quoted = append(append(append(quoted, '"'), buf...), '"')
+			var decoded string
+			if err := json.Unmarshal(quoted, &decoded); err != nil {
+				return "", err
+			}
+			return decoded, nil
 		default:
 			buf = append(buf, b)
 		}

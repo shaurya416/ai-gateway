@@ -31,6 +31,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   answered `200` by any upstream that does not check it — after the request
   had already spent its rate-limit and budget allowance. `max_tokens` is
   unchanged: this surface still forwards `max_tokens: 0`.
+- A `/v1/*` pass-through request whose body runs past the gateway's own
+  request-body limit no longer counts against the target's circuit breaker.
+  The limit is reached while the body is being streamed upstream, and the
+  forward reported that as a failure to reach the provider, so a few
+  oversized uploads from one caller opened the circuit and every caller's
+  chat, embeddings and pass-through traffic to a healthy target was refused
+  with a `503`. The caller's `413` is still recorded as a failed request; the
+  breaker now scores it neither way, so it can neither open the circuit nor
+  reset the failure count of a target that is failing.
+- `POST /v1/responses` no longer governs, routes or prices on a different
+  field than the upstream reads. The `model` and `max_output_tokens` keys were
+  decoded with a case-insensitive match, so a body carrying
+  `"max_output_tokens": 100000` followed by `"Max_Output_Tokens": 10` was
+  approved by a `max-token` guardrail on the `10` while an upstream matching
+  keys exactly generated against `100000`, and a trailing `"MODEL"` chose the
+  model the request was routed and priced as while that upstream ran the
+  `"model"` one. Both keys are now read by their exact names, and a body that
+  also carries another spelling of either is refused with a `400` before
+  anything is forwarded, since an upstream that folds case would honour the
+  other spelling instead.
+- The `/v1/*` pass-through now resolves a body's `model` when the JSON escapes
+  a forward slash as `\/` — which PHP's `json_encode` does by default — or
+  writes an emoji as a `\u` surrogate pair, as Python's `json.dumps` does by
+  default. Escapes were decoded with Go's string grammar rather than JSON's,
+  so either escape anywhere up to and including the model, such as a slashed
+  model id, a URL in an earlier field or an emoji in the prompt, failed the
+  scan and the request was answered `400` asking for the `model` field it
+  carried.
 - An upstream that refuses a `/v1/responses` or `/v1/*` pass-through request
   with a `4xx` — a `401` from a revoked provider credential, a `429` from a
   throttled upstream — is now recorded as the failed request it is. The

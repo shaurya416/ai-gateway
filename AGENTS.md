@@ -778,9 +778,10 @@ failing. Both `/health` and `/readyz` report the target as `circuit: "open"`, an
 `/readyz` marks it `routable: false`.
 
 Not everything counts toward opening it. A `429`, a client disconnect, a
-caller-supplied deadline, an unsupported-parameter rejection and a shed under
-`targets[].concurrency` are all excluded — none is evidence the upstream is
-unhealthy. A `429` instead parks the target for its `Retry-After` (capped at a
+caller-supplied deadline, an unsupported-parameter rejection, a pass-through
+body over the gateway's own size limit and a shed under `targets[].concurrency`
+are all excluded — none is evidence the upstream is unhealthy.
+A `429` instead parks the target for its `Retry-After` (capped at a
 minute, five seconds when absent), so the next request is not offered to it;
 the park is process-local and filters like an open circuit, never refusing a
 request outright. A redirect, a `5xx`, a connection failure, and the gateway's own
@@ -1025,6 +1026,10 @@ completion ceiling so a max-token guardrail governs Responses — chat's field i
 `max_tokens`, renamed here), and the string projection every content guardrail
 already reads (`input`/`instructions` land in it). Re-serializing the ~40-event
 Responses schema would be maintenance debt both LiteLLM and Portkey avoid.
+The first two are read by their exact names, and a body that also spells
+either in another letter case is refused `400` before anything is forwarded:
+whether an upstream honours `"Max_Output_Tokens"` depends on its JSON parser,
+so the gateway cannot know which value it would be governing.
 
 The stateful **id sub-routes** — `GET`/`DELETE /v1/responses/{id}`,
 `POST /v1/responses/{id}/cancel`, `GET /v1/responses/{id}/input_items` — carry no

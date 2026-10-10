@@ -3,6 +3,7 @@ package aigateway
 import (
 	"context"
 	"errors"
+	"net/http"
 	"time"
 
 	"github.com/ferro-labs/ai-gateway/pkg/circuitbreaker"
@@ -77,6 +78,11 @@ func (p *cbProvider) Complete(ctx context.Context, req providers.Request) (resp 
 //     unsupported parameter under compatibility.on_unsupported_param=reject) is a
 //     client error that never touched the network, and must never blame the
 //     provider. It has no error_type of its own, so it is named here.
+//   - A request body that runs past the gateway's own body limit while a
+//     pass-through streams it upstream is the gateway's 413 to the caller, not
+//     an answer from the provider. Blamed, a few oversized uploads from one
+//     caller opened the circuit and refused every caller's traffic to a healthy
+//     target; it is named here for the same reason as the rejection above.
 //   - Rate limits are expected and temporary, and stay excluded.
 func shouldRecordCircuitBreakerFailure(ctx context.Context, err error) bool {
 	if err == nil {
@@ -85,6 +91,10 @@ func shouldRecordCircuitBreakerFailure(ctx context.Context, err error) bool {
 
 	var unsupportedParam *providers.UnsupportedParamError
 	if errors.As(err, &unsupportedParam) {
+		return false
+	}
+	var tooLarge *http.MaxBytesError
+	if errors.As(err, &tooLarge) {
 		return false
 	}
 
