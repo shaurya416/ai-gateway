@@ -81,7 +81,7 @@ var ErrPassthroughUninspectable error = &plugin.RejectionError{
 //     Metadata["surface"] = "passthrough" so a plugin can branch on it.
 //   - circuit breaker and per-target concurrency: yes, via the same
 //     callUnderResilience the routed pipeline uses. An upstream 4xx the
-//     forward reports, or a request body past the gateway's own limit, is
+//     forward reports, or a request body the caller could not deliver, is
 //     recorded as a failed request but is not scored against the breaker,
 //     and a 429 parks the target; see forwardUnderResilience.
 //   - request log and cost accounting: yes. Cost is recorded as UNPRICED, never
@@ -371,9 +371,11 @@ func (g *Gateway) runPassthroughGovernance(
 // is still returned, so the lifecycle records the failed request. A 429 also
 // parks the target for its Retry-After, as it does on the routed surfaces.
 //
-// A request body that runs past the gateway's own body limit mid-forward is
-// not an answer from the upstream at all — the gateway answers it 413 — so it
-// is scored neither way: shouldRecordCircuitBreakerFailure releases it.
+// A request body the caller could not deliver is not an answer from the
+// upstream at all — one past the gateway's own body limit is answered 413, one
+// whose framing broke mid-upload 400 — so it is scored neither way: the forward
+// ends the request as the caller's when the read fails, and
+// shouldRecordCircuitBreakerFailure releases it.
 func (g *Gateway) forwardUnderResilience(ctx context.Context, key string, forward func(context.Context) error) error {
 	g.mu.RLock()
 	cb := g.circuitBreakers[key]

@@ -4,6 +4,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -37,6 +38,43 @@ func TestExtractTopLevelModel_DecodesEveryJSONEscape(t *testing.T) {
 				t.Errorf("body after scan = %q, want it restored byte-identical", data)
 			}
 		})
+	}
+}
+
+// The scanner skipped a nested value by recursing once per change of bracket
+// type, so a body of alternating "[{" cost one call frame per byte, on the
+// request's own goroutine and before anything was authorised beyond the proxy
+// credential. A body at the default 10 MiB limit grew that stack past 512 MiB,
+// and one slightly larger exceeded the runtime's 1 GB maximum, which is a
+// fatal error that ends the whole process rather than a panic any middleware
+// can recover. Skipping a value must cost the stack nothing per level, and the
+// model that follows the nested value must still be found.
+func TestExtractTopLevelModel_DeepNestingDoesNotGrowTheStack(t *testing.T) {
+	const pairs = 1 << 20 // 2M levels of nesting in a 4 MiB body
+	body := `{"input":` + strings.Repeat("[{", pairs) + strings.Repeat("}]", pairs) + `,"model":"gpt-4o"}`
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/x", strings.NewReader(body))
+
+	var (
+		before, after runtime.MemStats
+		model         string
+		err           error
+	)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		runtime.ReadMemStats(&before)
+		model, err = ExtractTopLevelModel(r)
+		// Read before this goroutine returns: its stack is still the one the
+		// scan grew.
+		runtime.ReadMemStats(&after)
+	}()
+	<-done
+
+	if err != nil || model != "gpt-4o" {
+		t.Errorf("ExtractTopLevelModel = (%q, %v), want (%q, nil)", model, err, "gpt-4o")
+	}
+	if after.StackInuse > before.StackInuse+8<<20 {
+		t.Errorf("goroutine stacks grew %d MiB scanning a %d MiB body; skipping a nested value must not cost a call frame per level", (after.StackInuse-before.StackInuse)>>20, len(body)>>20)
 	}
 }
 

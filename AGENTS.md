@@ -781,9 +781,10 @@ failing. Both `/health` and `/readyz` report the target as `circuit: "open"`, an
 Not everything counts toward opening it. A `429`, a client disconnect, a
 caller-supplied deadline, an unsupported-parameter rejection, a provider's typed
 statement that the prompt exceeded its context window
-(`core.IsContextLengthError`), a pass-through body over the gateway's own size
-limit and a shed under `targets[].concurrency` are all excluded — none is
-evidence the upstream is unhealthy. A `429` instead parks the target for its
+(`core.IsContextLengthError`), a pass-through request body the caller could
+not deliver — over the gateway's own size limit, or with framing that broke
+mid-upload — and a shed under `targets[].concurrency` are all excluded — none
+is evidence the upstream is unhealthy. A `429` instead parks the target for its
 `Retry-After` (capped at a minute, five seconds when absent), so the next
 request is not offered to it; the park is process-local and filters like an
 open circuit, never refusing a request outright. A redirect, a `5xx`, a

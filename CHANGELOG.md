@@ -55,6 +55,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   answered `200` by any upstream that does not check it — after the request
   had already spent its rate-limit and budget allowance. `max_tokens` is
   unchanged: this surface still forwards `max_tokens: 0`.
+- A `/v1/*` pass-through request whose body nests arrays and objects deeply
+  can no longer exhaust the gateway's memory or stop the process. The scan
+  that finds a body's `model` skipped a nested value by recursing each time
+  the bracket type changed, so a body of alternating `[{` cost one call frame
+  per byte on the request's goroutine: a body at the default 10 MiB limit grew
+  that stack past 512 MiB, and with `max_request_bytes` set just above the
+  default a single request exceeded the runtime's 1 GB stack maximum, which is
+  a fatal error that ends the whole process rather than a panic any middleware
+  can recover. Nested values are now skipped without recursion, at one byte of
+  memory per open bracket, and the scan resolves the same `model` as before.
+- A `/v1/*` pass-through, `POST /v1/responses`, `/v1/files` or `/v1/batches`
+  request whose body the caller cannot deliver — chunked framing that breaks
+  off mid-upload — is now answered `400 invalid request body` as the caller's,
+  and no longer counts against the target's circuit breaker. The failure only
+  surfaces while the body is being streamed upstream, and the forward reported
+  it as a failure to reach the provider: the caller was told `502 upstream
+  connection failed`, and the breaker scored it, so a few such requests from
+  one caller opened the circuit and every caller's traffic to a healthy target
+  was refused with a `503`. A failure reading the body now ends the request as
+  the caller's, as a caller's connection breaking mid-body already did: it is
+  still recorded as a failed request, and the breaker scores it neither way.
+  Such a request, and one whose body runs past the size limit, now counts in
+  `gateway_provider_errors_total` as `client_canceled` rather than
+  `provider_error`.
 - A `/v1/*` pass-through request whose body runs past the gateway's own
   request-body limit no longer counts against the target's circuit breaker.
   The limit is reached while the body is being streamed upstream, and the

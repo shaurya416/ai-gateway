@@ -2,7 +2,6 @@ package proxy
 
 import (
 	"context"
-	"errors"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -34,8 +33,9 @@ import (
 // receives it uncompressed.
 //
 // It returns the forward's failure, nil when the upstream answered with a status
-// below 400: the forward error when the upstream could not be reached or read
-// (the ErrorHandler has already written the client's response in that case), or
+// below 400: the forward error when the upstream could not be reached or read,
+// or the error reading the caller's body when that is what failed (the
+// ErrorHandler has already written the client's response in either case), or
 // the upstream's own error status (see relayedStatusError; the upstream's
 // response is already on the wire). A governed caller hands it to the lifecycle
 // to record the outcome and score the circuit breaker. A response that broke off
@@ -49,6 +49,10 @@ func forwardFixedTarget(w http.ResponseWriter, r *http.Request, target *url.URL,
 	upstreamCtx, cancelUpstream := context.WithCancelCause(r.Context())
 	defer cancelUpstream(nil)
 	r = r.WithContext(upstreamCtx)
+	// A governed caller has already watched the body, under a context its
+	// lifecycle runs under, and that watcher is the one returned here; an
+	// ungoverned one is watched only to tell the client's answer apart.
+	reqBody := watchCallerBody(r, nil)
 
 	rewrite := buildRewrite(target, authHeaders, propagateTrace)
 	if wrapBody != nil {
@@ -86,12 +90,12 @@ func forwardFixedTarget(w http.ResponseWriter, r *http.Request, target *url.URL,
 			return nil
 		},
 		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {
-			forwardErr = err
-			var maxBytesErr *http.MaxBytesError
-			if errors.As(err, &maxBytesErr) {
-				apierror.WriteOpenAI(w, http.StatusRequestEntityTooLarge, "request body too large", "invalid_request_error", "request_too_large")
+			if bodyErr := reqBody.failure(); bodyErr != nil {
+				forwardErr = bodyErr
+				writeCallerBodyError(w, bodyErr)
 				return
 			}
+			forwardErr = err
 			// providerName comes from the configured registry, not user input.
 			logger.Default().Error("fixed-target proxy upstream error", "provider", providerName, "error", err)
 			apierror.WriteOpenAI(w, http.StatusBadGateway, "upstream connection failed", "server_error", "upstream_error")

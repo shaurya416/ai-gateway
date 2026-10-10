@@ -92,6 +92,13 @@ func ResponsesCreate(src ResponsesSource) http.HandlerFunc {
 			resp.Body = newResponsesUsageReader(resp.Body, stream, &usage)
 		}
 
+		// The lifecycle runs under ctx, so cancelling it is what ends a request
+		// whose body the caller could not deliver as the caller's. See
+		// callerBody.
+		ctx, cancelRequest := context.WithCancelCause(r.Context())
+		defer cancelRequest(nil)
+		watchCallerBody(r, func() { cancelRequest(nil) })
+
 		forwarded := false
 		var forwardErr error
 		forward := func(ctx context.Context) error {
@@ -103,7 +110,7 @@ func ResponsesCreate(src ResponsesSource) http.HandlerFunc {
 			return forwardErr
 		}
 
-		err = src.RouteResponsesWithPricingProvider(r.Context(), providerName, priceProvider, model, projText, inspectable, maxOutputTokens, &usage, forward)
+		err = src.RouteResponsesWithPricingProvider(ctx, providerName, priceProvider, model, projText, inspectable, maxOutputTokens, &usage, forward)
 		reraiseAbort(forwardErr)
 		if err != nil && !forwarded {
 			apierror.WriteRouteError(w, err)

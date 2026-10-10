@@ -298,6 +298,22 @@ func passThroughHandler(src providers.ProviderSource) http.HandlerFunc {
 		defer cancelUpstream(nil)
 		r = r.WithContext(upstreamCtx)
 
+		// Projected before anything is forwarded, because a guardrail that
+		// cannot read this body has to be able to refuse it while refusing is
+		// still possible. A source with no lifecycle to run has no guardrail to
+		// show it to.
+		gov, governed := src.(passthroughGovernor)
+		var body string
+		inspectable := true
+		if governed {
+			body, inspectable = projectBody(r)
+		}
+		// Watched from here on, as the forward reads it. A failure reading it is
+		// the caller's: the governed forward runs under a context derived from
+		// upstreamCtx, so cancelling it ends the request as the caller's, the way
+		// net/http ends one whose connection breaks mid-body. See callerBody.
+		reqBody := watchCallerBody(r, func() { cancelUpstream(nil) })
+
 		// The outcome of the forward, as the gateway lifecycle needs to hear it.
 		// Both are written only from inside ServeHTTP, which returns before they
 		// are read, so neither needs synchronising.
@@ -343,15 +359,17 @@ func passThroughHandler(src providers.ProviderSource) http.HandlerFunc {
 			},
 			ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {
 				// The client's answer is written here, as it always was; the
-				// error is also kept so the lifecycle records a failure and the
-				// breaker scores one. Everything this handler answers is a
-				// failure to reach or read the upstream.
-				forwardErr = err
-				var maxBytesErr *http.MaxBytesError
-				if errors.As(err, &maxBytesErr) {
-					apierror.WriteOpenAI(w, http.StatusRequestEntityTooLarge, "request body too large", "invalid_request_error", "request_too_large")
+				// error is also kept so the lifecycle records a failure. A body
+				// the caller could not deliver is answered as the caller's, and
+				// its read already ended the request as the caller's; anything
+				// else is a failure to reach or read the upstream, which the
+				// breaker scores.
+				if bodyErr := reqBody.failure(); bodyErr != nil {
+					forwardErr = bodyErr
+					writeCallerBodyError(w, bodyErr)
 					return
 				}
+				forwardErr = err
 				// providerName comes from the configured registry, not raw user input.
 				logger.Default().Error("proxy upstream error", "provider", providerName, "error", err)
 				apierror.WriteOpenAI(w, http.StatusBadGateway,
@@ -362,7 +380,6 @@ func passThroughHandler(src providers.ProviderSource) http.HandlerFunc {
 			},
 		}
 
-		gov, governed := src.(passthroughGovernor)
 		if !governed {
 			// A source with no lifecycle to run — a bare *providers.Registry —
 			// holds no plugins, no breakers and no limiters, so there is nothing
@@ -370,11 +387,6 @@ func passThroughHandler(src providers.ProviderSource) http.HandlerFunc {
 			proxy.ServeHTTP(streamio.WrapResponseWriter(w), r)
 			return
 		}
-
-		// Projected before anything is forwarded, because a guardrail that
-		// cannot read this body has to be able to refuse it while refusing is
-		// still possible.
-		body, inspectable := projectBody(r)
 
 		// forwarded records whether the lifecycle ever got as far as calling the
 		// upstream. It is what decides who answers the client: once ServeHTTP
@@ -872,19 +884,24 @@ func (s *topLevelModelScanner) skipJSONValue(first byte) error {
 	}
 }
 
+// skipComposite skips the object or array whose opening bracket has been
+// consumed.
+//
+// The brackets still to be closed are kept on a slice rather than on the call
+// stack. Nesting depth is the caller's choice, and recursing on each change of
+// bracket type cost a body of alternating "[{" one call frame per byte: at the
+// default 10 MiB request limit that grew the request goroutine's stack past
+// 512 MiB, and a slightly larger body exceeded the runtime's 1 GB maximum,
+// which is a fatal error that ends the process rather than a panic anything
+// can recover. The slice costs one byte per open bracket, bounded by the body
+// the scanner is already holding. A closing bracket that does not match the
+// innermost open one is ignored, as it always was.
 func (s *topLevelModelScanner) skipComposite(open byte) error {
-	var closeCh byte
-	switch open {
-	case '{':
-		closeCh = '}'
-	case '[':
-		closeCh = ']'
-	default:
-		return nil
+	closers := make([]byte, 0, 16)
+	if closer := closingBracket(open); closer != 0 {
+		closers = append(closers, closer)
 	}
-
-	depth := 1
-	for depth > 0 {
+	for len(closers) > 0 {
 		b, err := s.reader.ReadByte()
 		if err != nil {
 			return err
@@ -894,25 +911,26 @@ func (s *topLevelModelScanner) skipComposite(open byte) error {
 			if _, err := s.readJSONString(); err != nil {
 				return err
 			}
-		case open:
-			depth++
-		case closeCh:
-			depth--
-		case '{':
-			if open != '{' {
-				if err := s.skipComposite(b); err != nil {
-					return err
-				}
-			}
-		case '[':
-			if open != '[' {
-				if err := s.skipComposite(b); err != nil {
-					return err
-				}
-			}
+		case '{', '[':
+			closers = append(closers, closingBracket(b))
+		case closers[len(closers)-1]:
+			closers = closers[:len(closers)-1]
 		}
 	}
 	return nil
+}
+
+// closingBracket returns the bracket that closes open, or 0 when open is not
+// an opening bracket.
+func closingBracket(open byte) byte {
+	switch open {
+	case '{':
+		return '}'
+	case '[':
+		return ']'
+	default:
+		return 0
+	}
 }
 
 func (s *topLevelModelScanner) skipScalar() error {
