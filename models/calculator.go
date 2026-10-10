@@ -31,9 +31,9 @@ type CostResult struct {
 	// All cost fields will be zero in that case.
 	ModelFound bool
 	// Priced is false when the catalog entry carries no price for the field its
-	// mode bills off: input tokens for chat, embedding tokens for embeddings,
-	// per-tile or (failing that, and only against reported usage) per-token for
-	// images, per-minute or per-character for audio.
+	// mode bills off: input tokens for chat and responses, embedding tokens for
+	// embeddings, per-tile or (failing that, and only against reported usage)
+	// per-token for images, per-minute or per-character for audio.
 	Priced bool
 }
 
@@ -64,7 +64,10 @@ func Calculate(catalog Catalog, modelKey string, usage Usage) CostResult {
 	// cost-optimized routing skips unpriced candidates, so under
 	// `unpriced_strategy: skip` no embedding target could rank at all.
 	switch model.Mode {
-	case ModeChat:
+	// A responses-mode row is a model served only on the Responses API, priced
+	// with the same per-token rates under the same inclusive-prompt convention.
+	// Without this arm every /v1/responses request to one was recorded unpriced.
+	case ModeChat, ModeResponses:
 		r.Priced = p.InputPerMTokens != nil
 		// PromptTokens is INCLUSIVE of CacheReadTokens on every provider: that
 		// is the OpenAI convention, and providers/core/anthropicwire folds

@@ -12,7 +12,8 @@ type ProviderPreset struct {
 	MaxIdleConnsPerHost int
 
 	// ResponseHeaderTimeout is the maximum time to wait for response headers.
-	// Some providers (Bedrock, Vertex) have higher cold-start latency.
+	// Some providers (Bedrock, Vertex) have higher cold-start latency. It only
+	// ever raises the base config's bound — see applyPreset.
 	ResponseHeaderTimeout time.Duration
 
 	// DialTimeout overrides the default dial timeout.
@@ -30,20 +31,17 @@ type ProviderPreset struct {
 func KnownProviderPresets() map[string]ProviderPreset {
 	return map[string]ProviderPreset{
 		"openai": {
-			MaxIdleConnsPerHost:   200,
-			ResponseHeaderTimeout: 30 * time.Second,
+			MaxIdleConnsPerHost: 200,
 		},
 		"azure-openai": {
-			MaxIdleConnsPerHost:   200,
-			ResponseHeaderTimeout: 30 * time.Second,
+			MaxIdleConnsPerHost: 200,
 		},
 		"anthropic": {
 			MaxIdleConnsPerHost:   150,
 			ResponseHeaderTimeout: 60 * time.Second,
 		},
 		"gemini": {
-			MaxIdleConnsPerHost:   100,
-			ResponseHeaderTimeout: 30 * time.Second,
+			MaxIdleConnsPerHost: 100,
 		},
 		"bedrock": {
 			MaxIdleConnsPerHost:   100,
@@ -61,8 +59,7 @@ func KnownProviderPresets() map[string]ProviderPreset {
 			DialTimeout:           15 * time.Second,
 		},
 		"groq": {
-			MaxIdleConnsPerHost:   100,
-			ResponseHeaderTimeout: 15 * time.Second,
+			MaxIdleConnsPerHost: 100,
 		},
 		"ollama": {
 			MaxIdleConnsPerHost:   20,
@@ -78,8 +75,7 @@ func KnownProviderPresets() map[string]ProviderPreset {
 		},
 		"azure-foundry": {
 			// Another Azure OpenAI-wire endpoint; mirror azure-openai.
-			MaxIdleConnsPerHost:   200,
-			ResponseHeaderTimeout: 30 * time.Second,
+			MaxIdleConnsPerHost: 200,
 		},
 		"ollama-cloud": {
 			// Serves large 120b/480b/671b models; the default 30s header
@@ -99,11 +95,20 @@ func KnownProviderPresets() map[string]ProviderPreset {
 
 // applyPreset merges a ProviderPreset into a base Config.
 // Zero-valued preset fields are left at the base config defaults.
+//
+// A preset's ResponseHeaderTimeout raises the base bound and never lowers it.
+// The bound is how long a model may take to answer — the whole generation for a
+// non-streaming call — and every call to a known provider, streaming or not,
+// goes through its preset client. The presets were written as raises over a
+// 30-second default; once the default grew past them, taking them verbatim cut
+// openai, azure-openai, azure-foundry and gemini to 30 seconds and groq to 15,
+// aborting a reasoning model's non-streaming generation with a transport error.
+// A tighter per-attempt bound is the operator's to set, with targets[].timeout.
 func applyPreset(base Config, preset ProviderPreset) Config {
 	if preset.MaxIdleConnsPerHost > 0 {
 		base.MaxIdleConnsPerHost = preset.MaxIdleConnsPerHost
 	}
-	if preset.ResponseHeaderTimeout > 0 {
+	if preset.ResponseHeaderTimeout > base.ResponseHeaderTimeout {
 		base.ResponseHeaderTimeout = preset.ResponseHeaderTimeout
 	}
 	if preset.DialTimeout > 0 {

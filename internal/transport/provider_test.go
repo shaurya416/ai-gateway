@@ -126,3 +126,33 @@ func TestRegisterKnownProviders_PoolIsolation(t *testing.T) {
 			antTransport.MaxIdleConnsPerHost, antPreset.MaxIdleConnsPerHost)
 	}
 }
+
+// Every call to a provider — streaming or not — goes through its preset client,
+// and a provider sends no header until it has something to say. The default
+// bound is sized for a reasoning model's generation, so a preset that set a
+// shorter one aborted exactly the requests the default was raised for: a
+// non-streaming o-series or thinking-model call to openai, azure-openai,
+// azure-foundry or gemini failed at 30 seconds, groq at 15.
+func TestRegisterKnownProviders_HeaderTimeoutNeverBelowDefault(t *testing.T) {
+	m := NewDefault()
+	m.RegisterKnownProviders()
+
+	floor := DefaultConfig().ResponseHeaderTimeout
+	for name := range KnownProviderPresets() {
+		if got := m.providerRawTransport(name).ResponseHeaderTimeout; got < floor {
+			t.Errorf("%s ResponseHeaderTimeout = %v, want at least the default %v", name, got, floor)
+		}
+	}
+}
+
+func TestApplyPreset_HeaderTimeoutOnlyRaises(t *testing.T) {
+	base := DefaultConfig()
+	base.ResponseHeaderTimeout = time.Minute
+
+	if got := applyPreset(base, ProviderPreset{ResponseHeaderTimeout: 15 * time.Second}).ResponseHeaderTimeout; got != time.Minute {
+		t.Errorf("shorter preset: ResponseHeaderTimeout = %v, want the base %v", got, time.Minute)
+	}
+	if got := applyPreset(base, ProviderPreset{ResponseHeaderTimeout: 2 * time.Minute}).ResponseHeaderTimeout; got != 2*time.Minute {
+		t.Errorf("longer preset: ResponseHeaderTimeout = %v, want %v", got, 2*time.Minute)
+	}
+}

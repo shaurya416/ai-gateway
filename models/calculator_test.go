@@ -98,6 +98,50 @@ func TestCalculateChatCacheAndReasoning(t *testing.T) {
 	}
 }
 
+// The published catalog files the models OpenAI serves only on the Responses
+// API — gpt-5-codex, codex-mini-latest, o3-deep-research — under mode
+// "responses", with ordinary per-token rates. /v1/responses prices through
+// Calculate, and with no arm for the mode every such request was recorded
+// unpriced: no cost on the request-log row, the span or the completed event,
+// and no rank under cost-optimized routing with unpriced_strategy: skip.
+// The row below is the published one, verbatim in its pricing.
+func TestCalculateResponsesModeBillsLikeChat(t *testing.T) {
+	c, err := parse([]byte(`{"openai/gpt-5-codex": {
+		"provider": "openai", "model_id": "gpt-5-codex", "mode": "responses",
+		"pricing": {"input_per_m_tokens": 1.25, "output_per_m_tokens": 10.0,
+			"cache_read_per_m_tokens": 0.125, "cache_write_per_m_tokens": null,
+			"reasoning_per_m_tokens": null}}}`))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+
+	// Inclusive prompt count, as for chat: 200k of the 1M were cache hits.
+	got := Calculate(c, "openai/gpt-5-codex", Usage{
+		PromptTokens:     1_000_000,
+		CompletionTokens: 100_000,
+		CacheReadTokens:  200_000,
+	})
+
+	if !got.ModelFound {
+		t.Fatal("ModelFound should be true")
+	}
+	if !got.Priced {
+		t.Fatal("Priced = false for a responses-mode row carrying an input rate")
+	}
+	if !approxEqual(got.InputUSD, 1.0, 1e-9) {
+		t.Errorf("InputUSD: got %v, want 1.0", got.InputUSD)
+	}
+	if !approxEqual(got.CacheReadUSD, 0.025, 1e-9) {
+		t.Errorf("CacheReadUSD: got %v, want 0.025", got.CacheReadUSD)
+	}
+	if !approxEqual(got.OutputUSD, 1.0, 1e-9) {
+		t.Errorf("OutputUSD: got %v, want 1.0", got.OutputUSD)
+	}
+	if !approxEqual(got.TotalUSD, 2.025, 1e-9) {
+		t.Errorf("TotalUSD: got %v, want 2.025", got.TotalUSD)
+	}
+}
+
 // Nil pricing fields must return 0, not panic.
 func TestCalculateChatNilPricing(t *testing.T) {
 	c := catalogWith("openai/gpt-4o", Model{

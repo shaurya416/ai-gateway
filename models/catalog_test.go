@@ -253,6 +253,43 @@ func TestLoadWithInfoFallsBackWhenRemoteParseFails(t *testing.T) {
 	}
 }
 
+// A catalog document that decodes to no models is not a catalog — a mirror or
+// proxy can serve one when its own source fails — and accepting it as a remote
+// success replaced a working catalog with an empty one, at startup and on every
+// 24-hour refresh, while the load reported success: /v1/models lost its catalog
+// entries, catalog-derived routing lost its models, and every request was priced
+// as an unknown model. It falls back exactly as unparseable JSON does.
+func TestLoadWithInfoFallsBackWhenRemoteCatalogIsEmpty(t *testing.T) {
+	for _, body := range []string{`{}`, `null`, ` null `} {
+		t.Run(body, func(t *testing.T) {
+			var buf bytes.Buffer
+			previous := logger.Default()
+			logger.SetDefault(logger.New(logger.Options{Output: &buf}))
+			t.Cleanup(func() { logger.SetDefault(previous) })
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(body))
+			}))
+			t.Cleanup(server.Close)
+			t.Setenv(CatalogURLEnv, server.URL)
+
+			result, err := LoadWithInfo()
+			if err != nil {
+				t.Fatalf("LoadWithInfo returned error: %v", err)
+			}
+			if result.Source != LoadSourceFallback {
+				t.Fatalf("Source = %q, want %q: an empty remote document must not replace the catalog", result.Source, LoadSourceFallback)
+			}
+			if len(result.Catalog) == 0 {
+				t.Fatal("fallback catalog is empty")
+			}
+			if !strings.Contains(buf.String(), "could not be parsed") {
+				t.Fatalf("empty-catalog fallback warning was not logged: %s", buf.String())
+			}
+		})
+	}
+}
+
 func TestLoadWithInfoFallsBackForInvalidOverrideURL(t *testing.T) {
 	t.Setenv(CatalogURLEnv, "file:///tmp/catalog.json")
 

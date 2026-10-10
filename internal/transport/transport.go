@@ -53,8 +53,9 @@ func DefaultConfig() Config {
 		// has something to say, which for a non-streaming call is the whole
 		// generation and for a streaming one is the first token — both of which
 		// routinely pass thirty seconds on a reasoning model or a long prompt.
-		// A provider whose observed behaviour differs sets its own value in
-		// KnownProviderPresets, which overrides this.
+		// A provider whose observed behaviour is slower sets its own value in
+		// KnownProviderPresets, which can raise this bound but never lower it
+		// (see applyPreset).
 		ResponseHeaderTimeout: 120 * time.Second,
 		ForceHTTP2:            true,
 		DisableCompression:    false,

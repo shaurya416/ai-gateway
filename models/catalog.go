@@ -10,6 +10,7 @@ import (
 	"context"
 	_ "embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -234,6 +235,9 @@ const (
 	ModeImage     ModelMode = "image"
 	ModeAudioIn   ModelMode = "audio_in"
 	ModeAudioOut  ModelMode = "audio_out"
+	// ModeResponses is a model served only on the Responses API (the codex and
+	// deep-research families). It bills per token exactly as chat does.
+	ModeResponses ModelMode = "responses"
 )
 
 // Pricing holds all cost fields in USD.
@@ -490,6 +494,13 @@ func parse(data []byte) (Catalog, error) {
 	var c Catalog
 	if err := json.Unmarshal(data, &c); err != nil {
 		return nil, fmt.Errorf("catalog parse: %w", err)
+	}
+	// `{}` and `null` decode without error into a catalog of no models, which no
+	// real catalog is. Accepting one as a remote success would replace a working
+	// catalog — and on refresh, the live one — with nothing while reporting the
+	// load as successful, so it is refused like any other unusable document.
+	if len(c) == 0 {
+		return nil, errors.New("catalog parse: document contains no models")
 	}
 	// Build the reverse modelID → key index so that Get() can resolve
 	// bare model IDs without scanning all entries.

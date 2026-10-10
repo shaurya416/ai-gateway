@@ -456,6 +456,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the server reported ready, so the model was never offered the tool and
   nothing said why. Initialization still succeeds; the entries that match are
   exposed as before.
+- A non-streaming call to a reasoning or thinking model on `openai`,
+  `azure-openai`, `azure-foundry` or `gemini` is no longer aborted after 30
+  seconds, nor one on `groq` after 15. A provider sends no response header
+  until the whole generation is done, which routinely passes 30 seconds on an
+  o-series, GPT-5 or Gemini Pro model, so these requests failed with a
+  transport error — one that is retried, failed over and counted against the
+  circuit breaker, while the upstream still bills the generation. The
+  per-provider transport presets were written as raises over a 30-second
+  default; when the default became 120 seconds their values were still taken
+  verbatim, which lowered the bound for every provider whose preset sat below
+  it — `anthropic` at 60 seconds and `replicate` and `perplexity` at 65 among
+  them. A preset now only ever raises the default header timeout, so every
+  provider waits at least 120 seconds; `targets[].timeout` remains the way to
+  bound one attempt more tightly and fail over sooner.
+- A remote model catalog that decodes to no models — `{}` or `null` — falls
+  back to the embedded catalog instead of being accepted. It loaded as a
+  successful remote fetch, at startup and on the 24-hour refresh, which
+  replaced the working catalog with an empty one: `/v1/models` lost its catalog
+  entries, models known only from the catalog stopped routing, and every
+  request was priced as an unknown model, while the log reported the catalog
+  refreshed. It is now refused like unparseable JSON, and a refresh keeps the
+  catalog already in use.
+- `/v1/responses` requests to the models the catalog files under mode
+  `responses` — `gpt-5-codex`, `gpt-5.1-codex`, `codex-mini-latest`,
+  `o3-deep-research` and the rest of the Responses-only families — are priced.
+  Cost calculation had no arm for that mode, so every such request was
+  recorded unpriced: no cost on the request-log row, the span or the completed
+  event, and no rank under `cost-optimized` with `unpriced_strategy: skip`. The
+  mode is now billed per token exactly as chat is, against the row's input,
+  output and cache-read rates.
 
 ## [1.5.9] — 2026-09-18
 
