@@ -194,12 +194,16 @@ type serverRuntime struct {
 	auditStore   repository.AuditStore
 	logReader    requestlog.Reader
 	otelShutdown gwotel.ShutdownFunc
+	// configStore is held here only from when startup opens it until the
+	// config manager takes ownership of it; it is nil before and after.
+	configStore configStore
 }
 
 func (app *serverRuntime) resources() []httpserver.NamedResource {
 	return []httpserver.NamedResource{
 		{Name: "gateway", Value: app.gw},
 		{Name: "config manager", Value: app.cfgManager},
+		{Name: "config store", Value: app.configStore},
 		{Name: "api key store", Value: app.keyStore},
 		{Name: "session store", Value: app.sessionStore},
 		{Name: "audit store", Value: app.auditStore},
@@ -275,9 +279,21 @@ func buildServer(ctx context.Context, lg *logger.Logger) (app *serverRuntime, er
 	// TracerProvider afterwards left every span opened in that window
 	// non-recording, so mcp.init_server and mcp.initialize were never exported
 	// and mcp.list_tools arrived at the collector as a parentless root.
-	var obsCfg config.ObservabilityConfig
-	if cfg != nil {
-		obsCfg = cfg.Observability
+	//
+	// The config store is opened first for the same reason. A config it holds
+	// replaces the file's whole once the config manager adopts it, and the
+	// pipeline has to be built from that config's observability section, not
+	// from the file the gateway is about to stop running.
+	cfgStore, configStoreBackend, err := createConfigStoreFromEnv(ctx)
+	if err != nil {
+		logger.Default().Error("failed to initialize config store", "error", err)
+		return nil, err
+	}
+	app.configStore = cfgStore
+	obsCfg, err := startupObservability(ctx, cfg, cfgStore)
+	if err != nil {
+		logger.Default().Error("failed to read the persisted config", "error", err)
+		return nil, err
 	}
 	obsProvider, otelShutdown, err := gwotel.Init(ctx, otelConfigFromGateway(obsCfg))
 	if err != nil {
@@ -297,7 +313,8 @@ func buildServer(ctx context.Context, lg *logger.Logger) (app *serverRuntime, er
 	// every scrape, rather than from whenever a request last finished.
 	gw.PublishCircuitBreakerMetrics()
 
-	cfgManager, configStoreBackend, err := CreateConfigManagerFromEnv(ctx, gw)
+	cfgManager, err := newConfigManager(gw, cfgStore)
+	app.configStore = nil // owned by the manager now, or closed if it failed
 	if err != nil {
 		logger.Default().Error("failed to initialize config store", "error", err)
 		return nil, err

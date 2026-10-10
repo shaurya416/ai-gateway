@@ -7,7 +7,7 @@ package models
 type Usage struct {
 	PromptTokens     int
 	CompletionTokens int
-	ReasoningTokens  int     // o1/o3 models — billed separately
+	ReasoningTokens  int     // subset of CompletionTokens; billed at its own rate when the row has one
 	CacheReadTokens  int     // prompt cache hits (cheaper)
 	CacheWriteTokens int     // prompt cache misses, written to cache
 	ImageCount       int     // image generation requests
@@ -104,8 +104,18 @@ func Calculate(catalog Catalog, modelKey string, usage Usage) CostResult {
 			// must not produce a negative billable count.
 			promptBillable = max(usage.PromptTokens-usage.CacheReadTokens, 0)
 		}
+		// CompletionTokens is likewise INCLUSIVE of ReasoningTokens (the OpenAI
+		// convention; xAI's and gemini's disjoint counts are folded into it at
+		// decode), so a reasoning rate takes the reasoning subset off the
+		// output-rate count by the same rule: added on top, every reasoning
+		// token was billed twice. With no reasoning rate the subset stays on
+		// the output rate, which is how it is billed.
+		completionBillable := usage.CompletionTokens
+		if p.ReasoningPerMTokens != nil {
+			completionBillable = max(usage.CompletionTokens-usage.ReasoningTokens, 0)
+		}
 		r.InputUSD = perM(p.InputPerMTokens, promptBillable)
-		r.OutputUSD = perM(p.OutputPerMTokens, usage.CompletionTokens)
+		r.OutputUSD = perM(p.OutputPerMTokens, completionBillable)
 		r.CacheReadUSD = perM(p.CacheReadPerMTokens, usage.CacheReadTokens)
 		r.CacheWriteUSD = perM(p.CacheWritePerMTokens, usage.CacheWriteTokens)
 		r.ReasoningUSD = perM(p.ReasoningPerMTokens, usage.ReasoningTokens)

@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	aigateway "github.com/ferro-labs/ai-gateway"
+	"github.com/ferro-labs/ai-gateway/config"
 	"github.com/ferro-labs/ai-gateway/internal/admin/handlers"
 	"github.com/ferro-labs/ai-gateway/internal/admin/repository"
 	"github.com/ferro-labs/ai-gateway/internal/requestlog"
@@ -228,6 +229,33 @@ func CreateRequestLogReaderFromEnv(ctx context.Context) (requestlog.Reader, requ
 
 // CreateConfigManagerFromEnv builds a config manager from CONFIG_STORE_BACKEND / CONFIG_STORE_DSN env vars.
 func CreateConfigManagerFromEnv(ctx context.Context, gw *aigateway.Gateway) (handlers.ConfigManager, string, error) {
+	store, backend, err := createConfigStoreFromEnv(ctx)
+	if err != nil {
+		return nil, "", err
+	}
+	manager, err := newConfigManager(gw, store)
+	if err != nil {
+		return nil, "", err
+	}
+	return manager, backend, nil
+}
+
+// configStore is a persistent config store, closed by whoever owns it: the
+// startup sequence until a config manager is built over it, the manager after.
+type configStore interface {
+	repository.ConfigStore
+	Close() error
+}
+
+// createConfigStoreFromEnv opens the persistent config store that
+// CONFIG_STORE_BACKEND names. The memory backend keeps no store, so it returns
+// a nil store.
+//
+// It is separate from the config manager because the manager needs a gateway,
+// and part of what the store holds is read before the gateway exists: a
+// persisted config supersedes the file whole, observability included, and the
+// tracing pipeline is built ahead of the gateway (see buildServer).
+func createConfigStoreFromEnv(ctx context.Context) (configStore, string, error) {
 	backend := strings.ToLower(strings.TrimSpace(os.Getenv("CONFIG_STORE_BACKEND")))
 	if backend == "" {
 		backend = BackendMemory
@@ -237,34 +265,64 @@ func CreateConfigManagerFromEnv(ctx context.Context, gw *aigateway.Gateway) (han
 
 	switch backend {
 	case BackendMemory, backendInMemory, backendInMemoryAlt:
-		manager, err := repository.NewGatewayConfigManager(gw, nil)
-		if err != nil {
-			return nil, "", err
-		}
-		return manager, BackendMemory, nil
+		return nil, BackendMemory, nil
 	case BackendSQLite:
 		store, err := repository.NewSQLiteConfigStore(ctx, dsn)
 		if err != nil {
 			return nil, "", err
 		}
-		manager, err := repository.NewGatewayConfigManager(gw, store)
-		if err != nil {
-			_ = store.Close()
-			return nil, "", err
-		}
-		return manager, BackendSQLite, nil
+		return store, BackendSQLite, nil
 	case BackendPostgres, backendPostgresSQL:
 		store, err := repository.NewPostgresConfigStore(ctx, dsn)
 		if err != nil {
 			return nil, "", err
 		}
-		manager, err := repository.NewGatewayConfigManager(gw, store)
-		if err != nil {
-			_ = store.Close()
-			return nil, "", err
-		}
-		return manager, BackendPostgres, nil
+		return store, BackendPostgres, nil
 	default:
 		return nil, "", fmt.Errorf("unsupported config store backend %q", backend)
 	}
+}
+
+// newConfigManager builds the config manager over store, which may be nil for
+// the memory backend. The manager owns store from here on: it is closed here
+// when the manager cannot be built, and by the manager's Close otherwise.
+func newConfigManager(gw *aigateway.Gateway, store configStore) (handlers.ConfigManager, error) {
+	var persistent repository.ConfigStore
+	if store != nil {
+		persistent = store
+	}
+	manager, err := repository.NewGatewayConfigManager(gw, persistent)
+	if err != nil {
+		if store != nil {
+			_ = store.Close()
+		}
+		return nil, err
+	}
+	return manager, nil
+}
+
+// startupObservability returns the observability section of the config the
+// gateway is about to run. A config persisted in the store supersedes the file
+// as a whole when the config manager adopts it, so its section is the one in
+// force; the file's applies only when the store holds none.
+//
+// Reading the file's section regardless built the tracing pipeline from a
+// config the gateway was not running: an exporter, endpoint or sampler set
+// through PUT /admin/config — accepted with a warning that it takes effect on
+// the next restart — never took effect on any restart, while GET /admin/config
+// reported it.
+func startupObservability(ctx context.Context, fileCfg *config.Config, store configStore) (config.ObservabilityConfig, error) {
+	if store != nil {
+		persisted, ok, err := store.Load(ctx)
+		if err != nil {
+			return config.ObservabilityConfig{}, err
+		}
+		if ok {
+			return persisted.Observability, nil
+		}
+	}
+	if fileCfg != nil {
+		return fileCfg.Observability, nil
+	}
+	return config.ObservabilityConfig{}, nil
 }

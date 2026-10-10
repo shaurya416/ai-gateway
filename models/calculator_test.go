@@ -69,9 +69,11 @@ func TestCalculateChatCacheAndReasoning(t *testing.T) {
 
 	// PromptTokens is inclusive of CacheReadTokens, so 1.5M prompt tokens of
 	// which 500k were cache hits leaves 1M billing at the input rate.
+	// CompletionTokens is inclusive of ReasoningTokens the same way, so 2M
+	// completion tokens of which 1M were reasoning leaves 1M at the output rate.
 	got := Calculate(c, "anthropic/claude-3-7-sonnet", Usage{
 		PromptTokens:     1_500_000,
-		CompletionTokens: 1_000_000,
+		CompletionTokens: 2_000_000,
 		CacheReadTokens:  500_000,
 		CacheWriteTokens: 1_000_000,
 		ReasoningTokens:  1_000_000,
@@ -96,6 +98,88 @@ func TestCalculateChatCacheAndReasoning(t *testing.T) {
 	if got.TotalUSD != want {
 		t.Errorf("TotalUSD: got %v, want %v", got.TotalUSD, want)
 	}
+}
+
+// CompletionTokens is INCLUSIVE of ReasoningTokens on every provider (the
+// OpenAI convention; gemini and xAI are folded into it at decode), so a row
+// that prices reasoning at its own rate must take the reasoning subset off the
+// output-rate count, exactly as a cache-read rate takes the cached subset off
+// the input-rate count. Added on top, every reasoning token was billed twice:
+// once at the output rate inside CompletionTokens and again at the reasoning
+// rate.
+func TestCalculateChatReasoningIsASubsetOfCompletion(t *testing.T) {
+	usage := Usage{
+		PromptTokens:     100_000,
+		CompletionTokens: 1_000_000, // 800k of it reasoning, 200k visible text
+		ReasoningTokens:  800_000,
+	}
+
+	t.Run("reasoning rate equal to the output rate", func(t *testing.T) {
+		c := catalogWith("openai/o3", Model{
+			Provider: "openai", ModelID: "o3", Mode: ModeChat,
+			Pricing: Pricing{
+				InputPerMTokens:     ptr(2.0),
+				OutputPerMTokens:    ptr(8.0),
+				ReasoningPerMTokens: ptr(8.0),
+			},
+		})
+		got := Calculate(c, "openai/o3", usage)
+		// One million completion tokens at $8 / 1M, however they split.
+		if !approxEqual(got.OutputUSD+got.ReasoningUSD, 8.0, 1e-9) {
+			t.Errorf("OutputUSD+ReasoningUSD = %v + %v, want 8.0 for 1M completion tokens at $8/1M",
+				got.OutputUSD, got.ReasoningUSD)
+		}
+		if !approxEqual(got.TotalUSD, 0.2+8.0, 1e-9) {
+			t.Errorf("TotalUSD: got %v, want 8.2", got.TotalUSD)
+		}
+	})
+
+	t.Run("reasoning rate distinct from the output rate", func(t *testing.T) {
+		c := catalogWith("openai/o3", Model{
+			Provider: "openai", ModelID: "o3", Mode: ModeChat,
+			Pricing: Pricing{
+				InputPerMTokens:     ptr(2.0),
+				OutputPerMTokens:    ptr(8.0),
+				ReasoningPerMTokens: ptr(4.0),
+			},
+		})
+		got := Calculate(c, "openai/o3", usage)
+		if !approxEqual(got.OutputUSD, 1.6, 1e-9) {
+			t.Errorf("OutputUSD: got %v, want 1.6 (200k visible tokens at $8/1M)", got.OutputUSD)
+		}
+		if !approxEqual(got.ReasoningUSD, 3.2, 1e-9) {
+			t.Errorf("ReasoningUSD: got %v, want 3.2 (800k reasoning tokens at $4/1M)", got.ReasoningUSD)
+		}
+	})
+
+	t.Run("no reasoning rate leaves reasoning on the output rate", func(t *testing.T) {
+		c := catalogWith("openai/o3", Model{
+			Provider: "openai", ModelID: "o3", Mode: ModeChat,
+			Pricing: Pricing{
+				InputPerMTokens:  ptr(2.0),
+				OutputPerMTokens: ptr(8.0),
+			},
+		})
+		got := Calculate(c, "openai/o3", usage)
+		if !approxEqual(got.OutputUSD, 8.0, 1e-9) || got.ReasoningUSD != 0 {
+			t.Errorf("OutputUSD/ReasoningUSD = %v/%v, want 8.0/0", got.OutputUSD, got.ReasoningUSD)
+		}
+	})
+
+	t.Run("more reasoning than completion tokens never goes negative", func(t *testing.T) {
+		c := catalogWith("openai/o3", Model{
+			Provider: "openai", ModelID: "o3", Mode: ModeChat,
+			Pricing: Pricing{
+				InputPerMTokens:     ptr(2.0),
+				OutputPerMTokens:    ptr(8.0),
+				ReasoningPerMTokens: ptr(8.0),
+			},
+		})
+		got := Calculate(c, "openai/o3", Usage{PromptTokens: 10, CompletionTokens: 100, ReasoningTokens: 500})
+		if got.OutputUSD < 0 {
+			t.Errorf("OutputUSD = %v, want a non-negative figure", got.OutputUSD)
+		}
+	})
 }
 
 // The published catalog files the models OpenAI serves only on the Responses

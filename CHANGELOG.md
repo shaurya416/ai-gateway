@@ -48,6 +48,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   which the target refused every request on every surface, chat included, with
   `503` until the breaker's timeout — a caller's malformed body took the target
   down for everyone.
+- A config persisted in the config store now runs with its own observability
+  section after a restart. The store's config replaces the file's whole, and
+  `PUT /admin/config` accepts an observability change with a warning that it
+  takes effect on the next restart, but startup built the tracing pipeline
+  from the file before the store was read: an exporter, OTLP endpoint or
+  sampler set through the Admin API never took effect on any restart, while
+  `GET /admin/config` reported it in force. The store is now read before the
+  pipeline is built. A stored config whose observability section is empty now
+  runs with tracing off, as `GET /admin/config` already reported, even when
+  the file enables it.
+- A catalog row that prices reasoning tokens at their own rate
+  (`reasoning_per_m_tokens`) no longer bills them twice. Completion token
+  counts include the reasoning tokens on every provider — OpenAI's convention,
+  which gemini's and xAI's usage is folded into at decode — but the cost
+  calculator priced all completion tokens at the output rate and then added
+  the reasoning tokens again at the reasoning rate, so a reasoning-heavy answer
+  was recorded above its cost in the request log, span, completed event and
+  cost metric. The reasoning tokens now come off the output-rate count when a
+  reasoning rate is set, as cached tokens come off the input-rate count. Rows
+  with no reasoning rate, which includes every row in the bundled and
+  published catalogs, are unchanged.
+- `ferrogw admin` commands now refuse positional arguments they do not read.
+  Every leaf but `keys get`, `keys revoke`, `keys rotate` and
+  `config rollback` accepted and ignored any, so `ferrogw admin keys create
+  ci-bot` created a key with no name — the label is `--name` — printed it and
+  exited `0`, and `ferrogw admin logs list 500` listed the default 50 rows.
+  Such an invocation now fails before the Admin API is called.
 - `/v1/chat/completions` now answers `400`, naming the message and part, for a
   content part it cannot carry: any type other than `text` and `image_url` —
   `file` and `input_audio` included — and an `image_url` part with no URL. A

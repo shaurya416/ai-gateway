@@ -31,6 +31,7 @@ var keysCmd = &cobra.Command{
 var keysListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List all API keys",
+	Args:  cobra.NoArgs,
 	RunE:  runKeysList,
 }
 
@@ -71,6 +72,7 @@ func runKeysGet(cmd *cobra.Command, args []string) error {
 var keysCreateCmd = &cobra.Command{
 	Use:   "create",
 	Short: "Create a new API key",
+	Args:  cobra.NoArgs,
 	RunE:  runKeysCreate,
 }
 
@@ -154,6 +156,7 @@ var configCmd = &cobra.Command{
 var configGetCmd = &cobra.Command{
 	Use:   "get",
 	Short: "Print the current runtime configuration",
+	Args:  cobra.NoArgs,
 	RunE:  runConfigGet,
 }
 
@@ -169,6 +172,7 @@ func runConfigGet(cmd *cobra.Command, _ []string) error {
 var configHistoryCmd = &cobra.Command{
 	Use:   "history",
 	Short: "Show configuration change history",
+	Args:  cobra.NoArgs,
 	RunE:  runConfigHistory,
 }
 
@@ -194,6 +198,7 @@ func runConfigHistory(cmd *cobra.Command, _ []string) error {
 var configSetCmd = &cobra.Command{
 	Use:   "set",
 	Short: "Apply a new configuration (JSON file)",
+	Args:  cobra.NoArgs,
 	RunE:  runConfigSet,
 }
 
@@ -247,6 +252,7 @@ var logsCmd = &cobra.Command{
 var logsListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List persisted request logs",
+	Args:  cobra.NoArgs,
 	RunE:  runLogsList,
 }
 
@@ -273,6 +279,7 @@ func runLogsList(cmd *cobra.Command, _ []string) error {
 var logsStatsCmd = &cobra.Command{
 	Use:   "stats",
 	Short: "Show aggregated log statistics",
+	Args:  cobra.NoArgs,
 	RunE:  runLogsStats,
 }
 
@@ -295,6 +302,7 @@ var providersCmd = &cobra.Command{
 var providersListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List all registered providers and their model counts",
+	Args:  cobra.NoArgs,
 	RunE:  runProvidersList,
 }
 
@@ -318,6 +326,7 @@ func runProvidersList(cmd *cobra.Command, _ []string) error {
 var providersHealthCmd = &cobra.Command{
 	Use:   "health",
 	Short: "Show per-provider health status",
+	Args:  cobra.NoArgs,
 	RunE:  runProvidersHealth,
 }
 

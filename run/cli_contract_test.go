@@ -3,8 +3,11 @@ package run
 import (
 	"bytes"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -107,6 +110,33 @@ func TestServeErrorIsNotPrintedTwice(t *testing.T) {
 	}
 	if strings.Contains(out.String(), "startup failed") {
 		t.Fatalf("Cobra printed an error the startup path already logged: %s", out.String())
+	}
+}
+
+// `admin keys create` takes its label from --name. Given the label as a
+// positional token instead, it used to mint a key with no name — the token went
+// to an argument nothing read — print it as created, and exit 0. The token must
+// be refused before the Admin API is called.
+func TestAdminKeysCreateRefusesAPositionalName(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"id":"new","name":"","key":"fgw_secret"}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	out, served, err := runCLI(t, "admin", "keys", "create", "ci-bot", "--gateway-url", srv.URL, "--api-key", "k")
+
+	if err == nil {
+		t.Fatalf("`admin keys create ci-bot` must fail: the name is read from --name, not from an argument\n%s", out.String())
+	}
+	if *served {
+		t.Fatal("an admin command started the server")
+	}
+	if n := calls.Load(); n != 0 {
+		t.Fatalf("the Admin API was called %d times; a key was created with the label dropped", n)
 	}
 }
 
