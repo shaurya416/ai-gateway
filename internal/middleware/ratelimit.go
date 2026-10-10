@@ -1,8 +1,11 @@
 package middleware
 
 import (
+	"math"
 	"net"
 	"net/http"
+	"strconv"
+	"time"
 
 	"github.com/ferro-labs/ai-gateway/internal/apierror"
 	"github.com/ferro-labs/ai-gateway/pkg/metrics"
@@ -21,11 +24,11 @@ import (
 //
 // One second is the floor that is always honest: the bucket refills at
 // RATE_LIMIT_RPS tokens per second, so at any rate of 1 rps or more a token
-// exists by the time a client that waited this long comes back. Below 1 rps the
-// hint is optimistic and the client may be shed once more — the ceiling of
-// stating a constant rather than reading the bucket's own refill schedule.
-// Deriving it per response is the upgrade path if sub-1-rps limits become a
-// real configuration.
+// exists by the time a client that waited this long comes back. A store that
+// refills slower than that states its own interval through
+// RateLimitKeyedRetryAfter, as the sign-in limiter does. A RATE_LIMIT_RPS below
+// 1 is the one configuration still sent this hint, because RateLimit is handed
+// the store and not the rate it was built with.
 const retryAfterSeconds = "1"
 
 // RateLimit returns middleware that enforces per-IP token-bucket rate limiting.
@@ -46,6 +49,24 @@ func RateLimit(store *ratelimit.Store) func(http.Handler) http.Handler {
 // sign-ins from a busy gateway — which is the one thing the counter is worth
 // watching for.
 func RateLimitKeyed(store *ratelimit.Store, rejectionLabel string) func(http.Handler) http.Handler {
+	return rateLimitKeyed(store, rejectionLabel, retryAfterSeconds)
+}
+
+// RateLimitKeyedRetryAfter is RateLimitKeyed for a store that refills slower
+// than one token a second. refill is the interval at which the store's bucket
+// gains a token, and the Retry-After a rejection carries is that interval
+// rounded up to whole seconds.
+//
+// The fixed one-second hint is only honest at a rate of 1 rps or more. Below
+// it a client that waited as long as it was told came back before a token had
+// returned and was shed again, so every limiter slower than that names its own
+// interval here rather than inheriting a hint that describes another one.
+func RateLimitKeyedRetryAfter(store *ratelimit.Store, rejectionLabel string, refill time.Duration) func(http.Handler) http.Handler {
+	seconds := max(1, int64(math.Ceil(refill.Seconds())))
+	return rateLimitKeyed(store, rejectionLabel, strconv.FormatInt(seconds, 10))
+}
+
+func rateLimitKeyed(store *ratelimit.Store, rejectionLabel, retryAfter string) func(http.Handler) http.Handler {
 	if store == nil {
 		return func(next http.Handler) http.Handler { return next }
 	}
@@ -62,7 +83,7 @@ func RateLimitKeyed(store *ratelimit.Store, rejectionLabel string) func(http.Han
 				metrics.RateLimitRejections.WithLabelValues(rejectionLabel).Inc()
 				// Set before WriteOpenAI: it writes the status line, after
 				// which the header map is no longer sent.
-				w.Header().Set("Retry-After", retryAfterSeconds)
+				w.Header().Set("Retry-After", retryAfter)
 				apierror.WriteOpenAI(w, http.StatusTooManyRequests,
 					"rate limit exceeded", "rate_limit_error", "rate_limit_exceeded")
 				return

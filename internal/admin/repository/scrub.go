@@ -57,11 +57,11 @@ func redactValue(v string) string {
 // shownKeys returns the predicate deciding which keys of one free-form map are
 // settings an operator may read back. Everything it declines is withheld.
 //
-// A free-form map is operator-supplied and, with one exception, is handed
-// straight to something outside the gateway: a plugin, an exporter, an MCP
-// server, an OTLP collector. The gateway cannot read those keys, so it cannot
-// tell a setting from a credential — unless the receiver declares its own
-// schema. Only plugins do. Everything else is withheld.
+// A free-form map is operator-supplied and, but for aliases and a target's
+// model_map, is handed straight to something outside the gateway: a plugin, an
+// exporter, an MCP server, an OTLP collector. The gateway cannot read those
+// keys, so it cannot tell a setting from a credential — unless the receiver
+// declares its own schema. Only plugins do. Everything else is withheld.
 //
 // The judgement used to run the other way: a value was withheld when its key
 // matched a vocabulary of credential-ish fragments and served otherwise. That
@@ -82,6 +82,15 @@ func shownKeys(owner any, field string) func(string) bool {
 		// resolves it itself and both halves of an entry are model names, so
 		// there is no third party for a credential to be destined for.
 		if field == "Aliases" {
+			return everyKey
+		}
+	case config.Target:
+		// A target's model_map is the same kind of map as aliases: the gateway
+		// resolves it itself and both halves are model ids. Its keys are already
+		// advertised by /v1/models and its values named in X-Gateway-Model, so
+		// withholding it hid nothing — it only left the dashboard unable to show
+		// or save a config that uses one.
+		if field == "ModelMap" {
 			return everyKey
 		}
 	case config.PluginConfig:

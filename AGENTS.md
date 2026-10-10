@@ -881,7 +881,7 @@ setting. **An unrecognised key is withheld.**
 |-----|-------|
 | `plugins[].config` | the keys that plugin's catalog entry declares (`GET /admin/plugins/catalog`), and no others |
 | `plugins[].config` of a plugin registered out of tree | nothing — the gateway does not know its schema |
-| `aliases` | everything: the gateway resolves it itself and both halves of an entry are model names |
+| `aliases`, `targets[].model_map` | everything: the gateway resolves them itself and both halves of an entry are model names |
 | `mcp_servers[].env`, `mcp_servers[].headers`, `observability.exporters[].config`, `observability.tracing.headers` | nothing — these carry transport credentials and declare no schema |
 | any map field added later | nothing, until something declares it |
 
@@ -905,8 +905,8 @@ The cost lands on the config editor: a **withheld map no longer round-trips**.
 Its keys are gone, so a `GET` body cannot be edited and `PUT` back — `PUT` refuses
 it, because the placeholder key carries the redaction marker the write guard
 already looks for. Edit those maps from the config file. A map whose keys are
-*shown* — `aliases`, and a plugin's declared settings — round-trips exactly as
-before.
+*shown* — `aliases`, `targets[].model_map`, and a plugin's declared settings —
+round-trips exactly as before.
 
 The direction is the point. The rule this replaced withheld a value when its key
 matched a vocabulary of credential-ish fragments and served it otherwise, which

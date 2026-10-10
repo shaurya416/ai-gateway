@@ -121,6 +121,9 @@ func WriteOpenAI(w http.ResponseWriter, status int, message, errType, code strin
 //     an upstream fault.
 //   - 400/422 pass through. The provider read the translated request and rejected
 //     its shape, which traces back to the caller's request and is theirs to fix.
+//   - 413 passes through for the same reason: the request was too large for the
+//     provider — over its byte limit, or the context window a provider reports
+//     with this status rather than 400 — and only the caller can shrink it.
 //   - 404 is the model: the provider does not serve what was asked for, which the
 //     caller resolves by asking for something else.
 //   - Timeouts become 504 and everything else becomes 502 — the gateway reached a
@@ -151,6 +154,14 @@ func upstreamStatusDetails(statusErr *core.HTTPStatusError) routeErrorClass {
 		// WriteOpenAI still redacts it because the body is the provider's to
 		// write and can quote the credential we presented.
 		return routeErrorClass{statusErr.StatusCode, errTypeInvalidRequest, "invalid_request", statusErr.Message}
+	case http.StatusRequestEntityTooLarge:
+		// Answered 502 by the catch-all below, an oversized request read as an
+		// upstream outage: every SDK retries a 5xx, so it was resent unchanged
+		// for the same refusal, and the caller was never told to make it
+		// smaller. The same condition sent as a 400 already reached the caller
+		// as its own error, so the provider's account is kept here as it is
+		// there, and the code is the one the gateway's own body limit answers.
+		return routeErrorClass{http.StatusRequestEntityTooLarge, errTypeInvalidRequest, "request_too_large", statusErr.Message}
 	case http.StatusRequestTimeout, http.StatusGatewayTimeout:
 		return routeErrorClass{http.StatusGatewayTimeout, errTypeUpstream, "upstream_timeout", msgUpstreamTime}
 	default:

@@ -247,6 +247,7 @@ func TestRouteErrorDetails_UpstreamStatus(t *testing.T) {
 		{"provider_key_forbidden", http.StatusForbidden, http.StatusBadGateway, "upstream_error", "upstream_auth_error"},
 		{"malformed_request", http.StatusBadRequest, http.StatusBadRequest, errTypeInvalidRequest, "invalid_request"},
 		{"unprocessable_request", http.StatusUnprocessableEntity, http.StatusUnprocessableEntity, errTypeInvalidRequest, "invalid_request"},
+		{"request_too_large", http.StatusRequestEntityTooLarge, http.StatusRequestEntityTooLarge, errTypeInvalidRequest, "request_too_large"},
 		{"unknown_model", http.StatusNotFound, http.StatusNotFound, errTypeInvalidRequest, codeModelNotFound},
 		{"upstream_timed_out", http.StatusGatewayTimeout, http.StatusGatewayTimeout, "upstream_error", "upstream_timeout"},
 		{"upstream_crashed", http.StatusInternalServerError, http.StatusBadGateway, "upstream_error", "upstream_error"},

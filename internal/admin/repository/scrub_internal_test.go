@@ -98,9 +98,11 @@ func TestShownKeys(t *testing.T) {
 		key   string
 		want  bool
 	}{
-		// The one map the gateway consumes itself. Both halves of an entry are
+		// The maps the gateway consumes itself. Both halves of an entry are
 		// model names, so there is no third party for a credential to reach.
 		{name: "alias", owner: config.Config{}, field: "Aliases", key: "fast", want: true},
+		{name: "model map", owner: config.Target{}, field: "ModelMap", key: "support-chat", want: true},
+		{name: "wrong field on Target", owner: config.Target{}, field: "Models", key: "support-chat"},
 
 		// A plugin declares the keys it reads.
 		{name: "declared setting", owner: config.PluginConfig{Name: "request-logger"}, field: "Config", key: "level", want: true},

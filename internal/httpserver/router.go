@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"time"
 
 	aigateway "github.com/ferro-labs/ai-gateway"
 	"github.com/ferro-labs/ai-gateway/config"
@@ -468,7 +469,7 @@ func mountAdminRoutes(
 	// RATE_LIMIT_RPS=0. This is the only unauthenticated write path on the
 	// gateway, so it cannot be left with a bound an operator can switch off
 	// while tuning inference throughput.
-	r.With(middleware.RateLimitKeyed(newSessionLimiter(), "admin_session")).
+	r.With(middleware.RateLimitKeyedRetryAfter(newSessionLimiter(), "admin_session", sessionAttemptInterval)).
 		Post("/admin/session", adminHandlers.CreateSessionHandler())
 
 	r.Route("/admin", func(r chi.Router) {
@@ -528,6 +529,11 @@ const (
 	// attacker rotating addresses evicts their own entries before an
 	// operator's.
 	sessionLimiterMaxKeys = 10_000
+	// sessionAttemptInterval is how often the sign-in bucket gains a token,
+	// and so the Retry-After a throttled sign-in carries: the general
+	// limiter's one-second hint sent a client back five seconds before its
+	// next attempt could be admitted.
+	sessionAttemptInterval = time.Minute / sessionAttemptsPerMin
 )
 
 func newSessionLimiter() *ratelimit.Store {

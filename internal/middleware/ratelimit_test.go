@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ferro-labs/ai-gateway/pkg/ratelimit"
 )
@@ -198,5 +199,37 @@ func TestRateLimit_NextHandler_NotCalledOnBlock(t *testing.T) {
 	handler.ServeHTTP(httptest.NewRecorder(), r2)
 	if called {
 		t.Fatal("next must not be called when request is rate-limited")
+	}
+}
+
+// TestRateLimitKeyedRetryAfter_StatesTheStoresInterval pins the hint a slower
+// store names for itself: its refill interval, rounded up to whole seconds and
+// never below one, so a client that waits as long as it is told finds a token.
+func TestRateLimitKeyedRetryAfter_StatesTheStoresInterval(t *testing.T) {
+	for _, tc := range []struct {
+		refill time.Duration
+		want   string
+	}{
+		{refill: 6 * time.Second, want: "6"},
+		{refill: 1500 * time.Millisecond, want: "2"},
+		{refill: 200 * time.Millisecond, want: "1"},
+		{refill: 0, want: "1"},
+	} {
+		t.Run(tc.refill.String(), func(t *testing.T) {
+			handler := RateLimitKeyedRetryAfter(ratelimit.NewStore(1, 1), "test", tc.refill)(dummyHandler)
+			var w *httptest.ResponseRecorder
+			for range 2 {
+				r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/", nil)
+				r.RemoteAddr = testIP
+				w = httptest.NewRecorder()
+				handler.ServeHTTP(w, r)
+			}
+			if w.Code != http.StatusTooManyRequests {
+				t.Fatalf("second request = %d, want 429", w.Code)
+			}
+			if got := w.Header().Get("Retry-After"); got != tc.want {
+				t.Fatalf("Retry-After = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }

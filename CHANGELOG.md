@@ -10,6 +10,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 
+- `GET /admin/config` now serves a target's `model_map` as configured. It was
+  withheld as an undeclared free-form map, so every entry came back as
+  `{"[REDACTED_KEY_0]": "[REDACTED]"}`: the dashboard's strategy panel, which
+  reads the map from that route, could only show the placeholders, the config
+  editor refused to save any config carrying a `model_map` until every entry
+  was retyped, and each config apply logged the stored-literal warning for it.
+  `model_map` is now shown the way `aliases` is — the gateway resolves both
+  itself, both halves of an entry are model ids, and the keys are already
+  listed by `/v1/models` and the values named in `X-Gateway-Model` — and a
+  read of it round-trips through `PUT /admin/config`. Each value still goes
+  through the credential-shape rules every served setting does.
+- A throttled `POST /admin/session` now carries `Retry-After: 6`, the interval
+  at which its limiter admits another sign-in. It carried the per-IP limiter's
+  fixed `Retry-After: 1`, but the sign-in limiter refills ten attempts a
+  minute, so a client that waited as long as it was told came back five
+  seconds before a token had returned and was answered `429` again — and again
+  on every retry that trusted the header. The sign-in route now states its own
+  limiter's refill interval, rounded up to whole seconds. The per-IP limiter
+  keeps its one-second hint.
+- A provider's `413` now reaches the caller as `413 request_too_large` with the
+  provider's account of the refusal. It fell through to the catch-all and was
+  answered `502 upstream_error`, "the upstream provider returned no usable
+  response": every OpenAI SDK retries a `5xx`, so the same oversized request
+  was resent for the same refusal, and the caller was never told to make it
+  smaller — while the same context-window refusal sent as a `400` already
+  reached the caller as its own error with the provider's message. A `413` is
+  now treated as the caller's to fix, as a `400` is.
 - `POST /admin/keys/{id}/rotate` on a SQL key store no longer reports a
   rotation as failed after it has happened. The new secret was written first
   and the key read back afterwards; when that read failed — a dropped database
