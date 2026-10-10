@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/ferro-labs/ai-gateway/config"
+	gwotel "github.com/ferro-labs/ai-gateway/internal/otel"
 )
 
 // TestValidateConfig_TracingProtocolAndSampleRatio is the regression test for
@@ -54,6 +55,53 @@ func TestValidateConfig_TracingProtocolAndSampleRatio(t *testing.T) {
 			}
 			if !strings.Contains(err.Error(), tc.wantErr) {
 				t.Errorf("error %q should name %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+// TestValidateConfig_TracingEndpoint holds `ferrogw validate` to the answer
+// startup gives for observability.tracing.endpoint.
+//
+// The tracing backend refuses an endpoint it cannot export to when it starts —
+// a scheme-less value carrying a path, a scheme other than http or https, a URL
+// with no host — and the gateway exits. Config validation did not check the
+// field at all, so `ferrogw validate` reported such a config valid and the
+// deploy it approved never came up.
+func TestValidateConfig_TracingEndpoint(t *testing.T) {
+	tests := []struct {
+		endpoint string
+		wantErr  bool
+	}{
+		{endpoint: ""},
+		{endpoint: "localhost:4317"},
+		{endpoint: "jaeger:4317"},
+		{endpoint: "http://collector:4318"},
+		{endpoint: "https://collector.example.com:4318/v1/traces"},
+		{endpoint: "otel-collector:4318/v1/traces", wantErr: true},
+		{endpoint: "grpc://collector:4317", wantErr: true},
+		{endpoint: "http://", wantErr: true},
+		{endpoint: "http://coll ector:4318", wantErr: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.endpoint, func(t *testing.T) {
+			cfg := config.Config{
+				Strategy:      config.StrategyConfig{Mode: config.ModeSingle},
+				Targets:       []config.Target{{VirtualKey: "key1"}},
+				Observability: config.ObservabilityConfig{Tracing: config.TracingConfig{Endpoint: tc.endpoint}},
+			}
+			loadErr := config.ValidateConfig(cfg)
+			if (loadErr != nil) != tc.wantErr {
+				t.Fatalf("ValidateConfig(endpoint %q) = %v, want error: %v", tc.endpoint, loadErr, tc.wantErr)
+			}
+			if tc.wantErr && !strings.Contains(loadErr.Error(), "endpoint") {
+				t.Errorf("error %q should name the endpoint", loadErr)
+			}
+
+			// What startup's tracing validator says about the same value.
+			startErr := gwotel.Config{Enabled: true, Protocol: "http/protobuf", Endpoint: tc.endpoint}.Validate()
+			if (startErr != nil) != (loadErr != nil) {
+				t.Errorf("config validation and startup disagree on endpoint %q: load %v, startup %v", tc.endpoint, loadErr, startErr)
 			}
 		})
 	}

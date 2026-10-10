@@ -134,6 +134,11 @@ func envExportTarget(name, v string, httpProtocol, signal bool) (exportTarget, e
 // silently disabled one: the export fails per batch, deep inside the SDK, long
 // after the operator has stopped watching the logs.
 func parseConfiguredEndpoint(raw string, httpProtocol bool) (exportTarget, error) {
+	// The same check config validation runs, so a value refused here was
+	// already refused by `ferrogw validate`.
+	if err := tracingpolicy.ValidateEndpoint(raw); err != nil {
+		return exportTarget{}, err
+	}
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return exportTarget{}, nil
@@ -143,22 +148,12 @@ func parseConfiguredEndpoint(raw string, httpProtocol bool) (exportTarget, error
 	// OTLP/gRPC endpoints are conventionally written this way and the
 	// specification allows any form the gRPC client accepts, so this stays.
 	if !strings.Contains(raw, "://") {
-		if strings.ContainsAny(raw, "/?#") {
-			return exportTarget{}, fmt.Errorf(
-				"tracing endpoint %q has a path but no scheme: write it as a URL (http://host:port/...) or as a bare host:port", raw)
-		}
 		return exportTarget{hostPort: raw}, nil
 	}
 
 	u, err := url.Parse(raw)
 	if err != nil {
 		return exportTarget{}, fmt.Errorf("tracing endpoint %q is not a valid URL: %w", raw, err)
-	}
-	if u.Scheme != "http" && u.Scheme != "https" {
-		return exportTarget{}, fmt.Errorf("tracing endpoint %q has scheme %q: only http and https are supported", raw, u.Scheme)
-	}
-	if u.Host == "" {
-		return exportTarget{}, fmt.Errorf("tracing endpoint %q has no host", raw)
 	}
 
 	// OTLP/gRPC defines no meaning for a path, so the URL is passed through

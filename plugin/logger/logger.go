@@ -6,6 +6,7 @@ package logger
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/ferro-labs/ai-gateway/internal/redact"
@@ -51,6 +52,11 @@ func (l *RequestLogger) SetRequestLogWriter(w requestlog.Writer) {
 // REQUEST_LOG_STORE_BACKEND / REQUEST_LOG_STORE_DSN — and are ignored with a
 // warning so an operator running an old config learns where the setting moved.
 func (l *RequestLogger) Init(config map[string]any) error {
+	persist, err := persistSetting(config)
+	if err != nil {
+		return err
+	}
+
 	l.logLevel = logger.LevelInfo
 	l.writer = requestlog.NoopWriter{}
 	l.redactor = redact.DefaultRedactor()
@@ -72,7 +78,6 @@ func (l *RequestLogger) Init(config map[string]any) error {
 		logger.Default().Warn("request-logger: the backend option is ignored; set the request log store with REQUEST_LOG_STORE_BACKEND")
 	}
 
-	persist, _ := config["persist"].(bool)
 	switch {
 	case !persist:
 		// stdout only; l.writer stays NoopWriter.
@@ -82,6 +87,34 @@ func (l *RequestLogger) Init(config map[string]any) error {
 		logger.Default().Warn("request-logger: persist is set but no request log store is configured; set REQUEST_LOG_STORE_BACKEND to persist logs")
 	}
 	return nil
+}
+
+// ValidateConfig checks the persist setting the way Init does, so `ferrogw
+// validate` reports a value Init would refuse. See plugin.ConfigValidator.
+func (l *RequestLogger) ValidateConfig(config map[string]any) error {
+	_, err := persistSetting(config)
+	return err
+}
+
+// persistSetting reads the persist option: false when it is absent, the value
+// when it is a boolean, and an error for anything else.
+//
+// Anything else used to read as false, which turned persistence off with
+// nothing said: YAML reads an unquoted `yes` or `on` as a string, a ${VAR}
+// reference always resolves to one, and a JSON config can quote the value. Each
+// of those started a gateway that logged requests to stdout and wrote no row,
+// leaving the Request Logs page and every figure derived from it empty while
+// the config read as though they were being kept.
+func persistSetting(config map[string]any) (bool, error) {
+	value, ok := config["persist"]
+	if !ok || value == nil {
+		return false, nil
+	}
+	persist, ok := value.(bool)
+	if !ok {
+		return false, fmt.Errorf("request-logger: persist must be true or false, got %T %q", value, fmt.Sprint(value))
+	}
+	return persist, nil
 }
 
 // measured returns a pointer to value when it was actually measured, and nil

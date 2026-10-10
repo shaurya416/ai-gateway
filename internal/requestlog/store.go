@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/ferro-labs/ai-gateway/internal/migrations"
 	"github.com/ferro-labs/ai-gateway/internal/redact"
@@ -360,17 +361,17 @@ func (w *SQLWriter) Write(ctx context.Context, entry Entry) error {
 
 	// #nosec G701 -- query is a fixed literal routed through sqldb.Bind; every value is a bound parameter.
 	_, err := w.db.ExecContext(ctx, query,
-		entry.TraceID,
-		entry.Stage,
-		entry.Model,
-		entry.Provider,
-		entry.APIKeyID,
-		entry.UserID,
-		entry.SessionID,
+		storableText(entry.TraceID),
+		storableText(entry.Stage),
+		storableText(entry.Model),
+		storableText(entry.Provider),
+		storableText(entry.APIKeyID),
+		storableText(entry.UserID),
+		storableText(entry.SessionID),
 		entry.PromptTokens,
 		entry.CompletionTokens,
 		entry.TotalTokens,
-		entry.ErrorMessage,
+		storableText(entry.ErrorMessage),
 		entry.CreatedAt,
 		// A nil *float64 binds as NULL, which is the point: see Entry.
 		entry.DurationMs,
@@ -406,7 +407,7 @@ func (w *SQLWriter) AnnotateError(ctx context.Context, traceID, stage string, cr
 	query := sqldb.Bind(w.dialect, `UPDATE request_logs SET error_message = ?
 	WHERE trace_id = ? AND stage = ? AND created_at = ? AND (error_message IS NULL OR error_message = '')`)
 
-	result, err := w.db.ExecContext(ctx, query, redact.String(message), traceID, stage, createdAt.UTC())
+	result, err := w.db.ExecContext(ctx, query, storableText(redact.String(message)), storableText(traceID), storableText(stage), createdAt.UTC())
 	if err != nil {
 		return false, fmt.Errorf("annotate request log error: %w", err)
 	}
@@ -434,23 +435,23 @@ func (w *SQLWriter) List(ctx context.Context, query Query) (ListResult, error) {
 
 	if query.Stage != "" {
 		whereClauses = append(whereClauses, "stage = ?")
-		args = append(args, query.Stage)
+		args = append(args, storableText(query.Stage))
 	}
 	if len(query.Stages) > 0 {
 		// #nosec G202 -- the placeholder run is generated from the argument
 		// count, never from the values themselves.
 		whereClauses = append(whereClauses, "stage IN ("+strings.TrimSuffix(strings.Repeat("?,", len(query.Stages)), ",")+")")
 		for _, stage := range query.Stages {
-			args = append(args, stage)
+			args = append(args, storableText(stage))
 		}
 	}
 	if query.Model != "" {
 		whereClauses = append(whereClauses, "model = ?")
-		args = append(args, query.Model)
+		args = append(args, storableText(query.Model))
 	}
 	if query.Provider != "" {
 		whereClauses = append(whereClauses, "provider = ?")
-		args = append(args, query.Provider)
+		args = append(args, storableText(query.Provider))
 	}
 	if query.APIKeyID != nil {
 		if *query.APIKeyID == "" {
@@ -459,7 +460,7 @@ func (w *SQLWriter) List(ctx context.Context, query Query) (ListResult, error) {
 			whereClauses = append(whereClauses, "(api_key_id IS NULL OR api_key_id = '')")
 		} else {
 			whereClauses = append(whereClauses, "api_key_id = ?")
-			args = append(args, *query.APIKeyID)
+			args = append(args, storableText(*query.APIKeyID))
 		}
 	}
 	if query.Since != nil {
@@ -627,15 +628,15 @@ func (w *SQLWriter) Delete(ctx context.Context, query MaintenanceQuery) (int, er
 
 	if query.Stage != "" {
 		whereClauses = append(whereClauses, "stage = ?")
-		args = append(args, query.Stage)
+		args = append(args, storableText(query.Stage))
 	}
 	if query.Model != "" {
 		whereClauses = append(whereClauses, "model = ?")
-		args = append(args, query.Model)
+		args = append(args, storableText(query.Model))
 	}
 	if query.Provider != "" {
 		whereClauses = append(whereClauses, "provider = ?")
-		args = append(args, query.Provider)
+		args = append(args, storableText(query.Provider))
 	}
 
 	// #nosec G202 -- delete predicates are assembled from a fixed allowlist with placeholders.
@@ -660,6 +661,28 @@ func (w *SQLWriter) Close() error {
 		return nil
 	}
 	return w.db.Close()
+}
+
+// storableText returns s in a form every backend can hold: each run of bytes
+// that is not UTF-8, and each NUL byte, replaced with U+FFFD.
+//
+// Postgres refuses both in a TEXT value and fails the whole INSERT, and much of
+// what a row holds is caller-supplied: a JSON model of "gpt-4o\u0000" decodes to
+// a NUL, a multipart model field can carry any byte, and an error message
+// quotes them. Such a request was answered — a 404 for the unknown model — and
+// its on_error row was then refused, so it left no trace in the request log.
+// SQLite stored the same bytes as given, which made a row's shape depend on the
+// backend. Replacing rather than dropping keeps the row, and keeps a visible
+// mark where the unrepresentable byte was.
+//
+// Filters go through it too, so a filter naming the value a request carried
+// selects the row that request wrote. Valid text is returned as is, without
+// allocating.
+func storableText(s string) string {
+	if utf8.ValidString(s) && strings.IndexByte(s, 0) < 0 {
+		return s
+	}
+	return strings.ReplaceAll(strings.ToValidUTF8(s, "\uFFFD"), "\x00", "\uFFFD")
 }
 
 // nullableFloat converts a scanned NULL into a nil pointer, preserving the

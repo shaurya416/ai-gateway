@@ -292,9 +292,9 @@ func ValidateConfig(cfg Config) error {
 		}
 	}
 
-	// Validate observability.tracing.privacy_level, protocol and sample_ratio
-	// against the single source of truth in the internal tracingpolicy package
-	// (shared with internal/otel).
+	// Validate observability.tracing.privacy_level, protocol, sample_ratio and
+	// endpoint against the single source of truth in the internal tracingpolicy
+	// package (shared with internal/otel).
 	if err := tracingpolicy.ValidatePrivacyLevel(cfg.Observability.Tracing.PrivacyLevel); err != nil {
 		return fmt.Errorf("observability.tracing: %w", err)
 	}
@@ -305,6 +305,9 @@ func ValidateConfig(cfg Config) error {
 		if err := tracingpolicy.ValidateSampleRatio(*ratio); err != nil {
 			return fmt.Errorf("observability.tracing: %w", err)
 		}
+	}
+	if err := tracingpolicy.ValidateEndpoint(cfg.Observability.Tracing.Endpoint); err != nil {
+		return fmt.Errorf("observability.tracing: %w", err)
 	}
 
 	// Validate compatibility.on_unsupported_param: "" (⇒ warn), warn, drop, reject.

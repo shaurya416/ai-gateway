@@ -85,6 +85,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   could be proxied, so they sent the request under that provider's credential
   to a path its upstream does not serve — anthropic, gemini, azure-openai — and
   relayed whatever it answered.
+- A request whose model carries a NUL byte or bytes that are not UTF-8 is no
+  longer dropped from a Postgres request log. A JSON model of
+  `"gpt-4o\u0000x"` decodes to a NUL, a multipart `model` field can hold any
+  byte, and the error naming the unknown model quotes it; Postgres refuses
+  both in a `TEXT` value, so the request was answered `404` and its `on_error`
+  row was then rejected — the request left no trace in `/admin/logs` or the
+  stats derived from it, and only a `WARN` line said so. SQLite stored the
+  same bytes as given. Every text column is now written with such bytes
+  replaced by U+FFFD, on both backends, and the request-log filters apply the
+  same replacement, so filtering by the value a request carried still selects
+  its row.
+- The `request-logger` plugin refuses a `persist` value that is not `true` or
+  `false`, at startup and in `ferrogw validate`. Any other value read as
+  `false`: YAML hands over an unquoted `yes` or `on` as a string, a `${VAR}`
+  reference always resolves to one, and a JSON config can quote the value. Each
+  started a gateway that wrote no request-log row while the config read as
+  though rows were being kept, leaving the Request Logs page and every figure
+  derived from it empty with nothing logged to say why.
+- `ferrogw validate`, `ferrogw doctor` and `PUT /admin/config` check
+  `observability.tracing.endpoint`. An endpoint the exporter cannot use — a
+  scheme-less value carrying a path such as `otel-collector:4318/v1/traces`, a
+  scheme other than `http` or `https`, a URL with no host — was refused only
+  when tracing started, so `ferrogw validate` reported the config valid and the
+  gateway it approved exited at startup. Both now apply the same check. A
+  config already stored through `PUT /admin/config` with such an endpoint is
+  refused when the gateway adopts it at startup, as any other invalid stored
+  config is; correct the endpoint before upgrading.
 - One request carrying bytes that are not UTF-8 no longer discards the trace
   spans exported alongside it. OTLP carries every attribute, status
   description and event attribute as a protobuf string, which must be UTF-8,

@@ -26,15 +26,15 @@ func (w *SQLWriter) Stats(ctx context.Context, query Query) (StatsResult, error)
 
 	if query.Stage != "" {
 		whereClauses = append(whereClauses, "stage = ?")
-		args = append(args, query.Stage)
+		args = append(args, storableText(query.Stage))
 	}
 	if query.Model != "" {
 		whereClauses = append(whereClauses, "model = ?")
-		args = append(args, query.Model)
+		args = append(args, storableText(query.Model))
 	}
 	if query.Provider != "" {
 		whereClauses = append(whereClauses, "provider = ?")
-		args = append(args, query.Provider)
+		args = append(args, storableText(query.Provider))
 	}
 	if query.Since != nil {
 		whereClauses = append(whereClauses, "created_at >= ?")
