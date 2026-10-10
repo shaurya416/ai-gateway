@@ -786,15 +786,37 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 		// across the entire stream, since Gemini can split parallel tool
 		// calls across multiple SSE chunks.
 		toolCallCounters := make(map[int]int)
+		// Gemini repeats usageMetadata on every chunk as a running total. The
+		// OpenAI stream carries usage once, at the end, and a client that adds
+		// up the usage blocks it receives over-counted by the number of chunks.
+		// So the latest total is held and reported once: on the chunk that
+		// finishes every candidate, or alone after the last chunk when none
+		// did. A failure carries it too, unseen by the client, so the request
+		// is still metered for what it consumed.
+		var usage *core.Usage
+		usageSent := false
+		seen, finished := make(map[int]bool), make(map[int]bool)
+		wantFinished := 1
+		if req.N != nil && *req.N > 1 {
+			wantFinished = *req.N
+		}
+		var lastID string
 		for data := range lines {
 
 			var chunk geminiStreamResponse
 			if json.Unmarshal([]byte(data), &chunk) != nil {
 				continue
 			}
+			if chunk.UsageMetadata.TotalTokenCount > 0 {
+				u := chunk.UsageMetadata.toCoreUsage()
+				usage = &u
+			}
+			if chunk.ResponseID != "" {
+				lastID = chunk.ResponseID
+			}
 			// Nothing valid follows an error frame, so it ends the stream.
 			if err := streamFrameError(chunk.Error, data); err != nil {
-				core.SendChunk(ctx, ch, core.StreamChunk{Error: err})
+				core.SendChunk(ctx, ch, core.StreamChunk{Error: err, Usage: usage})
 				return
 			}
 
@@ -807,6 +829,10 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 				Model: req.Model,
 			}
 			for i, candidate := range chunk.Candidates {
+				seen[i] = true
+				if candidate.FinishReason != "" {
+					finished[i] = true
+				}
 				counter := toolCallCounters[i]
 				text, toolCalls := parseCandidateParts(candidate.Content.Parts, i, true, &counter)
 				toolCallCounters[i] = counter
@@ -822,24 +848,34 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 					FinishReason: geminiFinishReason(candidate.FinishReason, counter > 0),
 				})
 			}
-			if chunk.PromptFeedback.promptBlocked(len(chunk.Candidates)) {
+			blocked := chunk.PromptFeedback.promptBlocked(len(chunk.Candidates))
+			if blocked {
 				sc.Choices = []core.StreamChoice{{
 					Index:        0,
 					Delta:        core.MessageDelta{Role: "assistant"},
 					FinishReason: core.FinishReasonContentFilter,
 				}}
 			}
-			// Gemini reports usage on the final streamed chunk.
-			if chunk.UsageMetadata.TotalTokenCount > 0 {
-				usage := chunk.UsageMetadata.toCoreUsage()
-				sc.Usage = &usage
+			allFinished := len(finished) >= wantFinished && len(finished) == len(seen)
+			if usage != nil && !usageSent && (blocked || allFinished) {
+				sc.Usage = usage
+				usageSent = true
+			}
+			// A frame that carried only the running usage total has nothing
+			// left to forward.
+			if len(sc.Choices) == 0 && sc.Usage == nil {
+				continue
 			}
 			if !core.SendChunk(ctx, ch, sc) {
 				return
 			}
 		}
 		if err := scanErr(); err != nil {
-			core.SendChunk(ctx, ch, core.StreamChunk{Error: err})
+			core.SendChunk(ctx, ch, core.StreamChunk{Error: err, Usage: usage})
+			return
+		}
+		if usage != nil && !usageSent {
+			core.SendChunk(ctx, ch, core.StreamChunk{ID: lastID, Model: req.Model, Usage: usage})
 		}
 	}()
 

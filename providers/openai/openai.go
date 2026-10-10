@@ -599,7 +599,8 @@ type openAIStreamChunk struct {
 			Content   string                 `json:"content"`
 			ToolCalls []openAIStreamToolCall `json:"tool_calls"`
 		} `json:"delta"`
-		FinishReason string `json:"finish_reason"`
+		FinishReason string        `json:"finish_reason"`
+		Logprobs     core.Logprobs `json:"logprobs"`
 	} `json:"choices"`
 	Usage *openAIUsage `json:"usage"`
 	// Error is the envelope OpenAI emits when a request fails once the 200
@@ -636,6 +637,7 @@ func (c openAIStreamChunk) toStreamChunk() core.StreamChunk {
 				ToolCalls: mapStreamToolCalls(choice.Delta.ToolCalls),
 			},
 			FinishReason: choice.FinishReason,
+			Logprobs:     choice.Logprobs,
 		})
 	}
 	if c.Usage != nil && c.Usage.TotalTokens > 0 {

@@ -165,14 +165,21 @@ func (p *Provider) postTask(ctx context.Context, url string, body io.Reader) ([]
 // Embed sends a feature-extraction request to Hugging Face. The task API is not
 // OpenAI-shaped: it takes {"inputs": <string|[]string>} and returns a bare JSON
 // array of float vectors ([]float64 for a single input, [][]float64 for a
-// batch). Hugging Face does not report token usage, so Usage stays zero;
-// req.EncodingFormat and req.Dimensions have no task-API equivalent and are ignored.
+// batch). Hugging Face does not report token usage, so Usage stays zero.
+// req.EncodingFormat and req.Dimensions have no task-API equivalent, so a value
+// this path cannot serve is refused rather than ignored.
 func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.EmbeddingResponse, error) {
 	// The feature-extraction task API has no encoding_format concept and always
 	// answers with float vectors, so an unservable value has to be refused here
 	// or the caller is answered in a format it did not ask for and never told.
 	if err := core.ValidateEmbeddingEncodingFormat(req.EncodingFormat); err != nil {
 		return nil, err
+	}
+	// Nor does it take an output size: the model answers in its native
+	// dimension whatever was asked, so honouring the request is impossible and
+	// ignoring it serves a vector the caller's index was not built for.
+	if req.Dimensions != nil {
+		return nil, core.StatusError(Name, http.StatusBadRequest, "embed: dimensions are not supported for these embeddings")
 	}
 	escaped, err := escapeModelPath(req.Model)
 	if err != nil {

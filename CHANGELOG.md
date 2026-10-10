@@ -373,6 +373,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   either was configured for. It is now a load error naming the key, reported by
   `ferrogw validate` as well as at startup; an absent, null or empty `store_id`
   still takes the default.
+- A chat completion requested with `logprobs` now returns them. The request
+  field was forwarded upstream, but the choice and stream-chunk types had no
+  place for the answer's `logprobs`, so they were dropped on the way back: the
+  caller got a `200` with no log probabilities, which a client cannot tell
+  from a model that returned none. Each choice — and each streamed choice —
+  now carries the upstream's `logprobs` object as sent, on OpenAI and every
+  OpenAI-compatible provider. A `null` one is still left off, so a request
+  that did not ask for them is answered exactly as before.
+- A Gemini stream now reports its token usage once, on the chunk that finishes
+  it. Gemini repeats `usageMetadata` on every chunk as a running total, and
+  each one was forwarded, so every chunk carried a `usage` block where the
+  OpenAI stream carries one at the end. A client that adds up the usage it
+  receives — LangChain's `ChatOpenAI` does — counted a three-chunk answer of
+  9 prompt and 217 total tokens as 27 and 633. The latest total is now held
+  and sent with the finishing chunk, or on its own after the last chunk when
+  no candidate finished. The gateway's own metering, which already kept only
+  the last total, is unchanged, including on a stream that fails part-way.
+- Hugging Face embeddings now refuse `dimensions` with `400` before any
+  upstream call. The feature-extraction task has no output-size setting, so
+  the field was ignored and the model's native vector was served under a
+  `200` — a size the caller did not ask for, and one the index it was
+  requested for will reject or silently mismatch. Cohere and Bedrock already
+  refuse a `dimensions` they cannot serve.
 - A conversation replayed to Anthropic with a tool call whose arguments are
   not valid JSON — the partial object a model leaves when it is cut off
   mid-call, which OpenAI accepts back unchanged — is now sent, with that

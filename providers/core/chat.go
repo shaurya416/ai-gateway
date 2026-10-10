@@ -368,6 +368,41 @@ type Choice struct {
 	Index        int     `json:"index"`
 	Message      Message `json:"message"`
 	FinishReason string  `json:"finish_reason"`
+	// Logprobs is the choice's log-probability object, present when the
+	// request asked for logprobs and the upstream returned them.
+	Logprobs Logprobs `json:"logprobs,omitempty"`
+}
+
+// Logprobs is the log-probability object an OpenAI-wire upstream returns on a
+// choice — and on each streamed choice — when the request set logprobs. It is
+// carried verbatim rather than re-modelled: OpenAI nests per-token entries
+// under "content" and "refusal", while an OpenAI-compatible upstream may answer
+// in its own shape, and the caller asked the upstream, not the gateway, for
+// whichever one that is.
+//
+// The request's logprobs travel upstream, so dropping the answer's served the
+// caller a 200 with none, indistinguishable from a model that returned none.
+//
+// A JSON null decodes to nil and nil is omitted, so a response carrying
+// "logprobs": null on every choice — OpenAI's answer when none were asked
+// for — is served exactly as it was before the field existed.
+type Logprobs json.RawMessage
+
+// MarshalJSON writes the object as the upstream sent it.
+func (l Logprobs) MarshalJSON() ([]byte, error) {
+	return json.RawMessage(l).MarshalJSON()
+}
+
+// UnmarshalJSON keeps a copy of the raw object, and nothing for a JSON null.
+func (l *Logprobs) UnmarshalJSON(data []byte) error {
+	// The decoder hands over one valid JSON value, and the only one that
+	// starts with 'n' is null.
+	if len(data) == 0 || data[0] == 'n' {
+		*l = nil
+		return nil
+	}
+	*l = append((*l)[:0], data...)
+	return nil
 }
 
 // Usage carries token consumption statistics.

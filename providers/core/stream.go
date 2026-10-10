@@ -39,6 +39,9 @@ type StreamChoice struct {
 	Index        int          `json:"index"`
 	Delta        MessageDelta `json:"delta"`
 	FinishReason string       `json:"finish_reason,omitempty"`
+	// Logprobs is this chunk's log-probability object for the choice; see
+	// Logprobs.
+	Logprobs Logprobs `json:"logprobs,omitempty"`
 }
 
 // MessageDelta carries incremental content in a streaming response.
