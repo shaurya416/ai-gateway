@@ -10,6 +10,7 @@ import { errorMessage, formatNumber } from '../lib/format'
 import {
   modelsForMode,
   providerForModel,
+  TARGET_HEADER,
   TEXTAREA_CLASS,
   unsupportedParams,
   type CatalogModel,
@@ -35,16 +36,6 @@ interface Usage {
  * most callers never see.
  */
 type StreamFrame = ChatStreamChunk & { error?: { message?: string } }
-
-/**
- * The response header naming the target that served a routed request — the
- * same `targets[].virtual_key` a non-streamed answer carries as `provider`.
- *
- * The gateway writes it before the first chunk of a stream, because routing has
- * finished choosing by then, and its CORS layer exposes it to a dashboard on
- * another origin. The SSE frames themselves stay the OpenAI wire format.
- */
-const TARGET_HEADER = 'X-Gateway-Target'
 
 /**
  * One turn of the conversation, plus which target answered it.

@@ -110,6 +110,24 @@ describe('PluginsPage', () => {
     expect(within(panel as HTMLElement).getByText('Enabled')).toBeInTheDocument()
   })
 
+  it('gives each instance of one plugin its own card and its own settings', async () => {
+    // Two limiters at one stage with different ceilings are two instances, and
+    // both apply. One card showed the first ceiling and hid the second limiter.
+    arm({
+      plugins: [
+        { name: 'rate-limit', type: 'ratelimit', stage: 'before_request', enabled: true, config: { requests_per_second: 5 } },
+        { name: 'rate-limit', type: 'ratelimit', stage: 'before_request', enabled: true, config: { requests_per_second: 100 } },
+      ],
+    })
+    render(<PluginsPage />)
+
+    const headings = await screen.findAllByRole('heading', { name: 'rate-limit' })
+    expect(headings).toHaveLength(2)
+    const cards = headings.map((heading) => heading.closest('li') as HTMLElement)
+    expect(within(cards[0]!).getByText('requests_per_second: 5')).toBeInTheDocument()
+    expect(within(cards[1]!).getByText('requests_per_second: 100')).toBeInTheDocument()
+  })
+
   it('says what a plugin whose failure aborts the request would cost', async () => {
     // Nothing in the configuration document says this, and it is the difference
     // between a broken plugin costing a log line and a broken plugin returning

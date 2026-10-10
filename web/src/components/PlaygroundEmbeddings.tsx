@@ -9,7 +9,7 @@ import { errorMessage, formatNumber } from '../lib/format'
 import {
   l2Norm,
   modelsForMode,
-  providerForModel,
+  TARGET_HEADER,
   TEXTAREA_CLASS,
   VECTOR_PREVIEW,
   type CatalogModel,
@@ -29,6 +29,14 @@ export function PlaygroundEmbeddings({
   const [input, setInput] = useState('')
   const [dimensions, setDimensions] = useState('')
   const [result, setResult] = useState<EmbeddingsResponse | null>(null)
+  /**
+   * The target that served `result`, read from the response rather than the
+   * model catalog. The catalog names one owner per model id, but under fallback
+   * or load-balance another target can serve the same id — and the picker can
+   * move on after the result arrives, so nothing derived from it describes the
+   * answer on screen. Empty when the gateway did not say.
+   */
+  const [servedBy, setServedBy] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const controllerRef = useRef<AbortController | null>(null)
@@ -37,7 +45,6 @@ export function PlaygroundEmbeddings({
 
   const embeddingModels = useMemo(() => modelsForMode(models, 'embedding'), [models])
   const model = embeddingModels.some((entry) => entry.id === chosenModel) ? chosenModel : embeddingModels[0]?.id ?? ''
-  const provider = providerForModel(models, model)
 
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
@@ -48,6 +55,7 @@ export function PlaygroundEmbeddings({
     setBusy(true)
     setError('')
     setResult(null)
+    setServedBy('')
     // Blank means "let the provider choose": sending 0 would ask for a
     // zero-length vector, which is a different request and a guaranteed 400.
     const requested = Number(dimensions)
@@ -65,7 +73,9 @@ export function PlaygroundEmbeddings({
         { method: 'POST', body: JSON.stringify(body), signal: controller.signal },
         { connectTimeoutMs: 0 },
       )
-      setResult((await response.json()) as EmbeddingsResponse)
+      const answer = (await response.json()) as EmbeddingsResponse
+      setServedBy(response.headers.get(TARGET_HEADER) ?? '')
+      setResult(answer)
     } catch (requestError) {
       if (requestError instanceof DOMException && requestError.name === 'AbortError') return
       setError(errorMessage(requestError, 'The embeddings request failed.'))
@@ -163,7 +173,7 @@ export function PlaygroundEmbeddings({
 
           {result ? (
             <div className="flex flex-wrap gap-x-3 text-xs tabular-nums text-muted-foreground">
-              <span>{provider ? `${provider} · ` : ''}{result.model}</span>
+              <span>{servedBy ? `${servedBy} · ` : ''}{result.model}</span>
               <span>{formatNumber(result.usage.prompt_tokens)} input tokens</span>
               <span>{formatNumber(result.usage.total_tokens)} total tokens</span>
             </div>

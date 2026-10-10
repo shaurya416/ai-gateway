@@ -136,6 +136,18 @@ export function unsupportedParams(
 }
 
 /**
+ * The response header naming the target that served a routed request — the
+ * same `targets[].virtual_key` a non-streamed chat answer carries as `provider`.
+ *
+ * Every routed surface sets it, embeddings included, whose body names no
+ * provider at all. The gateway writes it before the first chunk of a stream,
+ * because routing has finished choosing by then, and its CORS layer exposes it
+ * to a dashboard on another origin. The SSE frames themselves stay the OpenAI
+ * wire format.
+ */
+export const TARGET_HEADER = 'X-Gateway-Target'
+
+/**
  * Euclidean length of an embedding.
  *
  * Worth a line of screen space because most providers return unit vectors: a

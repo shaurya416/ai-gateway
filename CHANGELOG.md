@@ -1651,6 +1651,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   chosen, and the Audit Trail's range and outcome and the Analytics stage
   filter read "24", "denied" and "on_error". Each trigger now reads the same
   label as the option chosen in its menu.
+- The Plugins page and the Configuration page's Plugins tab no longer hide a
+  second instance of a plugin. Entries sharing a name were collapsed onto one
+  card showing the first entry's settings, but the gateway shares an instance
+  only between entries whose settings match — so two rate limiters with
+  different ceilings at one stage, both enforced, appeared as one limiter with
+  the first ceiling, and the second was nowhere on the page. Entries are now
+  grouped the way the gateway resolves them, by name and settings, and each
+  instance gets its own card.
+- The Analytics page no longer describes the requests a failing provider was
+  sent as answered. The provider ranking was titled "Providers by answered
+  requests" and said failures never reach a provider, but the request log
+  counts a failure against the last target it reached — so a provider failing
+  every call led the ranking as the busiest one serving traffic. The panel is
+  now "Providers by requests" and says that failures are counted against the
+  target they reached.
+- The Playground names the target that served an embedding. The result caption
+  named the model's owner in the model catalog, which lists one owner per id,
+  so under fallback or load-balance it could name a target the request never
+  reached — and it followed the model picker after the result arrived. It now
+  reads the `X-Gateway-Target` header the gateway sets on every routed
+  response, and names no target when the gateway sent none.
 
 ## [1.5.9] — 2026-09-18
 

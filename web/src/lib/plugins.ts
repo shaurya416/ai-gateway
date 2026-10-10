@@ -139,14 +139,21 @@ export interface ConfiguredPlugin {
 }
 
 /**
- * Every entry sharing one plugin name, collapsed to a single row.
+ * Every entry the gateway resolves to one plugin instance, collapsed to a
+ * single row.
  *
  * A plugin whose `Execute` branches on the stage — response-cache, budget and
  * request-logger — is required to be configured once per stage, with identical
  * settings so both entries resolve to the same instance. Rendered as two rows
  * that would read as a duplicated block somebody forgot to delete.
+ *
+ * Entries that share a name but not their settings are not that setup: they
+ * are separate instances, which is how two limiters with different ceilings or
+ * one guardrail per rule are configured, and each gets its own group.
  */
 export interface PluginGroup {
+  /** Identifies the instance: the plugin's name plus its encoded settings. */
+  key: string
   name: string
   types: string[]
   stages: string[]
@@ -178,31 +185,52 @@ function formatSettingValue(value: unknown): string {
   return `${text.slice(0, SETTING_VALUE_MAX)}…`
 }
 
+/** JSON with every object's keys sorted, so equal settings encode equally. */
+function canonicalJSON(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJSON).join(',')}]`
+  if (isRecord(value)) {
+    const entries = Object.keys(value)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${canonicalJSON(value[key])}`)
+    return `{${entries.join(',')}}`
+  }
+  return JSON.stringify(value) ?? 'null'
+}
+
+/**
+ * The instance an entry resolves to, as `config.PluginSharingKey` decides it:
+ * name plus the encoded settings block.
+ *
+ * Read off the scrubbed document, so two instances that differ only in values
+ * the Admin API withholds encode alike here and share a group. Nothing on this
+ * page could tell them apart anyway.
+ */
+function instanceKey(name: string, config: Record<string, unknown>): string {
+  return `${name}\u0000${canonicalJSON(config)}`
+}
+
 export function groupPlugins(plugins: ConfiguredPlugin[]): PluginGroup[] {
   const groups = new Map<string, PluginGroup>()
   for (const plugin of plugins) {
     const name = plugin.name || 'unnamed'
-    const group = groups.get(name) ?? {
-      name,
-      types: [],
-      stages: [],
-      entryCount: 0,
-      enabledCount: 0,
-      settings: [],
-      redactedKeys: [],
+    const key = instanceKey(name, plugin.config)
+    let group = groups.get(key)
+    if (!group) {
+      // Every entry in a group carries these exact settings — that is what put
+      // it in the group — so the first one describes the instance.
+      const settings: PluginGroup['settings'] = []
+      const redactedKeys: string[] = []
+      for (const [setting, value] of Object.entries(plugin.config)) {
+        if (containsRedactedValue(value)) redactedKeys.push(setting)
+        else settings.push({ key: setting, value: formatSettingValue(value) })
+      }
+      group = { key, name, types: [], stages: [], entryCount: 0, enabledCount: 0, settings, redactedKeys }
+      groups.set(key, group)
     }
     if (plugin.type && !group.types.includes(plugin.type)) group.types.push(plugin.type)
     if (plugin.stage && !group.stages.includes(plugin.stage)) group.stages.push(plugin.stage)
     group.entryCount++
     if (plugin.enabled) group.enabledCount++
-    for (const [key, value] of Object.entries(plugin.config)) {
-      // The entries of a multi-stage plugin must carry identical settings, so
-      // the first one seen describes the instance and the rest repeat it.
-      if (group.settings.some((setting) => setting.key === key) || group.redactedKeys.includes(key)) continue
-      if (containsRedactedValue(value)) group.redactedKeys.push(key)
-      else group.settings.push({ key, value: formatSettingValue(value) })
-    }
-    groups.set(name, group)
   }
   return [...groups.values()]
 }

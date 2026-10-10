@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -35,8 +35,8 @@ function mockLoads(capabilities: Capabilities = forwardsEverything): void {
 }
 
 /** A JSON answer, as `rawRequest` hands it back: the raw Response. */
-function jsonResponse(body: unknown): Response {
-  return { json: () => Promise.resolve(body) } as unknown as Response
+function jsonResponse(body: unknown, headers: Record<string, string> = {}): Response {
+  return { headers: new Headers(headers), json: () => Promise.resolve(body) } as unknown as Response
 }
 
 /** An SSE body the panel's reader can drain, one chunk per `read()`. */
@@ -294,6 +294,37 @@ describe('PlaygroundPage', () => {
     // The tenth component is past the preview, so its value proves the DOM did
     // not receive all 1536 floats.
     expect(preview.textContent).not.toContain('0.7777')
+  })
+
+  it('names the target that served an embedding, not the model\'s catalog owner', async () => {
+    // The catalog lists one owner per model id. Under fallback another target
+    // serves the same id, and the response header is the only thing that says
+    // which one did — the caption used to name the catalog owner regardless.
+    const user = userEvent.setup()
+    const answer = {
+      object: 'list',
+      model: 'text-embedding-3-small',
+      data: [{ object: 'embedding', index: 0, embedding: [1, 0, 0] }],
+      usage: { prompt_tokens: 2, total_tokens: 2 },
+    }
+    rawRequestMock.mockResolvedValueOnce(jsonResponse(answer, { 'X-Gateway-Target': 'azure-openai' }))
+    renderPage()
+
+    await openTab(user, /embeddings/i)
+    await user.type(screen.getByLabelText('Text to embed'), 'route me')
+    await user.click(screen.getByRole('button', { name: /create embedding/i }))
+
+    /** The caption's first entry: who served the vectors, then the model. */
+    const servedCaption = async () =>
+      (await screen.findByText('2 input tokens')).parentElement?.firstElementChild?.textContent
+
+    expect(await servedCaption()).toBe('azure-openai · text-embedding-3-small')
+
+    // A gateway that does not say is not answered with a guess.
+    rawRequestMock.mockResolvedValueOnce(jsonResponse(answer))
+    await user.click(screen.getByRole('button', { name: /create embedding/i }))
+
+    await waitFor(async () => expect(await servedCaption()).toBe('text-embedding-3-small'))
   })
 
   it('renders an inline image and links a provider-hosted one', async () => {

@@ -100,15 +100,15 @@ function stageFrom(params: URLSearchParams): string {
 /**
  * Provider groups with the unattributed rows removed.
  *
- * Only an `after_request` row carries a provider: a request is logged before one
- * is chosen, and a failure is logged without ever reaching one. Those rows land
- * under "unknown", which then takes first place in the ranking and reads as a
- * provider that served the most traffic — the opposite of what it means.
+ * `by_provider` counts each request once, under the target that answered it
+ * or, for a failure, the last target it reached. A request refused before it
+ * reached any — a plugin denial, a model no target serves — names no provider
+ * and lands under "unknown", which would then rank as though it were one.
  *
  * Removed before ranking, not after, or excluding it inside the top six would
  * quietly return five.
  */
-function answeredByProvider(dimension: Record<string, DimensionStat>): Record<string, DimensionStat> {
+function attributedToProvider(dimension: Record<string, DimensionStat>): Record<string, DimensionStat> {
   return Object.fromEntries(Object.entries(dimension).filter(([name]) => name !== UNATTRIBUTED))
 }
 
@@ -532,13 +532,19 @@ export default function AnalyticsPage() {
                 measure="tokens"
               />
             </Panel>
+            {/*
+              * A failed request counts against the target it last reached, so a
+              * provider failing every call ranks by those failures. Calling the
+              * count "answered" listed a provider that answered nothing as the
+              * busiest one serving traffic.
+              */}
             <Panel
-              description="Requests a provider answered. Failures never reach one, so they appear under Top failures instead."
-              title="Providers by answered requests"
+              description="Requests routed to each provider. A failure counts against the last target it reached; one refused before reaching any is left out here and shows under Top failures."
+              title="Providers by requests"
             >
               <Ranking
-                emptyLabel="No provider answered a request in this range."
-                entries={rankDimension(answeredByProvider(stats.by_provider), 'count', RANK_LIMIT)}
+                emptyLabel="No request reached a provider in this range."
+                entries={rankDimension(attributedToProvider(stats.by_provider), 'count', RANK_LIMIT)}
                 measure="count"
               />
             </Panel>

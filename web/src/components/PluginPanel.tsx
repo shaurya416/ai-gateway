@@ -192,7 +192,7 @@ export function PluginPanel({
           </div>
           <ul className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
             {groups.map((group) => (
-              <ConfiguredCard catalog={catalog} group={group} key={group.name} />
+              <ConfiguredCard catalog={catalog} group={group} key={group.key} />
             ))}
           </ul>
         </section>
@@ -203,8 +203,9 @@ export function PluginPanel({
       <p className="text-xs text-muted-foreground">
         A plugin that acts before a request and records after it — response-cache, budget, request-logger — needs one entry per
         stage, carrying identical settings so both resolve to the same instance. Two stages on one card is that setup, not a
-        duplicate. The Admin API shows a value only under a key the plugin declares it reads — the keys listed on its catalog
-        card — and replaces every other value, and any value carrying credential material, with a placeholder. A plugin
+        duplicate. Two cards with one name are two instances with different settings, each applying its own. The Admin API
+        shows a value only under a key the plugin declares it reads — the keys listed on its catalog card — and replaces
+        every other value, and any value carrying credential material, with a placeholder. A plugin
         registered outside the gateway declares nothing, so all of its values are withheld. {'${VAR}'} references name a value
         rather than carrying one, so they are shown as written.
       </p>

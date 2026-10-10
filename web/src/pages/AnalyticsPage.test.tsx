@@ -308,6 +308,32 @@ describe('AnalyticsPage', () => {
     expect(screen.getByRole('combobox', { name: 'Stage' })).toHaveTextContent(/^Before request/)
   })
 
+  it('does not call the requests a failing provider was sent "answered"', async () => {
+    // by_provider counts a failure under the last target it reached, so a
+    // provider failing every call leads the ranking on its failures alone. The
+    // panel called that count answered requests and said failures never reach
+    // a provider — which put a dead provider at the top as the busiest one.
+    request.mockResolvedValue(
+      stats({
+        by_provider: {
+          openai: { count: 5, errors: 5, tokens: 0, cost_usd: 0, unpriced: 0 },
+          anthropic: { count: 2, errors: 0, tokens: 300, cost_usd: 0.5, unpriced: 0 },
+          unknown: { count: 1, errors: 1, tokens: 0, cost_usd: 0, unpriced: 0 },
+        },
+      }),
+    )
+    renderPage()
+
+    const panel = (await screen.findByRole('heading', { name: 'Providers by requests' })).closest('section') as HTMLElement
+    expect(within(panel).queryByText(/answered/i)).toBeNull()
+    expect(within(panel).getByText(/A failure counts against the last target it reached/)).toBeInTheDocument()
+    // The failing provider is still listed, with its failures beside it, and
+    // the rows that reached no provider are not ranked as one.
+    expect(within(panel).getByText('openai')).toBeInTheDocument()
+    expect(within(panel).getByText(/5 failed/)).toBeInTheDocument()
+    expect(within(panel).queryByText('unknown')).toBeNull()
+  })
+
   it('re-reads the range as soon as it is chosen, without waiting for Apply', async () => {
     const user = userEvent.setup()
     renderPage()

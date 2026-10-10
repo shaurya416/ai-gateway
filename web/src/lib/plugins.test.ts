@@ -108,6 +108,38 @@ describe('groupPlugins', () => {
     expect(pluginStatus(groupPlugins(split)[0]!)).toEqual({ label: 'Partly enabled', tone: 'warning' })
   })
 
+  it('keeps two instances of one plugin apart when their settings differ', () => {
+    // Legal, and two instances: the gateway shares one only between entries
+    // whose settings encode identically (config.PluginSharingKey). Grouped by
+    // name, the card showed the first limiter's ceiling and the second limiter
+    // was nowhere on the page.
+    const limiters = readPlugins({
+      plugins: [
+        { name: 'rate-limit', type: 'ratelimit', stage: 'before_request', enabled: true, config: { requests_per_second: 5 } },
+        { name: 'rate-limit', type: 'ratelimit', stage: 'before_request', enabled: true, config: { requests_per_second: 100 } },
+      ],
+    })
+    const groups = groupPlugins(limiters)
+
+    expect(groups.map((group) => group.settings)).toEqual([
+      [{ key: 'requests_per_second', value: '5' }],
+      [{ key: 'requests_per_second', value: '100' }],
+    ])
+    expect(groups.map((group) => group.entryCount)).toEqual([1, 1])
+    expect(new Set(groups.map((group) => group.key)).size).toBe(2)
+  })
+
+  it('reads settings that differ only in key order as one instance', () => {
+    const reordered = readPlugins({
+      plugins: [
+        { name: 'budget', stage: 'before_request', enabled: true, config: { spend_limit_usd: 10, max_keys: 5 } },
+        { name: 'budget', stage: 'after_request', enabled: true, config: { max_keys: 5, spend_limit_usd: 10 } },
+      ],
+    })
+
+    expect(groupPlugins(reordered)).toHaveLength(1)
+  })
+
   it('names an entry with no name rather than grouping every such entry apart', () => {
     expect(groupPlugins(readPlugins({ plugins: [{ enabled: true }] }))[0]?.name).toBe('unnamed')
   })
