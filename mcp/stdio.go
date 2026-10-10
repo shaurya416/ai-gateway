@@ -156,7 +156,14 @@ func newStdioClient(name, command string, args []string, envOverrides map[string
 	}
 
 	bounded := &boundedLineReader{r: stdout, server: name, limit: maxStdioMessageBytes}
-	tr := transport.NewIO(bounded, stdin, stderr)
+	// The transport gets a stderr it cannot close. Its Close shuts stderr in the
+	// same step as stdin, which is the moment the server starts its own shutdown,
+	// so anything the server logged on the way out met a closed pipe: a Go server
+	// died of SIGPIPE at that write, the rest of its shutdown never ran, and Close
+	// reported the server's exit as a failure. The pipe stays with cmd, whose Wait
+	// closes it once the child has exited, and the drain below keeps reading it
+	// until then.
+	tr := transport.NewIO(bounded, stdin, io.NopCloser(stderr))
 	inner := mcpclient.NewClient(tr)
 	// Started through the client, not the transport. Start cannot spawn anything
 	// here: a NewIO transport carries no command, and the transport returns early

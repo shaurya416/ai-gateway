@@ -3,9 +3,11 @@ package mcp
 import (
 	"bufio"
 	"encoding/json"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 )
@@ -32,7 +34,19 @@ const (
 	// helperModeEndlessLargePages does the same with pages of roughly
 	// helperLargePageBytes each, so a listing grows by that much per page.
 	helperModeEndlessLargePages = "endless-large-pages"
+	// helperModeLogOnShutdown writes to stderr once its stdin closes, as a
+	// server reporting its own shutdown does, and records whether that write
+	// went through in the file helperShutdownMarkerEnv names.
+	helperModeLogOnShutdown = "log-on-shutdown"
 )
+
+// helperShutdownMarkerEnv names the file helperModeLogOnShutdown records its
+// shutdown in.
+const helperShutdownMarkerEnv = "FERRO_MCP_HELPER_SHUTDOWN_MARKER"
+
+// helperShutdownLogged is what helperModeLogOnShutdown records when its stderr
+// write went through.
+const helperShutdownLogged = "logged"
 
 // helperLargePageBytes sizes one page in helperModeEndlessLargePages.
 const helperLargePageBytes = 512 << 10
@@ -111,6 +125,9 @@ func runHelperMCPServer(mode string) {
 			} `json:"params"`
 		}
 		if err := dec.Decode(&req); err != nil {
+			if mode == helperModeLogOnShutdown {
+				helperLogShutdown()
+			}
 			os.Exit(0)
 		}
 		if req.ID == nil {
@@ -150,6 +167,20 @@ func runHelperMCPServer(mode string) {
 			_ = os.Stderr.Close()
 		}
 	}
+}
+
+// helperLogShutdown reports the server's shutdown on stderr and records the
+// outcome. A Go program whose write to fd 2 meets a closed pipe is killed by
+// SIGPIPE, so a refused write usually leaves no record at all.
+func helperLogShutdown() {
+	// Leaves the client time to finish whatever it does once stdin is closed,
+	// so the write lands after it rather than racing it.
+	time.Sleep(200 * time.Millisecond)
+	outcome := helperShutdownLogged
+	if _, err := fmt.Fprintln(os.Stderr, "helper: stdin closed, shutting down"); err != nil {
+		outcome = "stderr write failed: " + err.Error()
+	}
+	_ = os.WriteFile(os.Getenv(helperShutdownMarkerEnv), []byte(outcome), 0o600) //nolint:gosec // test-owned path under t.TempDir()
 }
 
 // helperResult builds the result payload for one MCP method.

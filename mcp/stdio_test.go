@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -277,6 +278,42 @@ func TestStdioClientTerminatesAServerThatIgnoresStdin(t *testing.T) {
 	// may be called exactly once.
 	if err := c.Close(); err != nil {
 		t.Fatalf("second Close changed its answer: %v", err)
+	}
+}
+
+// Closing stdin is how the spec asks a stdio server to shut down, and the server
+// still has its stderr while it does. Close shut the gateway's end of that pipe
+// in the same step, so a server that reported its own shutdown met a closed
+// pipe: a Go server is killed by SIGPIPE at that write, the rest of its
+// shutdown never runs, and Close reported the server's exit as a failure to
+// close it.
+func TestStdioClientCloseLeavesStderrOpenWhileTheServerShutsDown(t *testing.T) {
+	cfg := helperServerConfig(t, "shutdown-logger", helperModeLogOnShutdown)
+	marker := filepath.Join(t.TempDir(), "shutdown")
+	cfg.Env[helperShutdownMarkerEnv] = marker
+	client := newStdioClient(cfg.Name, cfg.Command, cfg.Args, cfg.Env)
+	if ec, failed := client.(*errClient); failed {
+		t.Fatalf("newStdioClient failed to start the helper: %v", ec.err)
+	}
+
+	// The handshake proves the child is up, so its shutdown starts inside the
+	// grace period rather than racing its own startup.
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	if _, err := client.Initialize(ctx); err != nil {
+		_ = client.Close()
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	if err := client.Close(); err != nil {
+		t.Errorf("Close = %v, want nil for a server that shut down on its own", err)
+	}
+	got, err := os.ReadFile(marker) //nolint:gosec // test-owned path under t.TempDir()
+	if err != nil {
+		t.Fatalf("the server never finished its shutdown: %v", err)
+	}
+	if string(got) != helperShutdownLogged {
+		t.Fatalf("the server's shutdown log = %q, want %q", got, helperShutdownLogged)
 	}
 }
 

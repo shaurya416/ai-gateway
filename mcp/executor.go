@@ -94,11 +94,16 @@ func NewExecutor(registry *Registry, maxCallDepth int, auditFn AuditFn) *Executo
 // callAuditFn dispatches the audit callback asynchronously in its own goroutine
 // so that a slow or panicking user-supplied hook cannot block or crash the
 // tool-call loop.  It is a no-op when auditFn is nil.
+//
+// The hook gets the request's values without its cancellation. It runs after
+// the call, and commonly after the request has ended, so the request's own
+// context left a ctx-aware write of the record failing before it started.
 func (e *Executor) callAuditFn(ctx context.Context, serverName, toolName, status string, latencyMs int, errMsg string) {
 	if e.auditFn == nil {
 		return
 	}
 	fn := e.auditFn
+	ctx = context.WithoutCancel(ctx)
 	go func() {
 		defer func() {
 			// Swallow any panic from the user-supplied callback — audit logging

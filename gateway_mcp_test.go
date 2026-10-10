@@ -171,7 +171,7 @@ func TestWireMCPLocked_MaxCallDepthIgnoresSkippedServers(t *testing.T) {
 	// for tool calls MCP owns, so a registry that discovered nothing can no
 	// longer stand in for a healthy one.
 	goodSrv := newMCPTestServer(t)
-	defer goodSrv.Close()
+	t.Cleanup(goodSrv.Close)
 
 	cfg := config.Config{
 		MCPServers: []mcp.ServerConfig{
@@ -192,6 +192,11 @@ func TestWireMCPLocked_MaxCallDepthIgnoresSkippedServers(t *testing.T) {
 	}
 
 	gw.wireMCPLocked(cfg, "test: mcp init failed")
+	// The good server's session holds an event stream open until the registry
+	// closes. Cleanups run last-in first-out, so this closes it while the server
+	// is still up; a stream left to outlive the server keeps reconnecting, and
+	// the package's goroutine-leak check fails the run.
+	t.Cleanup(func() { _ = gw.mcpRegistry.Close() })
 
 	if gw.mcpExecutor == nil {
 		t.Fatal("mcpExecutor is nil, want an executor built from the well-formed server")

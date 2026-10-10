@@ -507,3 +507,42 @@ func TestResolvePendingToolCallsPanicInAuditFnDoesNotCrash(t *testing.T) {
 		t.Fatal("audit goroutine did not invoke auditFn")
 	}
 }
+
+// The audit hook runs on a goroutine of its own and, by its contract, hands any
+// I/O to another, so it routinely runs after the request that made the call has
+// ended. It was handed that request's context, cancelled by then, so a ctx-aware
+// write of the record — a database insert, an outbound call — failed before it
+// started. A turn that ended the request at once, a budget refusing the next
+// turn or a provider failing fast, left the tool calls it had just run with no
+// audit record at all. The hook keeps the request's values, as the gateway's
+// event hooks do, without its cancellation.
+func TestAuditFnOutlivesTheRequestContext(t *testing.T) {
+	type requestKey struct{}
+	release := make(chan struct{})
+	got := make(chan context.Context, 1)
+	auditFn := AuditFn(func(ctx context.Context, _, _, _ string, _ int, _ string) {
+		<-release
+		got <- ctx
+	})
+
+	exec := NewExecutor(buildReadyRegistry(t, []string{"do_thing"}), 5, auditFn)
+	reqCtx, cancel := context.WithCancel(context.WithValue(context.Background(), requestKey{}, "req-1"))
+	if _, err := exec.ResolvePendingToolCalls(reqCtx, toolCallResponse("do_thing")); err != nil {
+		t.Fatalf("ResolvePendingToolCalls: %v", err)
+	}
+	// The request ends before the hook gets to run.
+	cancel()
+	close(release)
+
+	select {
+	case hookCtx := <-got:
+		if err := hookCtx.Err(); err != nil {
+			t.Errorf("audit hook context is already done: %v", err)
+		}
+		if v, _ := hookCtx.Value(requestKey{}).(string); v != "req-1" {
+			t.Errorf("audit hook context lost the request's values: got %q, want %q", v, "req-1")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("audit hook was not called")
+	}
+}

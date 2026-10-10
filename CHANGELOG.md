@@ -1513,6 +1513,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`1234567890123456789` became `1234567890123456800`), while the HTTP
   transport forwarded the same arguments untouched. The arguments are still
   checked to be JSON, then forwarded as written.
+- A stdio MCP server now gets to finish its own shutdown when the gateway
+  closes it, on every configuration reload and at exit. Closing the client
+  shut the gateway's end of the server's stderr in the same step as its stdin,
+  which is the signal the server shuts down on, so anything it wrote to stderr
+  on the way out met a closed pipe: a server written in Go was killed by
+  `SIGPIPE` at that write, the rest of its shutdown never ran, and the teardown
+  logged the server's exit as a failure to close it (`signal: broken pipe`).
+  Stderr now stays open, and drained into the gateway log, until the server
+  has exited.
+- An MCP tool-call audit hook (`MCPToolCallAuditFn`) now receives a context
+  that is not cancelled when the request ends. The hook runs on a goroutine of
+  its own after each call, and is expected to hand its I/O to another, so it
+  routinely ran after the request was over, holding the request's own context:
+  a context-aware write of the record failed before it started, and the tool
+  calls of a turn that ended the request at once — a budget refusing the next
+  turn, a provider failing fast — were left with no audit record. The context
+  keeps the request's values, as the gateway's event hooks already do.
 - A chat, Responses or embeddings request whose provider reported no token
   usage is recorded unpriced instead of as a priced $0.00. Cost calculation
   marked such a request priced whenever the catalog carried the model's rate,

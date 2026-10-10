@@ -113,7 +113,8 @@ type ToolCallAuditEntry struct {
 // invocation (success or failure). Implementations must be non-blocking;
 // delegate any I/O to a goroutine.
 //
-// The ctx is the same context used for the Route call — callers may embed
-// per-request values (e.g. trace ID, API key ID) for retrieval inside the hook.
+// The ctx carries the Route call's values — callers may embed per-request
+// values (e.g. trace ID, API key ID) for retrieval inside the hook — but not its
+// cancellation: the hook runs after the call, often after the request has ended.
 // Set MCPToolCallAuditFn on config.Config before calling New.
 type ToolCallAuditFn func(ctx context.Context, entry ToolCallAuditEntry)
