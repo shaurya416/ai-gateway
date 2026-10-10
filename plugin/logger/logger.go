@@ -7,8 +7,11 @@ package logger
 import (
 	"context"
 	"fmt"
+	"maps"
+	"strings"
 	"time"
 
+	"github.com/ferro-labs/ai-gateway/internal/envref"
 	"github.com/ferro-labs/ai-gateway/internal/redact"
 	"github.com/ferro-labs/ai-gateway/internal/requestlog"
 	"github.com/ferro-labs/ai-gateway/observability"
@@ -44,6 +47,73 @@ func (l *RequestLogger) SetRequestLogWriter(w requestlog.Writer) {
 	l.shared = w
 }
 
+// levelNames are the spellings `level` accepts, in severity order.
+var levelNames = []string{"debug", "info", "warn", "error"}
+
+// levels maps each accepted spelling to the level it selects.
+var levels = map[string]logger.Level{
+	"debug": logger.LevelDebug,
+	"info":  logger.LevelInfo,
+	"warn":  logger.LevelWarn,
+	"error": logger.LevelError,
+}
+
+// settings are the values one request-logger config block resolves to.
+type settings struct {
+	level   logger.Level
+	persist bool
+}
+
+// parseSettings reads and checks a request-logger config block. It is the
+// single place the plugin's rules live, shared by Init and ValidateConfig.
+//
+// A value that cannot be what the operator meant is a load error naming the
+// key. A misspelled level used to log at info, and a persist written as
+// anything but a boolean — a quoted "true", or a ${VAR} reference, which
+// resolves to a string — used to mean false: the plugin loaded, reported itself
+// enabled, and wrote no row the Request Logs page could show. An absent or null
+// key takes its default.
+func parseSettings(config map[string]any) (settings, error) {
+	s := settings{level: logger.LevelInfo}
+
+	rawLevel, err := plugin.StringSetting(config["level"], "level")
+	if err != nil {
+		return settings{}, fmt.Errorf("request-logger: %w", err)
+	}
+	if name := strings.ToLower(strings.TrimSpace(rawLevel)); name != "" {
+		level, ok := levels[name]
+		if !ok {
+			return settings{}, fmt.Errorf("request-logger: unrecognized level %q: must be one of %q", rawLevel, levelNames)
+		}
+		s.level = level
+	}
+
+	switch persist := config["persist"].(type) {
+	case nil:
+	case bool:
+		s.persist = persist
+	default:
+		return settings{}, fmt.Errorf("request-logger: persist must be true or false, got %T", persist)
+	}
+	return s, nil
+}
+
+// ValidateConfig checks the config block without touching the request-log
+// store, so `ferrogw validate` reports a block this plugin would refuse at
+// startup. See plugin.ConfigValidator.
+//
+// A level carrying a ${VAR} reference is passed rather than checked: it
+// resolves at construction, never at load, and Init checks the resolved value.
+// See plugin.ValidateAction.
+func (l *RequestLogger) ValidateConfig(config map[string]any) error {
+	if level, ok := config["level"].(string); ok && envref.HasReference(level) {
+		config = maps.Clone(config)
+		delete(config, "level")
+	}
+	_, err := parseSettings(config)
+	return err
+}
+
 // Init configures the plugin from the provided options map.
 //
 // Persistence is directed at the shared request-log store, not a per-plugin
@@ -52,24 +122,13 @@ func (l *RequestLogger) SetRequestLogWriter(w requestlog.Writer) {
 // REQUEST_LOG_STORE_BACKEND / REQUEST_LOG_STORE_DSN — and are ignored with a
 // warning so an operator running an old config learns where the setting moved.
 func (l *RequestLogger) Init(config map[string]any) error {
-	persist, err := persistSetting(config)
+	s, err := parseSettings(config)
 	if err != nil {
 		return err
 	}
-
-	l.logLevel = logger.LevelInfo
+	l.logLevel = s.level
 	l.writer = requestlog.NoopWriter{}
 	l.redactor = redact.DefaultRedactor()
-	if level, ok := config["level"].(string); ok {
-		switch level {
-		case "debug":
-			l.logLevel = logger.LevelDebug
-		case "warn":
-			l.logLevel = logger.LevelWarn
-		case "error":
-			l.logLevel = logger.LevelError
-		}
-	}
 
 	if _, ok := config["dsn"]; ok {
 		logger.Default().Warn("request-logger: the dsn option is ignored; set the request log store with REQUEST_LOG_STORE_DSN")
@@ -79,7 +138,7 @@ func (l *RequestLogger) Init(config map[string]any) error {
 	}
 
 	switch {
-	case !persist:
+	case !s.persist:
 		// stdout only; l.writer stays NoopWriter.
 	case l.shared != nil:
 		l.writer = l.shared
@@ -87,34 +146,6 @@ func (l *RequestLogger) Init(config map[string]any) error {
 		logger.Default().Warn("request-logger: persist is set but no request log store is configured; set REQUEST_LOG_STORE_BACKEND to persist logs")
 	}
 	return nil
-}
-
-// ValidateConfig checks the persist setting the way Init does, so `ferrogw
-// validate` reports a value Init would refuse. See plugin.ConfigValidator.
-func (l *RequestLogger) ValidateConfig(config map[string]any) error {
-	_, err := persistSetting(config)
-	return err
-}
-
-// persistSetting reads the persist option: false when it is absent, the value
-// when it is a boolean, and an error for anything else.
-//
-// Anything else used to read as false, which turned persistence off with
-// nothing said: YAML reads an unquoted `yes` or `on` as a string, a ${VAR}
-// reference always resolves to one, and a JSON config can quote the value. Each
-// of those started a gateway that logged requests to stdout and wrote no row,
-// leaving the Request Logs page and every figure derived from it empty while
-// the config read as though they were being kept.
-func persistSetting(config map[string]any) (bool, error) {
-	value, ok := config["persist"]
-	if !ok || value == nil {
-		return false, nil
-	}
-	persist, ok := value.(bool)
-	if !ok {
-		return false, fmt.Errorf("request-logger: persist must be true or false, got %T %q", value, fmt.Sprint(value))
-	}
-	return persist, nil
 }
 
 // measured returns a pointer to value when it was actually measured, and nil

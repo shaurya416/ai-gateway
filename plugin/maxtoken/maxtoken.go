@@ -22,6 +22,7 @@ package maxtoken
 import (
 	"context"
 	"fmt"
+	"math"
 
 	"github.com/ferro-labs/ai-gateway/plugin"
 	"github.com/ferro-labs/ai-gateway/providers"
@@ -49,40 +50,82 @@ func (m *MaxToken) Name() string { return "max-token" }
 // Type returns the plugin lifecycle hook type.
 func (m *MaxToken) Type() plugin.PluginType { return plugin.TypeGuardrail }
 
-// Init configures the plugin from the provided options map.
+// limits are the values one max-token config block resolves to.
+type limits struct {
+	maxTokens   int
+	maxMessages int
+	maxInputLen int
+}
+
+// parseLimits reads and checks a max-token config block. It is the single
+// place the plugin's rules live, shared by Init and ValidateConfig so a value
+// the gateway would refuse to start on is the same value `ferrogw validate`
+// reports.
 //
 // Every limit uses the same convention: 0 disables it. An operator who wants a
 // guardrail off for one dimension writes 0 for that key and gets the other two
-// unchanged. Omitting a key keeps its default (max_tokens 4096, max_messages
-// 100); max_input_length has no default and is off until configured.
+// unchanged. Omitting a key — or leaving it null — keeps its default
+// (max_tokens 4096, max_messages 100); max_input_length has no default and is
+// off until configured.
+//
+// A value that is not a whole number of zero or more is a load error. A quoted
+// number, or a ${VAR} reference, which resolves to a string, used to be skipped
+// in silence: max_tokens and max_messages kept their defaults and
+// max_input_length stayed off, and a negative value turned its limit off too —
+// a guardrail that loaded, reported itself enabled and enforced something other
+// than what was written.
+func parseLimits(config map[string]any) (limits, error) {
+	l := limits{maxTokens: 4096, maxMessages: 100}
+	var err error
+	if v, ok := config["max_tokens"]; ok && v != nil {
+		if l.maxTokens, err = limit("max_tokens", v); err != nil {
+			return limits{}, err
+		}
+	}
+	if v, ok := config["max_messages"]; ok && v != nil {
+		if l.maxMessages, err = limit("max_messages", v); err != nil {
+			return limits{}, err
+		}
+	}
+	if v, ok := config["max_input_length"]; ok && v != nil {
+		if l.maxInputLen, err = limit("max_input_length", v); err != nil {
+			return limits{}, err
+		}
+	}
+	return l, nil
+}
+
+// limit converts one configured value and rejects anything that is not a
+// usable limit.
+func limit(key string, v any) (int, error) {
+	f, err := plugin.ToFloat64(v)
+	if err != nil {
+		return 0, fmt.Errorf("max-token: %s: %w", key, err)
+	}
+	if math.IsNaN(f) || f < 0 || f >= math.MaxInt || f != math.Trunc(f) {
+		return 0, fmt.Errorf("max-token: %s must be a whole number >= 0, got %v; 0 turns this limit off", key, v)
+	}
+	return int(f), nil
+}
+
+// ValidateConfig checks the config block without building anything, so
+// `ferrogw validate` and `ferrogw doctor` reject a limit this plugin would
+// reject at startup. See plugin.ConfigValidator.
+func (m *MaxToken) ValidateConfig(config map[string]any) error {
+	_, err := parseLimits(config)
+	return err
+}
+
+// Init configures the plugin from the provided options map. See parseLimits
+// for the rules every limit follows.
 func (m *MaxToken) Init(config map[string]any) error {
-	m.maxTokens = 4096 // default
-	if v, ok := config["max_tokens"]; ok {
-		switch val := v.(type) {
-		case float64:
-			m.maxTokens = int(val)
-		case int:
-			m.maxTokens = val
-		}
+	l, err := parseLimits(config)
+	if err != nil {
+		return err
 	}
-	m.maxMessages = 100 // default
-	if v, ok := config["max_messages"]; ok {
-		switch val := v.(type) {
-		case float64:
-			m.maxMessages = int(val)
-		case int:
-			m.maxMessages = val
-		}
-	}
-	m.maxInputLen = 0 // 0 = no limit
-	if v, ok := config["max_input_length"]; ok {
-		switch val := v.(type) {
-		case float64:
-			m.maxInputLen = int(val)
-		case int:
-			m.maxInputLen = val
-		}
-	}
+	m.maxTokens = l.maxTokens
+	m.maxMessages = l.maxMessages
+	m.maxInputLen = l.maxInputLen
 	return nil
 }
 

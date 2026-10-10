@@ -2,6 +2,7 @@ package maxtoken
 
 import (
 	"context"
+	"math"
 	"strings"
 	"testing"
 
@@ -299,6 +300,56 @@ func TestMaxToken_AllowedRequestPassesThrough(t *testing.T) {
 	}
 	if pctx.Reject {
 		t.Error("expected default config to allow request")
+	}
+}
+
+// A limit that cannot be the number the operator meant fails the load, at
+// startup and under `ferrogw validate` alike. A quoted number or a ${VAR}
+// reference, which resolves to a string, used to be skipped: max_input_length
+// stayed off and the other two kept their defaults, while the plugin reported
+// itself enabled. A negative value switched its limit off the same way.
+func TestMaxToken_RejectsAMalformedLimit(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		config map[string]any
+		key    string
+	}{
+		{"quoted max_input_length", map[string]any{"max_input_length": "2000"}, "max_input_length"},
+		{"quoted max_tokens", map[string]any{"max_tokens": "8192"}, "max_tokens"},
+		{"resolved reference", map[string]any{"max_messages": "20"}, "max_messages"},
+		{"unresolved reference", map[string]any{"max_input_length": "${MAX_INPUT_LENGTH}"}, "max_input_length"},
+		{"boolean", map[string]any{"max_tokens": true}, "max_tokens"},
+		{"negative max_tokens", map[string]any{"max_tokens": -1}, "max_tokens"},
+		{"negative max_input_length", map[string]any{"max_input_length": -5.0}, "max_input_length"},
+		{"fractional max_messages", map[string]any{"max_messages": 2.5}, "max_messages"},
+		{"NaN", map[string]any{"max_tokens": math.NaN()}, "max_tokens"},
+		{"infinite", map[string]any{"max_input_length": math.Inf(1)}, "max_input_length"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := (&MaxToken{}).Init(tc.config)
+			if err == nil {
+				t.Fatalf("Init accepted %v; the limit it enforces is not the one written", tc.config)
+			}
+			if !strings.Contains(err.Error(), tc.key) {
+				t.Errorf("Init error %q does not name %q", err, tc.key)
+			}
+			if err := plugin.ValidateConfigFor("max-token", tc.config); err == nil {
+				t.Errorf("ValidateConfigFor accepted %v, which Init rejects", tc.config)
+			}
+		})
+	}
+}
+
+// A null value is an unset key, and a whole number written as a float is the
+// number it reads as; neither is a malformed limit.
+func TestMaxToken_AcceptsNullAndWholeFloatLimits(t *testing.T) {
+	config := map[string]any{"max_tokens": nil, "max_messages": 3.0, "max_input_length": 100.0}
+	if err := plugin.ValidateConfigFor("max-token", config); err != nil {
+		t.Fatalf("ValidateConfigFor: %v", err)
+	}
+	m := initMaxToken(t, config)
+	if m.maxTokens != 4096 || m.maxMessages != 3 || m.maxInputLen != 100 {
+		t.Fatalf("limits = %d/%d/%d, want 4096/3/100", m.maxTokens, m.maxMessages, m.maxInputLen)
 	}
 }
 

@@ -45,6 +45,78 @@ func TestRequestLogger_Init(t *testing.T) {
 	})
 }
 
+// A setting that cannot be what the operator meant fails the load, at startup
+// and under `ferrogw validate` alike. A misspelled level used to log at info,
+// and a persist that is not a boolean used to mean false, so a deployment that
+// asked for a persisted trail got none and nothing said so.
+func TestRequestLogger_RejectsAMalformedSetting(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		config map[string]any
+		key    string
+	}{
+		{"misspelled level", map[string]any{"level": "warning"}, "level"},
+		{"non-string level", map[string]any{"level": 1}, "level"},
+		{"quoted persist", map[string]any{"persist": "true"}, "persist"},
+		{"resolved persist reference", map[string]any{"persist": "false"}, "persist"},
+		{"unresolved persist reference", map[string]any{"persist": "${REQUEST_LOG_PERSIST}"}, "persist"},
+		{"numeric persist", map[string]any{"persist": 1}, "persist"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			l := &RequestLogger{}
+			l.SetRequestLogWriter(&recordingWriter{})
+			err := l.Init(tc.config)
+			if err == nil {
+				t.Fatalf("Init accepted %v; the plugin would not do what it says", tc.config)
+			}
+			if !strings.Contains(err.Error(), tc.key) {
+				t.Errorf("Init error %q does not name %q", err, tc.key)
+			}
+			if err := plugin.ValidateConfigFor("request-logger", tc.config); err == nil {
+				t.Errorf("ValidateConfigFor accepted %v, which Init rejects", tc.config)
+			}
+		})
+	}
+}
+
+// Every documented level is accepted in any case, an absent or null key takes
+// its default, and a level named by a ${VAR} reference waits for Init: it
+// resolves at construction, so validate cannot judge it.
+func TestRequestLogger_AcceptsEveryWellFormedSetting(t *testing.T) {
+	for _, tc := range []struct {
+		config      map[string]any
+		wantLevel   logger.Level
+		wantPersist bool
+	}{
+		{map[string]any{}, logger.LevelInfo, false},
+		{map[string]any{"level": nil, "persist": nil}, logger.LevelInfo, false},
+		{map[string]any{"level": "info", "persist": false}, logger.LevelInfo, false},
+		{map[string]any{"level": "DEBUG"}, logger.LevelDebug, false},
+		{map[string]any{"level": " Warn ", "persist": true}, logger.LevelWarn, true},
+		{map[string]any{"level": "error"}, logger.LevelError, false},
+	} {
+		l := &RequestLogger{}
+		w := &recordingWriter{}
+		l.SetRequestLogWriter(w)
+		if err := l.Init(tc.config); err != nil {
+			t.Fatalf("Init(%v): %v", tc.config, err)
+		}
+		if err := plugin.ValidateConfigFor("request-logger", tc.config); err != nil {
+			t.Fatalf("ValidateConfigFor(%v): %v", tc.config, err)
+		}
+		if l.logLevel != tc.wantLevel {
+			t.Errorf("Init(%v): level = %v, want %v", tc.config, l.logLevel, tc.wantLevel)
+		}
+		if persisting := l.writer == requestlog.Writer(w); persisting != tc.wantPersist {
+			t.Errorf("Init(%v): persisting = %v, want %v", tc.config, persisting, tc.wantPersist)
+		}
+	}
+
+	if err := plugin.ValidateConfigFor("request-logger", map[string]any{"level": "${LOG_LEVEL}"}); err != nil {
+		t.Errorf("ValidateConfigFor rejected a level reference it cannot resolve: %v", err)
+	}
+}
+
 func TestRequestLogger_ExecuteResponse(t *testing.T) {
 	l := &RequestLogger{}
 	if err := l.Init(map[string]any{}); err != nil {

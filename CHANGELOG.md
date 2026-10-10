@@ -201,6 +201,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stream meter and attached its usage regardless, so whether a client that
   declined usage got one depended on where the answer came from. Accounting is
   unchanged — the cost, metrics and request-log row still read the real usage.
+- `prompt-shield` detects "ignore all previous instructions", the wording the
+  system-override attack is best known by. Its pattern accepted "ignore all
+  instructions" and "ignore previous instructions" but not the two qualifiers
+  together, so that phrase reached the provider with the plugin enabled and no
+  match recorded. `system_override` now matches either qualifier or both.
+- `max-token` refuses to load a limit that is not a whole number of zero or
+  more. A quoted number, or a `${VAR}` reference, which resolves to a string,
+  was skipped without a word: `max_input_length` stayed off and `max_tokens`
+  and `max_messages` kept their defaults, while the plugin reported itself
+  enabled. A negative value turned its limit off the same way. Such a value is
+  now a startup error naming the key, and `ferrogw validate` reports it too.
+- `request-logger` refuses to load a `level` it cannot honour. A misspelled
+  level — `warning`, `warm` — logged at `info` with nothing said. A level
+  outside `debug`, `info`, `warn` and `error` is now a startup error naming the
+  key, and `ferrogw validate` reports it too; it is matched without regard to
+  case. (A non-boolean `persist` is refused the same way; see the entry
+  above.)
 - Content guardrails screen a tool call's arguments as the provider reads
   them. The arguments are a JSON document, and they were matched as raw text,
   where an escaped newline is a backslash and the letter `n` glued to whatever

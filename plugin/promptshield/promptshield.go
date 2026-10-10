@@ -70,8 +70,13 @@ type category struct {
 // weaker privilege claim than system or admin — by this plugin's own cost
 // calculus, under-blocking a weak signal beats blocking ordinary business
 // text.
+//
+// system_override accepts "all" and "previous" together as well as alone.
+// "Ignore all previous instructions" is the form the attack is best known by,
+// and an alternation that took one qualifier or the other let exactly that
+// phrase through.
 var categories = []category{
-	{"system_override", regexp.MustCompile(`(?i)(ignore\s+(previous|all)\s+instructions|disregard\s+your\s+instructions|forget\s+your\s+instructions|override\s+system\s+prompt)`)},
+	{"system_override", regexp.MustCompile(`(?i)(ignore\s+(all\s+previous|previous|all)\s+instructions|disregard\s+your\s+instructions|forget\s+your\s+instructions|override\s+system\s+prompt)`)},
 	{"role_manipulation", regexp.MustCompile(`(?i)(act\s+as\s+if\s+you\s+are|pretend\s+you\s+are|roleplay\s+as|assume\s+the\s+role\s+of\s+(?:the\s+)?(?:system|assistant|admin|administrator)\b)`)},
 	{"instruction_leak", regexp.MustCompile(`(?i)(show\s+me\s+your\s+system\s+prompt|reveal\s+your\s+instructions|what\s+are\s+your\s+instructions|print\s+your\s+system\s+message|output\s+your\s+prompt)`)},
 	{"delimiter_attack", regexp.MustCompile("(?i)(" + regexp.QuoteMeta("```system") + "|" + regexp.QuoteMeta("###SYSTEM") + "|" + regexp.QuoteMeta("[SYSTEM]") + "|" + regexp.QuoteMeta("<|system|>") + ")")},

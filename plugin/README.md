@@ -291,7 +291,9 @@ total input-length limits. A request that declares no ceiling is uncapped —
 this plugin rejects over-large requests, it does not add a ceiling to requests
 that omit one. With `max_input_length` set the plugin measures the content, so
 content it cannot read as text — an embeddings input sent as token IDs — is
-refused rather than measured as empty.
+refused rather than measured as empty. Each limit must be a whole number `>= 0`,
+and `0` turns that limit off; anything else, a quoted number included, fails the
+load.
 
 ```yaml
 config:
@@ -354,6 +356,8 @@ Records each request for the dashboard's Request Logs page. With `persist: true`
 and a request-log store configured (`REQUEST_LOG_STORE_BACKEND` /
 `REQUEST_LOG_STORE_DSN`), rows survive a restart; otherwise it logs to stdout.
 List it at all three stages so a failed request still produces a terminal row.
+`level` is one of `debug`, `info`, `warn` or `error`, and `persist` is a
+boolean; anything else — `persist: "true"` quoted included — fails the load.
 
 ```yaml
 config:
