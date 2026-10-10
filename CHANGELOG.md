@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `/v1/chat/completions` now answers `400`, naming the message and part, for a
+  content part it cannot carry: any type other than `text` and `image_url` —
+  `file` and `input_audio` included — and an `image_url` part with no URL. A
+  part was decoded into a type that holds only text and an image URL, so the
+  payload of any other part was discarded at the edge and the request went on
+  without it. The anthropic, bedrock, gemini and cohere adapters skip a part
+  type they do not know, so a request asking to summarise an attached PDF
+  reached the model as the instruction alone and was answered `200`; the
+  OpenAI-wire adapters forwarded an empty `{"type":"file"}` for the upstream to
+  refuse as a field the caller had in fact sent.
+- `POST /admin/keys` now refuses an `expires_at` that is not in the future with
+  `400`. Such a key was stored and answered `201` with its secret, which then
+  failed on first use with nothing in the response to say why; the
+  `ferrogw admin keys create` command refused it on its own side, but every
+  other client of the Admin API was handed a credential that could never
+  authenticate. `PUT /admin/keys/{id}` is unchanged: a past expiry there is
+  how an existing key is retired.
 - A credential change, sign-in, config change or log purge whose caller
   disconnects before the response is written now keeps its durable audit row.
   The row was appended on the request context, so once the client had gone a

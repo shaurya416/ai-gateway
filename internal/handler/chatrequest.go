@@ -179,6 +179,9 @@ func (m routeChatMessage) toProviderMessage() (providers.Message, error) {
 	if err := json.Unmarshal(m.Content, &parts); err != nil {
 		return providers.Message{}, err
 	}
+	if err := checkCarriableParts(parts); err != nil {
+		return providers.Message{}, err
+	}
 	msg.ContentParts = parts
 	var text strings.Builder
 	for _, part := range parts {
@@ -188,6 +191,37 @@ func (m routeChatMessage) toProviderMessage() (providers.Message, error) {
 	}
 	msg.Content = text.String()
 	return msg, nil
+}
+
+// contentTypeImageURL is the one content part type besides text that
+// providers.ContentPart can hold.
+const contentTypeImageURL = "image_url"
+
+// checkCarriableParts refuses a content part the gateway cannot carry to a
+// provider.
+//
+// providers.ContentPart holds a text part and an image_url part and nothing
+// else, so decoding any other part — a file, an input_audio clip — keeps its
+// type and discards its payload. The request then went on without it: the
+// adapters that translate parts skip a type they do not know, and the model
+// answered as though nothing had been attached, while the OpenAI-wire adapters
+// forwarded the empty part for the upstream to refuse as a field the caller
+// had in fact sent. An image_url part with no URL is refused for the same
+// reason: there is nothing in it to carry.
+func checkCarriableParts(parts []providers.ContentPart) error {
+	for i, part := range parts {
+		switch part.Type {
+		case providers.ContentTypeText:
+		case contentTypeImageURL:
+			if part.ImageURL == nil || part.ImageURL.URL == "" {
+				return fmt.Errorf("content[%d]: an image_url part requires image_url.url", i)
+			}
+		default:
+			return fmt.Errorf("content[%d]: content part type %q is not supported; supported types are %q and %q",
+				i, part.Type, providers.ContentTypeText, contentTypeImageURL)
+		}
+	}
+	return nil
 }
 
 func rawJSONNull(raw []byte) bool {

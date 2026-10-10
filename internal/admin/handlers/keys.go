@@ -160,6 +160,15 @@ func (h *Handlers) createKey(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "invalid expires_at: must be RFC3339 format", "invalid_request_error", "invalid_request")
 			return
 		}
+		// A key that has expired before it is stored can never authenticate.
+		// Storing it answered 201 with a secret that failed on first use, and
+		// nothing in the response said why. updateKey reads a past expiry as a
+		// revocation, which is a meaningful thing to do to a key that exists;
+		// there is no such reading for one being created.
+		if !t.After(time.Now()) {
+			writeError(w, http.StatusBadRequest, "invalid expires_at: must be in the future; omit it for a key that does not expire", "invalid_request_error", "invalid_request")
+			return
+		}
 		expiresAt = &t
 	}
 
