@@ -8,6 +8,7 @@ import (
 
 	"github.com/ferro-labs/ai-gateway/internal/admin/model"
 	"github.com/ferro-labs/ai-gateway/internal/requestlog"
+	"github.com/ferro-labs/ai-gateway/pkg/logger"
 )
 
 func (h *Handlers) listLogs(w http.ResponseWriter, r *http.Request) {
@@ -58,7 +59,7 @@ func (h *Handlers) listLogs(w http.ResponseWriter, r *http.Request) {
 
 	result, err := h.Logs.List(r.Context(), query)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to list request logs", "server_error", "internal_error")
+		writeLogStoreError(w, err, "failed to list request logs")
 		return
 	}
 
@@ -114,7 +115,11 @@ func (h *Handlers) deleteLogs(w http.ResponseWriter, r *http.Request) {
 		Provider: r.URL.Query().Get("provider"),
 	})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to delete request logs", "server_error", "internal_error")
+		// A purge is audited, so one the store refused is too, exactly as a
+		// failed key or config mutation is: a trail holding only the purges
+		// that succeeded cannot say whether anyone tried.
+		h.recordAudit(r, "logs.purge", "*", model.AuditError, "before", beforeRaw, "error", err.Error())
+		writeLogStoreError(w, err, "failed to delete request logs")
 		return
 	}
 
@@ -168,7 +173,7 @@ func (h *Handlers) logsStats(w http.ResponseWriter, r *http.Request) {
 
 	stats, err := h.Logs.Stats(r.Context(), query)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to compute request log stats", "server_error", "internal_error")
+		writeLogStoreError(w, err, "failed to compute request log stats")
 		return
 	}
 
@@ -205,6 +210,16 @@ func (h *Handlers) logsStats(w http.ResponseWriter, r *http.Request) {
 			"since":    r.URL.Query().Get("since"),
 		},
 	})
+}
+
+// writeLogStoreError answers a request-log operation the store could not
+// complete with a 500 naming the operation. The store's error is logged and
+// never written, as the key and config stores' are: it can quote the database's
+// host, port or user. Writing neither left the operator told only that the
+// operation failed, with the reason recorded nowhere.
+func writeLogStoreError(w http.ResponseWriter, err error, message string) {
+	logger.Default().Error("admin request log store operation failed", "error", err)
+	writeError(w, http.StatusInternalServerError, message, "server_error", "internal_error")
 }
 
 // stageFilter is the single stage a purge or a stats query narrows to, or ""

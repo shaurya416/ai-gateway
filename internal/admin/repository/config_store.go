@@ -44,6 +44,14 @@ type ConfigHistoryLoader interface {
 	LoadHistory(ctx context.Context) ([]model.PersistedConfigVersion, bool, error)
 }
 
+// ConfigVersionLoader reads one durable config version by number. LoadHistory
+// serves a bounded window of the newest versions from a trail that is never
+// pruned, so a version older than that window is still stored, and this is how
+// a rollback reaches it. ok is false when no version with that number is held.
+type ConfigVersionLoader interface {
+	LoadVersion(ctx context.Context, version int) (model.PersistedConfigVersion, bool, error)
+}
+
 var errConfigValidation = errors.New("config validation failed")
 
 // ErrStdioMCPPinned is returned when a runtime config tries to add or alter a
@@ -204,24 +212,10 @@ func (s *SQLConfigStore) LoadHistory(ctx context.Context) ([]model.PersistedConf
 
 	var history []model.PersistedConfigVersion
 	for rows.Next() {
-		var (
-			rec            model.PersistedConfigVersion
-			raw            string
-			rolledBackFrom sql.NullInt64
-		)
-		if err := rows.Scan(&rec.Version, &raw, &rec.UpdatedAt, &rec.Actor, &rolledBackFrom); err != nil {
-			return nil, fmt.Errorf("scan config history row: %w", err)
+		rec, err := scanConfigVersion(rows)
+		if err != nil {
+			return nil, err
 		}
-		if rolledBackFrom.Valid {
-			version := int(rolledBackFrom.Int64)
-			rec.RolledBackFrom = &version
-		}
-		if err := json.Unmarshal([]byte(raw), &rec.Config); err != nil {
-			return nil, fmt.Errorf("decode config history: %w", err)
-		}
-		// Same as Load: a snapshot written before v1.5.6 spells the mode
-		// "loadbalance", and history is served, not only rolled back.
-		rec.Config.Normalize()
 		history = append(history, rec)
 	}
 	if err := rows.Err(); err != nil {
@@ -231,6 +225,45 @@ func (s *SQLConfigStore) LoadHistory(ctx context.Context) ([]model.PersistedConf
 	// back to ascending order, which is what callers expect.
 	slices.Reverse(history)
 	return history, nil
+}
+
+// LoadVersion returns one persisted config version wherever it sits in the
+// trail, including older than the window LoadHistory reads. ok is false when no
+// version with that number was ever recorded.
+func (s *SQLConfigStore) LoadVersion(ctx context.Context, version int) (model.PersistedConfigVersion, bool, error) {
+	query := sqldb.Bind(s.dialect, "SELECT version, config_json, updated_at, actor, rolled_back_from FROM config_history WHERE version = ?")
+	rec, err := scanConfigVersion(s.db.QueryRowContext(ctx, query, version))
+	if errors.Is(err, sql.ErrNoRows) {
+		return model.PersistedConfigVersion{}, false, nil
+	}
+	if err != nil {
+		return model.PersistedConfigVersion{}, false, fmt.Errorf("load config version %d: %w", version, err)
+	}
+	return rec, true, nil
+}
+
+// scanConfigVersion decodes one config_history row selected as version,
+// config_json, updated_at, actor, rolled_back_from.
+func scanConfigVersion(row interface{ Scan(...any) error }) (model.PersistedConfigVersion, error) {
+	var (
+		rec            model.PersistedConfigVersion
+		raw            string
+		rolledBackFrom sql.NullInt64
+	)
+	if err := row.Scan(&rec.Version, &raw, &rec.UpdatedAt, &rec.Actor, &rolledBackFrom); err != nil {
+		return model.PersistedConfigVersion{}, fmt.Errorf("scan config history row: %w", err)
+	}
+	if rolledBackFrom.Valid {
+		version := int(rolledBackFrom.Int64)
+		rec.RolledBackFrom = &version
+	}
+	if err := json.Unmarshal([]byte(raw), &rec.Config); err != nil {
+		return model.PersistedConfigVersion{}, fmt.Errorf("decode config history: %w", err)
+	}
+	// Same as Load: a snapshot written before v1.5.6 spells the mode
+	// "loadbalance", and history is served, not only rolled back.
+	rec.Config.Normalize()
+	return rec, nil
 }
 
 // Load returns the persisted config snapshot when one exists.
@@ -569,6 +602,20 @@ func (m *GatewayConfigManager) LoadHistory(ctx context.Context) ([]model.Persist
 		return nil, true, err
 	}
 	return history, true, nil
+}
+
+// LoadVersion returns one durable config version by number. ok is false when
+// no trail is kept or the version was never recorded; see
+// SQLConfigStore.LoadVersion.
+func (m *GatewayConfigManager) LoadVersion(ctx context.Context, version int) (model.PersistedConfigVersion, bool, error) {
+	if m == nil || m.store == nil {
+		return model.PersistedConfigVersion{}, false, nil
+	}
+	loader, ok := m.store.(ConfigVersionLoader)
+	if !ok {
+		return model.PersistedConfigVersion{}, false, nil
+	}
+	return loader.LoadVersion(ctx, version)
 }
 
 // ResetConfig restores startup config and clears persisted overrides.

@@ -78,6 +78,7 @@ func (h *Handlers) dashboard(w http.ResponseWriter, r *http.Request) {
 	if h.Logs != nil {
 		logsResult, err := h.Logs.List(r.Context(), requestlog.Query{Limit: 1, Offset: 0})
 		if err != nil {
+			logger.Default().Error("admin dashboard: request log list failed", "error", err)
 			writeError(w, http.StatusInternalServerError, "failed to load dashboard summary", "server_error", "internal_error")
 			return
 		}

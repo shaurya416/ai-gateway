@@ -209,7 +209,9 @@ func (s *KeyStore) CountAdminKeys(_ context.Context) (int, error) {
 	return count, nil
 }
 
-// Revoke marks an API key as revoked and inactive.
+// Revoke marks an API key as revoked and inactive. A key already revoked keeps
+// the time of its first revocation: that is when it stopped authenticating,
+// and an incident review dates the credential's exposure by it.
 func (s *KeyStore) Revoke(_ context.Context, id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -217,8 +219,10 @@ func (s *KeyStore) Revoke(_ context.Context, id string) error {
 	if !ok {
 		return fmt.Errorf("%w: %s", model.ErrKeyNotFound, id)
 	}
-	now := time.Now().UTC()
-	rec.apiKey.RevokedAt = &now
+	if rec.apiKey.RevokedAt == nil {
+		now := time.Now().UTC()
+		rec.apiKey.RevokedAt = &now
+	}
 	rec.apiKey.Active = false
 	return nil
 }

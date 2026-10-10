@@ -77,7 +77,7 @@ func (s *SQLStore) prepareStmts(ctx context.Context) error {
 	}{
 		{&s.stmtGetByID, keyRowSelect + ` WHERE id = ?`},
 		{&s.stmtGetByHash, keyRowSelect + ` WHERE key_hash = ?`},
-		{&s.stmtRevoke, `UPDATE api_keys SET revoked_at = ?, active = ? WHERE id = ?`},
+		{&s.stmtRevoke, `UPDATE api_keys SET revoked_at = COALESCE(revoked_at, ?), active = ? WHERE id = ?`},
 		{&s.stmtUpdate, `UPDATE api_keys SET name = ?, scopes = ? WHERE id = ?`},
 		{&s.stmtSetExpiry, `UPDATE api_keys SET expires_at = ? WHERE id = ?`},
 		{&s.stmtDelete, `DELETE FROM api_keys WHERE id = ?`},
@@ -267,7 +267,8 @@ func (s *SQLStore) List(ctx context.Context) ([]*model.APIKey, error) {
 	return keys, nil
 }
 
-// Revoke marks an API key as inactive and records the revocation timestamp.
+// Revoke marks an API key as inactive and records the revocation timestamp. A
+// key already revoked keeps its first timestamp, as KeyStore.Revoke does.
 func (s *SQLStore) Revoke(ctx context.Context, id string) error {
 	now := time.Now().UTC()
 	res, err := s.stmtRevoke.ExecContext(ctx, now, false, id)

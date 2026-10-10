@@ -10,6 +10,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 
+- `POST /admin/config/rollback/{version}` now restores any version the config
+  store holds. It looked for the version only in the window
+  `GET /admin/config/history` reads — the newest 200 — although the trail is
+  never pruned. Every apply records a version, so a config re-applied by an
+  automated sync passes that many quickly, and from then on every earlier
+  version was answered `404 config version not found` and audited as a denied
+  rollback while its row was still in the store. A version outside the window
+  is now read from the store by number; one that was never recorded is still
+  `404`.
+- Revoking a key that is already revoked no longer moves its `revoked_at`. A
+  repeated `POST /admin/keys/{id}/revoke` — a second `ferrogw admin keys
+  revoke`, or a second operator acting on a page that had not refreshed —
+  overwrote the timestamp with the time of the latest call, so the key read as
+  having stayed live for longer than it did, and that timestamp is what an
+  incident review dates a leaked credential's exposure by. The first
+  revocation time is now kept on both the in-memory and the SQL key stores.
+- A request-log store that fails is now logged. `GET /admin/logs`,
+  `GET /admin/logs/stats`, `DELETE /admin/logs` and the request-log half of
+  `GET /admin/dashboard` answered `500` with a generic message and recorded the
+  store's error nowhere, so an operator was told only that the read had failed
+  — every other admin store failure is logged. A purge the store refused also
+  left no audit row, where a failed key or config mutation leaves one; it is now
+  recorded as a `logs.purge` error. The store's error still never reaches the
+  response.
 - `GET /admin/config` now serves a target's `model_map` as configured. It was
   withheld as an undeclared free-form map, so every entry came back as
   `{"[REDACTED_KEY_0]": "[REDACTED]"}`: the dashboard's strategy panel, which

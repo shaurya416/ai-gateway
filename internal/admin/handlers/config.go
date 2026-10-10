@@ -246,6 +246,18 @@ func (h *Handlers) rollbackConfig(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 	}
+	if target == nil && durable {
+		// The durable trail is served as a window of its newest versions and is
+		// never pruned, so a version older than the window is still stored.
+		// Missing from the window is not missing from the store: refusing it
+		// answered "not found" for every version past the window, and every
+		// apply records a version, so an automated sync gets there quickly.
+		target, err = h.durableVersion(r.Context(), requestedVersion)
+		if err != nil {
+			writeConfigStoreError(w, err, "failed to load config history")
+			return
+		}
+	}
 
 	requested := strconv.Itoa(requestedVersion)
 
@@ -366,19 +378,40 @@ func (h *Handlers) configVersions(ctx context.Context) ([]ConfigHistoryEntry, bo
 
 	entries := make([]ConfigHistoryEntry, 0, len(persisted))
 	for _, p := range persisted {
-		entries = append(entries, ConfigHistoryEntry{
-			Version:   p.Version,
-			UpdatedAt: p.UpdatedAt,
-			Config:    p.Config,
-			Actor:     p.Actor,
-			// Nil for an ordinary update and for a rollback recorded before the
-			// column existed. The two are the same answer here on purpose: the
-			// column exists to mark the exception, and an update is what a row
-			// with nothing recorded almost always was.
-			RolledBackFrom: p.RolledBackFrom,
-		})
+		entries = append(entries, historyEntry(p))
 	}
 	return entries, true, nil
+}
+
+// durableVersion reads one version from the durable trail by number, for a
+// version older than the window configVersions serves. It returns nil when the
+// manager keeps no such trail or the version was never recorded.
+func (h *Handlers) durableVersion(ctx context.Context, version int) (*ConfigHistoryEntry, error) {
+	loader, ok := h.Configs.(repository.ConfigVersionLoader)
+	if !ok {
+		return nil, nil
+	}
+	p, found, err := loader.LoadVersion(ctx, version)
+	if err != nil || !found {
+		return nil, err
+	}
+	entry := historyEntry(p)
+	return &entry, nil
+}
+
+// historyEntry is the served form of one durable config version.
+func historyEntry(p model.PersistedConfigVersion) ConfigHistoryEntry {
+	return ConfigHistoryEntry{
+		Version:   p.Version,
+		UpdatedAt: p.UpdatedAt,
+		Config:    p.Config,
+		Actor:     p.Actor,
+		// Nil for an ordinary update and for a rollback recorded before the
+		// column existed. The two are the same answer here on purpose: the
+		// column exists to mark the exception, and an update is what a row
+		// with nothing recorded almost always was.
+		RolledBackFrom: p.RolledBackFrom,
+	}
 }
 
 func (h *Handlers) getConfigHistorySnapshot() []ConfigHistoryEntry {
