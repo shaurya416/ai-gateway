@@ -4,11 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"time"
 
 	"github.com/ferro-labs/ai-gateway/internal/admin/model"
 	"github.com/ferro-labs/ai-gateway/internal/authctx"
 	"github.com/ferro-labs/ai-gateway/pkg/logger"
 )
+
+// auditAppendBudget bounds the detached audit append in writeAudit. It matches
+// the bound the gateway puts on its other detached recording stages.
+const auditAppendBudget = 10 * time.Second
 
 // recordAudit records one administrative action to the structured log and,
 // when an audit store is configured, to the durable trail.
@@ -74,7 +79,15 @@ func (h *Handlers) writeAudit(r *http.Request, actor, actorID, action, targetID 
 		SourceIP: r.RemoteAddr,
 		TraceID:  logger.TraceIDFromContext(r.Context()),
 	}
-	if err := h.Audit.Append(r.Context(), entry); err != nil {
+	// Detached from the caller: by the time an action is audited it has
+	// already happened, so a client that hangs up now must not be able to
+	// cancel its record. On the request context a SQL store refused the append
+	// with "context canceled", leaving a committed revoke or config change with
+	// no durable row. The budget bounds what dropping the request's
+	// cancellation also drops — a deadline — against an unresponsive store.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), auditAppendBudget)
+	defer cancel()
+	if err := h.Audit.Append(ctx, entry); err != nil {
 		// Deliberately not fatal to the request — see recordAudit's doc. Logged
 		// at error level so a persistently failing trail is visible rather than
 		// silently empty.

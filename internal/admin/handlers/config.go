@@ -113,7 +113,7 @@ func (h *Handlers) applyConfigUpdate(w http.ResponseWriter, r *http.Request, sta
 
 	var cfg config.Config
 	if err := decodeConfigBody(r.Body, &cfg); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error(), "invalid_request_error", "invalid_request")
+		writeBodyError(w, err, "invalid request body: "+err.Error())
 		return
 	}
 

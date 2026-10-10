@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A credential change, sign-in, config change or log purge whose caller
+  disconnects before the response is written now keeps its durable audit row.
+  The row was appended on the request context, so once the client had gone a
+  SQL audit store refused the write with `context canceled`: a key could be
+  revoked, or the active config replaced, and `GET /admin/audit` held no record
+  of it — only the log line remained. The append now runs detached from the
+  caller, bounded at ten seconds.
+- `POST /admin/keys`, `PUT /admin/keys/{id}`, `POST /admin/config` and
+  `PUT /admin/config` now answer a body larger than `max_request_bytes` with
+  `413 request_too_large`, as the limit is documented to. Each handler decoded
+  the body itself and reported the cap tripping as a malformed body —
+  `400 invalid request body` — which sent the operator looking for a JSON
+  mistake that was not there.
+- `/v1/images/generations` now answers `400` for an `n` below 1, before any
+  target is called. Nothing checked it at the edge, and replicate and
+  bedrock's Titan/Nova drop a zero count as an omitted field, so `n: 0`
+  reached the upstream as no count at all and was generated, billed and
+  answered `200` at the upstream's default count; a negative `n` was forwarded
+  for the upstream to refuse.
 - `GET /admin/config` and `GET /admin/config/history` no longer serve the
   query of a URL Go's parser cannot decode. Every query value of a URL field —
   `mcp_servers[].url`, the tracing endpoint — was withheld only when

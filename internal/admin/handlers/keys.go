@@ -141,7 +141,7 @@ func (h *Handlers) createKey(w http.ResponseWriter, r *http.Request) {
 		ExpiresAt string   `json:"expires_at"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body", "invalid_request_error", "invalid_request")
+		writeBodyError(w, err, "invalid request body")
 		return
 	}
 	if body.Name == "" {
@@ -346,7 +346,7 @@ func (h *Handlers) updateKey(w http.ResponseWriter, r *http.Request) {
 		ClearExpiration bool     `json:"clear_expiration"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body", "invalid_request_error", "invalid_request")
+		writeBodyError(w, err, "invalid request body")
 		return
 	}
 	// Ahead of the lockout guards below on purpose. A misspelled scope does not

@@ -328,6 +328,21 @@ func writeError(w http.ResponseWriter, status int, message, errType, code string
 	})
 }
 
+// writeBodyError answers a write whose request body could not be decoded. A
+// body over max_request_bytes is the 413 that limit is documented to produce:
+// middleware.MaxRequestBody only arms the reader, so the cap reaches a handler
+// as a read error, and reporting it as a malformed body sends the operator
+// looking for a JSON mistake that is not there. Anything else is the caller's
+// malformed body, a 400 carrying message.
+func writeBodyError(w http.ResponseWriter, err error, message string) {
+	var tooLarge *http.MaxBytesError
+	if errors.As(err, &tooLarge) {
+		writeError(w, http.StatusRequestEntityTooLarge, "request body too large", "invalid_request_error", "request_too_large")
+		return
+	}
+	writeError(w, http.StatusBadRequest, message, "invalid_request_error", "invalid_request")
+}
+
 func defaultErrType(status int) string {
 	switch {
 	case status == http.StatusUnauthorized:

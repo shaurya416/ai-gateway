@@ -201,3 +201,62 @@ func TestBodySizeLimit_OmittedFallsBackToDefault(t *testing.T) {
 		t.Errorf("omitted max_request_bytes should apply the %d-byte default, got 413", config.DefaultMaxRequestBytes)
 	}
 }
+
+// gatewayConfigs serves the admin config routes from the gateway itself; the
+// gateway has no backing store to ping.
+type gatewayConfigs struct{ *aigateway.Gateway }
+
+func (gatewayConfigs) Ping(context.Context) error { return nil }
+
+// TestBodySizeLimit_AdminWritesAnswer413 verifies that the admin write
+// endpoints answer a body over max_request_bytes with the 413 the limit is
+// documented to produce. Each decoded the body itself and reported the cap
+// tripping as a malformed body — 400 "invalid request body" — which tells the
+// operator to fix JSON that was never wrong.
+func TestBodySizeLimit_AdminWritesAnswer413(t *testing.T) {
+	const masterKey = "test-master-key"
+	gw, err := newTestGateway(t, config.Config{
+		MaxRequestBytes: 256,
+		Strategy:        config.StrategyConfig{Mode: config.ModeSingle},
+		Targets:         []config.Target{{VirtualKey: "stub"}},
+	})
+	if err != nil {
+		t.Fatalf("New gateway: %v", err)
+	}
+	reg := providers.NewRegistry()
+	reg.Register(stubProvider{})
+	r := httpserver.NewRouter(reg, repository.NewKeyStore(), nil, nil, gw, gatewayConfigs{gw}, nil, nil, nil, nil, masterKey, nil)
+
+	send := func(method, path, body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequestWithContext(t.Context(), method, path, strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+masterKey)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		return w
+	}
+
+	// Under the cap the same route answers normally, so the 413 below is the
+	// limit's answer and not the route's.
+	if w := send(http.MethodPost, "/admin/keys", `{"name":"small","scopes":["read_only"]}`); w.Code != http.StatusCreated {
+		t.Fatalf("POST /admin/keys under the limit: status = %d, want 201: %s", w.Code, w.Body.String())
+	}
+
+	padding := strings.Repeat("x", 512)
+	for _, tc := range []struct{ method, path, body string }{
+		{http.MethodPost, "/admin/keys", `{"name":"` + padding + `"}`},
+		{http.MethodPut, "/admin/keys/some-key", `{"name":"` + padding + `"}`},
+		{http.MethodPost, "/admin/config", `{"strategy":{"mode":"single"},"targets":[{"virtual_key":"` + padding + `"}]}`},
+		{http.MethodPut, "/admin/config", `{"strategy":{"mode":"single"},"targets":[{"virtual_key":"` + padding + `"}]}`},
+	} {
+		t.Run(tc.method+" "+tc.path, func(t *testing.T) {
+			w := send(tc.method, tc.path, tc.body)
+			if w.Code != http.StatusRequestEntityTooLarge {
+				t.Fatalf("status = %d, want 413: %s", w.Code, w.Body.String())
+			}
+			if !strings.Contains(w.Body.String(), `"code":"request_too_large"`) {
+				t.Errorf("body = %s, want code request_too_large", w.Body.String())
+			}
+		})
+	}
+}
