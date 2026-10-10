@@ -51,7 +51,12 @@ func TestStdioListToolsBoundsPageCount(t *testing.T) {
 func TestStdioListToolsBoundsListingSize(t *testing.T) {
 	client := startHelperClient(t, "large-pages", helperModeEndlessLargePages)
 
-	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	// Reaching the bound moves about 10 MiB through the subprocess and decodes
+	// it twice, which takes several seconds under the race detector. The
+	// deadline only has to outlast that: a listing that is not bounded runs
+	// into it whatever its length, so a generous one separates the two
+	// outcomes just as well and does not fail a loaded CI runner.
+	ctx, cancel := context.WithTimeout(t.Context(), 60*time.Second)
 	defer cancel()
 	tools, err := client.ListTools(ctx)
 	if err == nil {
