@@ -266,10 +266,12 @@ Each choice is assembled into **one document** and validated once, so an answer
 split across content parts is judged whole rather than as several invalid
 fragments, and `n > 1` has every candidate validated. A choice carrying
 **neither content nor a tool call** is a violation: an empty answer does not
-satisfy a schema requiring an object. A choice carrying **only a tool call**
-passes without validation — a tool call is a different kind of answer, not a
-malformed one, so this plugin is safe to run on a gateway serving structured
-output and tool calling at once.
+satisfy a schema requiring an object. So is a chat response carrying **no
+choice at all**; on the other surfaces, whose responses never carry choices,
+there is nothing to validate and the plugin stands aside. A choice carrying
+**only a tool call** passes without validation — a tool call is a different
+kind of answer, not a malformed one, so this plugin is safe to run on a gateway
+serving structured output and tool calling at once.
 
 ```yaml
 config:
@@ -324,7 +326,11 @@ token usage and the configured per-million-token prices, accumulates it against
 the key, and rejects once the limit is reached. Keys on the API credential, so
 it applies to authenticated requests. List it at both stages with identical
 config. The limit, every rate and `max_keys` must be finite numbers `>= 0`; a
-negative value, or YAML's `.nan` or `.inf`, fails the load.
+negative value, or YAML's `.nan` or `.inf`, fails the load, and so does a
+`store_id` that is not a string. Inside an MCP tool loop the cap is checked
+before every turn, and a request refused there has the turns it already made
+recorded against the key, so its next request is refused before reaching a
+provider.
 
 ```yaml
 config:

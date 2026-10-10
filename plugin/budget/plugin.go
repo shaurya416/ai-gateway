@@ -11,10 +11,12 @@
 //   - before_request: checks whether the API key has remaining budget;
 //     rejects the request with HTTP 402 Payment Required and an
 //     insufficient_quota error if the committed spend is at or over the limit.
-//     This is a read-only SOFT-cap check (no reservation). It is 402 and not
-//     429 because waiting does not restore a spend cap: only cost roll-off or
-//     an explicit reset clears it, so a retry hint would send every SDK into a
-//     backoff schedule it was always going to exhaust.
+//     This is a SOFT-cap check (no reservation); it writes to the store only
+//     to record what a request it refuses inside an MCP tool loop had already
+//     spent. It is 402 and not 429 because waiting does not restore a spend
+//     cap: only cost roll-off or an explicit reset clears it, so a retry hint
+//     would send every SDK into a backoff schedule it was always going to
+//     exhaust.
 //   - after_request:  records the cost of the completed request via an atomic
 //     increment so that future before_request checks see up-to-date spend.
 //
@@ -245,11 +247,19 @@ type settings struct {
 func parseBudget(config map[string]any) (settings, error) {
 	s := settings{storeID: "default", maxKeys: defaultMaxKeys}
 
-	if v, ok := config["store_id"].(string); ok && v != "" {
-		s.storeID = v
+	// A store_id that is not a string is a load error. It used to fall back to
+	// "default" in silence, so budgets told apart by `store_id: 1` and
+	// `store_id: 2` shared one set of counters: each recorded every request
+	// into the same store, and a key reached its cap at a fraction of the
+	// spend either budget was configured for.
+	storeID, err := plugin.StringSetting(config["store_id"], "store_id")
+	if err != nil {
+		return settings{}, fmt.Errorf("budget: %w", err)
+	}
+	if storeID != "" {
+		s.storeID = storeID
 	}
 
-	var err error
 	if v, ok := config["spend_limit_usd"]; ok {
 		if s.spendLimitUSD, err = amount("spend_limit_usd", v); err != nil {
 			return settings{}, err
@@ -379,8 +389,33 @@ func (p *Plugin) Execute(_ context.Context, pctx *plugin.Context) error {
 	if pctx.SkipProvider {
 		return nil
 	}
+	// Nor twice. A request this plugin refused mid-loop has had its spend
+	// recorded at the refusal (see checkBudget), and the usage the gateway
+	// carries onto the error path for that request is the same spend again.
+	if recorded(pctx, p.storeID) {
+		return nil
+	}
 	p.recordCost(pctx, key)
 	return nil
+}
+
+// metaRecordedPrefix namespaces the Metadata slot saying a request's spend has
+// already been recorded into a store. Keyed per store, because two budgets
+// with different store_ids each record the same request into their own.
+const metaRecordedPrefix = "budget.recorded:"
+
+// markRecorded notes that this request's spend is already in the store.
+func markRecorded(pctx *plugin.Context, storeID string) {
+	if pctx.Metadata == nil {
+		return
+	}
+	pctx.Metadata[metaRecordedPrefix+storeID] = true
+}
+
+// recorded reports whether this request's spend is already in the store.
+func recorded(pctx *plugin.Context, storeID string) bool {
+	done, _ := pctx.Metadata[metaRecordedPrefix+storeID].(bool)
+	return done
 }
 
 // usageFromContext returns the completed request's token usage — from the chat
@@ -405,7 +440,8 @@ func usageFromContext(pctx *plugin.Context) (providers.Usage, bool) {
 // Close releases plugin resources.
 func (p *Plugin) Close() error { return nil }
 
-// checkBudget is a read-only soft-cap check.
+// checkBudget is a soft-cap check. It places no reservation, and it writes to
+// the store only when it refuses a turn of an MCP tool loop; see that branch.
 //
 // # Soft cap semantics
 //
@@ -441,6 +477,17 @@ func (p *Plugin) checkBudget(pctx *plugin.Context, key string) error {
 		current += pctx.Measurements.CostUSD
 	}
 	if current >= p.spendLimitUSD {
+		// A denial mid-loop ends the request on its error path, where the
+		// after stage — the only place spend is otherwise recorded — never
+		// runs. The turns already made were billed all the same, so they are
+		// recorded here, at the figure this check just compared against the
+		// cap. Without it the key's store never moved: every request spent up
+		// to the cap, was refused with "budget exceeded", and the next one was
+		// admitted to spend it again.
+		if pctx.Measurements.HasCost && pctx.Measurements.CostUSD > 0 {
+			p.store.add(key, pctx.Measurements.CostUSD)
+			markRecorded(pctx, p.storeID)
+		}
 		pctx.Reject = true
 		pctx.Reason = fmt.Sprintf("budget exceeded: spent $%.4f of $%.2f limit", current, p.spendLimitUSD)
 		return nil

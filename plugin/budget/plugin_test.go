@@ -664,3 +664,38 @@ func TestBudget_RejectsNonFiniteAmounts(t *testing.T) {
 		}
 	}
 }
+
+// TestBudget_RejectsANonStringStoreID covers a store_id written as a number. It
+// used to fall back to "default" in silence, so two budgets told apart as
+// store 1 and store 2 shared one set of counters and each recorded every
+// request into it. A null or absent store_id still takes the default.
+func TestBudget_RejectsANonStringStoreID(t *testing.T) {
+	for _, value := range []string{"1", "2.5", "true", "[a]", "{a: b}"} {
+		t.Run(value, func(t *testing.T) {
+			var config map[string]any
+			doc := "spend_limit_usd: 1.0\ninput_per_m_tokens: 3.0\nstore_id: " + value + "\n"
+			if err := yaml.Unmarshal([]byte(doc), &config); err != nil {
+				t.Fatalf("decode config: %v", err)
+			}
+
+			if err := (&Plugin{}).ValidateConfig(config); err == nil {
+				t.Errorf("ValidateConfig accepted store_id: %s", value)
+			}
+			p := &Plugin{}
+			if err := p.Init(config); err == nil {
+				t.Errorf("Init accepted store_id: %s, sharing store %q", value, p.storeID)
+			}
+		})
+	}
+
+	for _, doc := range []string{"store_id:\n", "store_id: \"\"\n", ""} {
+		var config map[string]any
+		if err := yaml.Unmarshal([]byte("spend_limit_usd: 1.0\ninput_per_m_tokens: 3.0\n"+doc), &config); err != nil {
+			t.Fatalf("decode config: %v", err)
+		}
+		p := makePlugin(t, config)
+		if p.storeID != "default" {
+			t.Errorf("config %q: store_id = %q, want the default", doc, p.storeID)
+		}
+	}
+}

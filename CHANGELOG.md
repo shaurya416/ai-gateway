@@ -47,6 +47,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   such call under one missing key and finished with `finish_reason:
   tool_calls` and an empty `tool_calls` list. The reasoning a non-streamed
   request for the same answer received was dropped from the replay.
+- A `budget` that refuses a request inside an MCP tool loop now records what
+  that request had already spent. The cap is checked before every loop turn
+  against the key's stored spend plus the request's running cost, but a refusal
+  there ends the request on its error path, and spend was recorded only by the
+  `after_request` stage, which never runs for it. The turns already made were
+  billed upstream and never reached the store, so once a key's agentic requests
+  could cross its cap, each one spent up to it, was refused with `budget
+  exceeded`, and the next was admitted to spend it again — the cap never
+  closed. The refusal now records the running cost it was decided on, so the
+  key's next request is refused before any provider call; a `budget` also
+  listed at `on_error` does not record the same spend twice.
+- `schema-guard` now treats a chat response carrying no choice at all as a
+  violation, as it already treated a choice carrying no content. A response
+  with an empty `choices` list — which an upstream can return with `200` — was
+  validated choice by choice, found nothing to check, and was approved, so a
+  guardrail configured to require an object passed an answer the caller could
+  not even index into. The other surfaces, whose responses never carry
+  choices, are unchanged.
+- `budget` refuses to load a `store_id` that is not a string. A number, a
+  boolean or a list fell back to `"default"` in silence, so budgets told apart
+  as `store_id: 1` and `store_id: 2` shared one set of counters, each recorded
+  every request into it, and a key reached its cap at a fraction of the spend
+  either was configured for. It is now a load error naming the key, reported by
+  `ferrogw validate` as well as at startup; an absent, null or empty `store_id`
+  still takes the default.
 - A credential change, sign-in, config change or log purge whose caller
   disconnects before the response is written now keeps its durable audit row.
   The row was appended on the request context, so once the client had gone a

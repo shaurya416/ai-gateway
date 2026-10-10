@@ -18,10 +18,11 @@
 // unsent — a caller that must withhold malformed output must not stream.
 //
 // Each choice is assembled into one document and validated once, and a choice
-// carrying NEITHER content NOR a tool call is a violation. A choice that
-// carries only a tool call passes without validation: a tool call is a
-// different kind of answer, not a malformed one, so a model that chose to call
-// a tool did not return a document this schema describes.
+// carrying NEITHER content NOR a tool call is a violation, as is a chat
+// response carrying no choice at all. A choice that carries only a tool call
+// passes without validation: a tool call is a different kind of answer, not a
+// malformed one, so a model that chose to call a tool did not return a
+// document this schema describes.
 package schemaguard
 
 import (
@@ -172,6 +173,16 @@ func (g *SchemaGuard) Execute(ctx context.Context, pctx *plugin.Context) error {
 		return nil
 	}
 
+	// A chat response with no choice at all carries no document either, and is
+	// the emptiest answer there is: the rule that refuses an empty choice cannot
+	// approve the absence of one. Every other surface marks itself through
+	// plugin.MetadataSurface and projects no choices by construction, so there
+	// an empty list says nothing about what the model returned.
+	if _, projected := pctx.Metadata[plugin.MetadataSurface]; !projected && len(pctx.Response.Choices) == 0 {
+		g.violate(ctx, pctx, "response carries no content")
+		return nil
+	}
+
 	for _, choice := range pctx.Response.Choices {
 		// The caller has gone; see plugin.RequestText for why this is not an error.
 		if ctx.Err() != nil {
@@ -181,19 +192,27 @@ func (g *SchemaGuard) Execute(ctx context.Context, pctx *plugin.Context) error {
 		if violation == "" {
 			continue
 		}
-		logger.Ctx(ctx).Warn("schema-guard: response violates schema", "violation", violation)
-		pctx.NoteGuardrailMatch(g.action)
-		if g.action != plugin.ActionBlock {
-			continue
+		if g.violate(ctx, pctx, violation) {
+			return nil
 		}
-		pctx.Reject = true
-		// A schema violation is not adversarial the way a prompt injection or a
-		// leaked secret is, so naming the offending field is the whole
-		// diagnostic value here rather than a hint an attacker could exploit.
-		pctx.Reason = "response blocked by content policy: " + violation
-		return nil
 	}
 	return nil
+}
+
+// violate records a violation under the configured action and reports whether
+// it denied the response.
+func (g *SchemaGuard) violate(ctx context.Context, pctx *plugin.Context, violation string) bool {
+	logger.Ctx(ctx).Warn("schema-guard: response violates schema", "violation", violation)
+	pctx.NoteGuardrailMatch(g.action)
+	if g.action != plugin.ActionBlock {
+		return false
+	}
+	pctx.Reject = true
+	// A schema violation is not adversarial the way a prompt injection or a
+	// leaked secret is, so naming the offending field is the whole
+	// diagnostic value here rather than a hint an attacker could exploit.
+	pctx.Reason = "response blocked by content policy: " + violation
+	return true
 }
 
 // Close releases resources owned by the plugin.

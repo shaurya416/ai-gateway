@@ -272,6 +272,71 @@ func TestExecute_RejectsAChoiceCarryingNoContent(t *testing.T) {
 	}
 }
 
+// A chat response with no choice at all is the emptiest answer there is, and
+// approving it let a guardrail configured to require an object pass a response
+// the caller cannot even index into. Every other surface marks itself through
+// plugin.MetadataSurface and projects no choices by construction, so there the
+// empty list says nothing and the plugin stands aside as before.
+func TestExecute_RejectsAChatResponseCarryingNoChoice(t *testing.T) {
+	g := &SchemaGuard{}
+	if err := g.Init(map[string]any{"schema": objectSchema()}); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	pctx := &plugin.Context{
+		Stage:    plugin.StageAfterRequest,
+		Metadata: map[string]any{},
+		Response: &providers.Response{Model: "m"},
+	}
+	if err := g.Execute(context.Background(), pctx); err != nil {
+		t.Fatalf("Execute returned an error; a denial is a verdict, not a fault: %v", err)
+	}
+	if !pctx.Reject {
+		t.Fatal("a chat response carrying no choice was allowed through where an object was required")
+	}
+	if !strings.Contains(pctx.Reason, "no content") {
+		t.Errorf("reason = %q, want it to say the response carries no content", pctx.Reason)
+	}
+	if len(pctx.GuardrailMatches) != 1 || pctx.GuardrailMatches[0].Action != plugin.ActionBlock {
+		t.Errorf("guardrail matches = %+v, want one block", pctx.GuardrailMatches)
+	}
+
+	projected := &plugin.Context{
+		Stage:    plugin.StageAfterRequest,
+		Metadata: map[string]any{plugin.MetadataSurface: "embeddings"},
+		Response: &providers.Response{Model: "m"},
+	}
+	if err := g.Execute(context.Background(), projected); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if projected.Reject || len(projected.GuardrailMatches) != 0 {
+		t.Fatalf("a projected surface with no choices was judged: reject=%v matches=%+v", projected.Reject, projected.GuardrailMatches)
+	}
+}
+
+// Under warn the empty response is recorded and served.
+func TestExecute_WarnRecordsAChatResponseCarryingNoChoice(t *testing.T) {
+	g := &SchemaGuard{}
+	if err := g.Init(map[string]any{"schema": objectSchema(), "action": "warn"}); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	pctx := &plugin.Context{
+		Stage:    plugin.StageAfterRequest,
+		Metadata: map[string]any{},
+		Response: &providers.Response{Model: "m"},
+	}
+	if err := g.Execute(context.Background(), pctx); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if pctx.Reject {
+		t.Fatalf("warn denied the response: %q", pctx.Reason)
+	}
+	if len(pctx.GuardrailMatches) != 1 || pctx.GuardrailMatches[0].Action != plugin.ActionWarn {
+		t.Fatalf("guardrail matches = %+v, want one warn", pctx.GuardrailMatches)
+	}
+}
+
 // A tool call is a different kind of answer, not a malformed one. A model that
 // chose to call a tool returned no document for this schema to describe, and
 // denying it would make the plugin incompatible with tool calling rather than
