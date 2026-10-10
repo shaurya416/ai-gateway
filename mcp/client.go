@@ -101,7 +101,6 @@ func NewClient(endpoint string, headers map[string]string, timeout time.Duration
 // notifications/initialized) and stores the Mcp-Session-Id for subsequent
 // requests. Safe to call again — it starts a new session.
 func (c *Client) Initialize(ctx context.Context) (*ServerInfo, error) {
-	prior := c.getSessionID()
 	params := map[string]any{
 		// The revision this build speaks, taken from the same library constant the
 		// stdio transport hands to mark3labs. Hardcoding it here made the two
@@ -174,10 +173,12 @@ func (c *Client) Initialize(ctx context.Context) (*ServerInfo, error) {
 			"error", err)
 	}
 
-	// Only a session this handshake issued gets a stream: a server that issued
-	// none cannot send requests at all, and one that handed back the ID the
-	// client already held already has one.
-	if sid := c.getSessionID(); sid != "" && sid != prior {
+	// Every session this handshake established gets a stream, and a server that
+	// issued none cannot send requests at all. A renewal handed back the ID the
+	// client already held gets one too: the expired session's stream may
+	// already be over — a reopen that met the restarted server's 404 ends it
+	// for good — and listen replaces whatever is still serving it.
+	if sid := c.getSessionID(); sid != "" {
 		c.listen(sid)
 	}
 

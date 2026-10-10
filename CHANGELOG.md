@@ -1165,7 +1165,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   every keepalive ping went undelivered; the SDK counts that as a failed ping
   and closes the session, failing any tool call in flight at that moment and
   making the next call start a new session. The gateway now opens the stream
-  for each session it is issued, answers `ping` on it with an empty result,
+  for each session it is issued, a renewal handed back the same session ID
+  included, answers `ping` on it with an empty result,
   refuses any other request the server sends as an unknown method, and reopens
   the stream when it ends or the connection drops. A server that answers the
   `GET` with `405` (it offers no stream), or with anything else that is not a

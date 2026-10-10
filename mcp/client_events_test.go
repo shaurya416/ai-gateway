@@ -273,3 +273,128 @@ func TestClientBoundsTheServersRetryInterval(t *testing.T) {
 		t.Fatalf("client opened the event stream %d times in half its shortest wait, want once", got)
 	}
 }
+
+// reissuingStreamServer issues session-1 on every initialize, as a server that
+// numbers sessions in memory does after a restart, and serves an event stream
+// for a session it currently holds. A GET for one it does not hold is 404.
+type reissuingStreamServer struct {
+	*httptest.Server
+
+	mu        sync.Mutex
+	known     bool
+	restarted chan struct{}
+
+	opened  chan struct{} // one send per stream served
+	refused chan struct{} // one send per GET answered 404
+}
+
+func newReissuingStreamServer(t *testing.T) *reissuingStreamServer {
+	t.Helper()
+	s := &reissuingStreamServer{
+		restarted: make(chan struct{}),
+		opened:    make(chan struct{}, 8),
+		refused:   make(chan struct{}, 8),
+	}
+	s.Server = httptest.NewServer(http.HandlerFunc(s.handle))
+	t.Cleanup(s.Close)
+	return s
+}
+
+// restart drops the session and ends the stream serving it.
+func (s *reissuingStreamServer) restart() {
+	s.mu.Lock()
+	s.known = false
+	close(s.restarted)
+	s.restarted = make(chan struct{})
+	s.mu.Unlock()
+}
+
+func (s *reissuingStreamServer) handle(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	known := s.known && r.Header.Get("Mcp-Session-Id") == "session-1"
+	restarted := s.restarted
+	s.mu.Unlock()
+
+	if r.Method == http.MethodGet {
+		if !known {
+			s.refused <- struct{}{}
+			http.Error(w, "session not found", http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		// The shortest interval the client honours, so the reopen after the
+		// restart below comes a second later rather than after the backoff.
+		_, _ = fmt.Fprint(w, "retry: 1\n\n")
+		w.(http.Flusher).Flush()
+		s.opened <- struct{}{}
+		select {
+		case <-restarted:
+		case <-r.Context().Done():
+		}
+		return
+	}
+	if r.Method == http.MethodDelete {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	var req JSONRPCRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	switch req.Method {
+	case mcpMethodInitialize:
+		s.mu.Lock()
+		s.known = true
+		s.mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Mcp-Session-Id", "session-1")
+		_ = json.NewEncoder(w).Encode(JSONRPCResponse{JSONRPC: "2.0", ID: req.ID, Result: initializeResult("reissuing", "1")})
+	case mcpMethodToolsCall:
+		if !known {
+			http.Error(w, "session not found", http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(JSONRPCResponse{
+			JSONRPC: "2.0", ID: req.ID,
+			Result: mustMarshal(ToolCallResult{Content: []ContentBlock{{Type: "text", Text: "ok"}}}),
+		})
+	default:
+		w.WriteHeader(http.StatusAccepted)
+	}
+}
+
+// A renewal that is handed back the session ID the client already held still
+// opens an event stream for it. The stream of the expired session can already
+// be over — a reopen after the restart met 404, which ends it for good — so
+// keying the new stream on a changed ID left the renewed session with none,
+// and the server's keepalive pings nowhere to go, for the rest of the process.
+func TestClientReopensTheEventStreamForAReissuedSession(t *testing.T) {
+	srv := newReissuingStreamServer(t)
+	c := initializedClient(t, srv.URL)
+	t.Cleanup(func() { _ = c.Close() })
+
+	waitFor := func(ch <-chan struct{}, what string) {
+		t.Helper()
+		select {
+		case <-ch:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("timed out waiting for %s", what)
+		}
+	}
+	waitFor(srv.opened, "the first event stream")
+
+	srv.restart()
+	waitFor(srv.refused, "the reopened stream to meet the restarted server's 404")
+
+	if _, err := c.CallTool(t.Context(), "t", json.RawMessage(`{}`)); err != nil {
+		t.Fatalf("CallTool after the restart: %v", err)
+	}
+	if got := c.getSessionID(); got != "session-1" {
+		t.Fatalf("session ID = %q, want the reissued session-1", got)
+	}
+	waitFor(srv.opened, "an event stream for the renewed session")
+}
