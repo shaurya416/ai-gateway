@@ -222,7 +222,14 @@ func routeTargets[Req, Resp any](
 			// reads its samples back by virtual key and upstream model
 			// (LeastLatency.SelectTargets), and a measurement that included
 			// plugin and alias time would rank targets on work no target did.
-			g.latencyTracker.Record(key, upstreamModel, time.Since(started))
+			//
+			// Only when the call returning IS the answer. A stream's call returns
+			// once it has started, and its sample is taken at its first chunk
+			// (see startedAt); recording here as well gave every stream two
+			// samples, one of them for a stream whose first chunk was an error.
+			if !plan.responseOutlivesCall {
+				g.latencyTracker.Record(key, upstreamModel, time.Since(started))
+			}
 			target.attempts = attemptSequence
 			target.startedAt = started
 			recordAttribution(ctx, target, attemptSequence)

@@ -64,6 +64,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   clamped: `10`, meant as ten percent, sampled every trace, and a negative
   ratio sampled none while tracing reported itself enabled. Both are now
   `ferrogw validate` and startup errors naming the value.
+- A transcription or translation request (`/v1/audio/transcriptions`,
+  `/v1/audio/translations`) for a model the catalog prices per minute of audio
+  — `whisper-1` among them — is now recorded as unpriced instead of as a known
+  $0.00. No transcription response carries the audio's duration, so there was
+  nothing to bill, but the surface priced a zero count and the calculator flags
+  any model whose row carries a rate for its mode as priced: the cost handed to
+  `after_request` plugins — the request-log cost column among them — read as a
+  measured $0.00 rather than as unknown, so every such transcription was logged
+  as free. The same applied to an embeddings response whose provider reported
+  no usage. A non-chat request that reports none of the quantities its catalog
+  row bills by is now unpriced, the rule image generation and `/v1/responses`
+  already follow; a request that does report them is priced exactly as before.
+- Under `mode: least-latency`, a stream now contributes one latency sample
+  instead of two. The routing walk recorded a sample the moment a stream
+  started and the stream recorded another at its first chunk, so streams
+  filled the window twice as fast and its median was dragged toward the start
+  times: three streams whose first chunks took 0, 80 and 160ms ranked their
+  target as answering in under a millisecond. A stream whose first chunk was an
+  error — a provider opening with an error frame — still left the start
+  sample, so a target that failed every stream was measured as a fast one. A
+  stream is now sampled only at its first chunk, or at its close when it ends
+  cleanly with none, and not at all when its first chunk is an error.
+- A streamed chat request that sets `stream_options.include_usage: false` no
+  longer receives a usage block when its answer comes from the response cache
+  or from the MCP tool loop. The opt-out was applied only to provider-served
+  streams; those two replay a complete response as a single chunk outside the
+  stream meter and attached its usage regardless, so whether a client that
+  declined usage got one depended on where the answer came from. Accounting is
+  unchanged — the cost, metrics and request-log row still read the real usage.
 - A caller closing a streamed `/v1/responses` or `/v1/*` pass-through response
   no longer counts against the target's circuit breaker. The reverse proxy
   reports a body copy that breaks off by panicking, and the panic unwound

@@ -77,7 +77,9 @@ type MeterMeta struct {
 	// LatencyRecorder, if non-nil, records the stream's time to first chunk
 	// against Provider and PriceModel for least-latency routing. First chunk,
 	// not drain: the routing sample measures how quickly a target begins
-	// answering, so a long answer does not read as a slow provider.
+	// answering, so a long answer does not read as a slow provider. A stream
+	// that closes cleanly with no chunk at all is sampled at its close, and one
+	// whose first chunk is an error is not sampled.
 	LatencyRecorder func(provider, model string, latency time.Duration)
 	// LatencyStart, if non-zero, is when the serving target was first asked,
 	// and the LatencyRecorder sample is measured from it rather than from
@@ -359,6 +361,13 @@ func Meter(ctx context.Context, src <-chan providers.StreamChunk, start time.Tim
 		}
 
 		latency := time.Since(start)
+
+		// A stream that closed cleanly without a single chunk answered in full
+		// when it closed, so that is its routing sample — the one a unary call
+		// that returned an empty response is given.
+		if streamErr == nil && firstChunkAt.IsZero() && meta.LatencyRecorder != nil && meta.Provider != "" {
+			meta.LatencyRecorder(meta.Provider, cmp.Or(meta.PriceModel, meta.Model), time.Since(meta.latencyOrigin(start)))
+		}
 
 		// Stream timings (relative to start). Zero when no chunks
 		// arrived (the error-before-first-token case).

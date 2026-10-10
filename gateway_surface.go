@@ -89,6 +89,16 @@ func (g *Gateway) priceSurface(target routedTarget, routedModel string, tokens p
 	catalog := g.catalog
 	g.mu.RUnlock()
 	record.cost = models.Calculate(catalog, target.priceProvider+"/"+target.upstreamModel, record.billable())
+	// A request that reported none of the quantities a catalog bills by has
+	// nothing to price, and the honest answer is unpriced — the rule the image
+	// calculator and the Responses forward already follow. Calculate prices a
+	// zero count at $0.00 and flags it priced whenever the model's catalog row
+	// carries a rate for its mode, so a whisper transcription (billed per minute
+	// of audio, which no surface here measures) was recorded as a known free
+	// request, as was an embedding whose provider reported no usage.
+	if record.billable() == (models.Usage{}) {
+		record.cost = models.CostResult{ModelFound: record.cost.ModelFound}
+	}
 	return record
 }
 

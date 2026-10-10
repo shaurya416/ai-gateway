@@ -864,6 +864,118 @@ func TestGateway_GenerateImage_UnpricedModelStaysUnpriced(t *testing.T) {
 	}
 }
 
+// mockTranscriptionProvider answers every transcription with fixed text and,
+// like every transcription provider, no billed quantity.
+type mockTranscriptionProvider struct {
+	mockProvider
+}
+
+func (m *mockTranscriptionProvider) Transcribe(context.Context, providers.TranscriptionRequest) (*providers.TranscriptionResponse, error) {
+	return &providers.TranscriptionResponse{Text: "hello"}, nil
+}
+
+// unmeasuredCostCatalog carries one priced row for each surface whose billed
+// quantity a request can arrive without: a transcription model priced per
+// minute of audio — openai/whisper-1's real shape, and that of 45 audio_in
+// rows — and an embedding model priced per token.
+func unmeasuredCostCatalog() models.Catalog {
+	price := func(v float64) *float64 { return &v }
+	return models.Catalog{
+		"audio/whisper-1": {
+			Provider: "audio",
+			ModelID:  "whisper-1",
+			Mode:     models.ModeAudioIn,
+			Pricing:  models.Pricing{AudioInputPerMinute: price(0.006)},
+		},
+		"embed/embed-model": {
+			Provider: "embed",
+			ModelID:  "embed-model",
+			Mode:     models.ModeEmbedding,
+			Pricing:  models.Pricing{EmbeddingPerMTokens: price(0.02)},
+		},
+	}
+}
+
+// costRecorder installs an after_request plugin that captures the
+// Measurements the request logger persists, and returns where they land.
+func costRecorder(t *testing.T, gw *Gateway) *plugin.Measurements {
+	t.Helper()
+	var measured plugin.Measurements
+	if err := gw.RegisterPlugin(plugin.StageAfterRequest, &testPlugin{
+		name: "recorder",
+		typ:  plugin.TypeLogging,
+		execFn: func(_ context.Context, pctx *plugin.Context) error {
+			measured = pctx.Measurements
+			return nil
+		},
+	}); err != nil {
+		t.Fatalf("register recorder: %v", err)
+	}
+	return &measured
+}
+
+// A transcription reports no audio duration, so a model the catalog prices per
+// minute has nothing to bill, and the request is unpriced. It was recorded as a
+// known $0.00 — every whisper transcription logged as free.
+func TestGateway_Transcribe_PerMinutePricedModelIsUnpricedNotFree(t *testing.T) {
+	gw, err := newTestGateway(t, config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeSingle},
+		Targets:  []config.Target{{VirtualKey: "audio"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gw.RegisterProvider(&mockTranscriptionProvider{mockProvider: mockProvider{name: "audio", models: []string{"whisper-1"}}})
+	gw.mu.Lock()
+	gw.catalog = unmeasuredCostCatalog()
+	gw.mu.Unlock()
+	measured := costRecorder(t, gw)
+
+	if _, err := gw.Transcribe(context.Background(), providers.TranscriptionRequest{
+		Model: "whisper-1", File: []byte("audio"), Filename: "clip.wav",
+	}); err != nil {
+		t.Fatalf("Transcribe: %v", err)
+	}
+	if measured.HasCost {
+		t.Errorf("HasCost = true at $%v: a transcription billed per minute was recorded as a known cost with no duration to bill", measured.CostUSD)
+	}
+}
+
+// An embeddings provider that reports no usage leaves nothing to bill, so the
+// request is unpriced rather than a known $0.00; one that reports its tokens is
+// still priced on them.
+func TestGateway_Embed_NoUsageIsUnpricedNotFree(t *testing.T) {
+	run := func(promptTokens int) plugin.Measurements {
+		t.Helper()
+		gw, err := newTestGateway(t, config.Config{
+			Strategy: config.StrategyConfig{Mode: config.ModeSingle},
+			Targets:  []config.Target{{VirtualKey: "embed"}},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		gw.RegisterProvider(&mockEmbeddingProvider{
+			mockProvider: mockProvider{name: "embed", models: []string{"embed-model"}},
+			promptTokens: promptTokens,
+		})
+		gw.mu.Lock()
+		gw.catalog = unmeasuredCostCatalog()
+		gw.mu.Unlock()
+		measured := costRecorder(t, gw)
+		if _, err := gw.Embed(context.Background(), providers.EmbeddingRequest{Model: "embed-model", Input: "hi"}); err != nil {
+			t.Fatalf("Embed: %v", err)
+		}
+		return *measured
+	}
+
+	if m := run(0); m.HasCost {
+		t.Errorf("HasCost = true at $%v with no usage reported: a $0.00 bill recorded as though it were the real figure", m.CostUSD)
+	}
+	if m := run(1_000_000); !m.HasCost || m.CostUSD != 0.02 {
+		t.Errorf("Measurements = %+v, want HasCost with CostUSD 0.02 (1M tokens at $0.02/M)", m)
+	}
+}
+
 // Under content-based, a non-chat request takes the first configured target
 // that can serve the model on this surface — not the first target flat, which
 // a rule list written for chat may well make a chat-only or wrong-model one.

@@ -513,6 +513,42 @@ func TestMeter_RecordsLatencyAtFirstChunkAgainstTheModel(t *testing.T) {
 	}
 }
 
+// A stream that closes cleanly without a single chunk answered in full at its
+// close, so it is sampled there; a stream ended by cancellation before any
+// chunk is not, since nothing answered.
+func TestMeter_RecordsLatencyAtCloseForAnEmptyStream(t *testing.T) {
+	var got []string
+	meta := MeterMeta{
+		Provider:    "t",
+		Model:       "visible",
+		PriceModel:  "upstream",
+		MetricModel: "visible",
+		Catalog:     models.Catalog{},
+		LatencyRecorder: func(provider, model string, _ time.Duration) {
+			got = append(got, provider+"/"+model)
+		},
+	}
+
+	for range Meter(context.Background(), feed(), time.Now(), meta) { //nolint:revive // drain to completion
+	}
+	if len(got) != 1 || got[0] != "t/upstream" {
+		t.Fatalf("samples = %v, want one for the empty stream against the upstream model", got)
+	}
+
+	// Still open when the consumer is already gone, so Meter sees the
+	// cancellation rather than a close; closed afterwards so the drain ends.
+	src := make(chan providers.StreamChunk)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	out := Meter(ctx, src, time.Now(), meta)
+	time.AfterFunc(20*time.Millisecond, func() { close(src) })
+	for range out { //nolint:revive // drain to completion
+	}
+	if len(got) != 1 {
+		t.Fatalf("samples = %v, want none added for a stream cancelled before it answered", got)
+	}
+}
+
 // The routing sample is measured from LatencyStart when the caller supplies
 // one, and from start otherwise; the request's own timings stay on start.
 func TestMeter_LatencySampleIsMeasuredFromLatencyStart(t *testing.T) {

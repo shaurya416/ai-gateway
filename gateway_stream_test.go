@@ -1668,6 +1668,168 @@ func TestGateway_RouteStream_LatencySampleIsTimeToFirstChunk(t *testing.T) {
 	}
 }
 
+// A client that sent stream_options.include_usage: false receives no usage
+// block, wherever its answer came from. A provider-served stream already
+// honoured that through Meter; a stream served from the response cache is
+// replayed without it and carried the usage block regardless.
+func TestGateway_RouteStream_CacheHitHonoursIncludeUsageFalse(t *testing.T) {
+	gw, err := newTestGateway(t, config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeSingle},
+		Targets:  []config.Target{{VirtualKey: "stream"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gw.RegisterProvider(&mockStreamProvider{
+		mockProvider: mockProvider{name: "stream", models: []string{"gpt-4o"}},
+		streamErr:    errors.New("the provider must not be called on a cache hit"),
+	})
+	if err := gw.RegisterPlugin(plugin.StageBeforeRequest, &testPlugin{
+		name: "cache",
+		typ:  plugin.TypeLogging,
+		execFn: func(_ context.Context, pctx *plugin.Context) error {
+			pctx.SkipProvider = true
+			pctx.Response = &providers.Response{
+				ID:    "cached",
+				Model: "gpt-4o",
+				Choices: []providers.Choice{{
+					Message:      providers.Message{Role: "assistant", Content: "cached answer"},
+					FinishReason: "stop",
+				}},
+				Usage: providers.Usage{PromptTokens: 3, CompletionTokens: 2, TotalTokens: 5},
+			}
+			return nil
+		},
+	}); err != nil {
+		t.Fatalf("register plugin: %v", err)
+	}
+
+	stream := func(opts *core.StreamOptions) []providers.StreamChunk {
+		t.Helper()
+		ch, err := gw.RouteStream(context.Background(), providers.Request{
+			Model:               "gpt-4o",
+			Stream:              true,
+			Messages:            []providers.Message{{Role: "user", Content: "hi"}},
+			ClientStreamOptions: opts,
+		})
+		if err != nil {
+			t.Fatalf("RouteStream error = %v", err)
+		}
+		var chunks []providers.StreamChunk
+		for chunk := range ch {
+			if chunk.Error != nil {
+				t.Fatalf("stream chunk error: %v", chunk.Error)
+			}
+			chunks = append(chunks, chunk)
+		}
+		if len(chunks) != 1 || len(chunks[0].Choices) != 1 || chunks[0].Choices[0].Delta.Content != "cached answer" {
+			t.Fatalf("chunks = %+v, want the cached answer as one chunk", chunks)
+		}
+		return chunks
+	}
+
+	if got := stream(&core.StreamOptions{IncludeUsage: false}); got[0].Usage != nil {
+		t.Errorf("usage = %+v, want none: the client sent include_usage: false", *got[0].Usage)
+	}
+	if got := stream(&core.StreamOptions{IncludeUsage: true}); got[0].Usage == nil || got[0].Usage.TotalTokens != 5 {
+		t.Errorf("usage = %+v, want the cached response's usage when the client asked for it", got[0].Usage)
+	}
+}
+
+// A stream contributes one least-latency sample, taken at its first chunk. The
+// walk also recorded one when the stream merely started, so every stream was
+// counted twice and the window's median was dragged toward the start times:
+// three streams whose first chunks took about 0, 80 and 160ms read as a target
+// answering in under a millisecond rather than in 80.
+func TestGateway_RouteStream_RecordsOneLatencySamplePerStream(t *testing.T) {
+	gw, err := newTestGateway(t, config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeLatency},
+		Targets:  []config.Target{{VirtualKey: "stream"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	delays := []time.Duration{0, 80 * time.Millisecond, 160 * time.Millisecond}
+	var calls atomic.Int32
+	gw.RegisterProvider(&mockStreamProvider{
+		mockProvider: mockProvider{name: "stream", models: []string{"gpt-4o"}},
+		streamFn: func(context.Context, providers.Request) (<-chan providers.StreamChunk, error) {
+			delay := delays[calls.Add(1)-1]
+			ch := make(chan providers.StreamChunk)
+			go func() {
+				defer close(ch)
+				time.Sleep(delay)
+				ch <- providers.StreamChunk{ID: "first"}
+			}()
+			return ch, nil
+		},
+	})
+
+	for range delays {
+		ch, err := gw.RouteStream(context.Background(), providers.Request{
+			Model:    "gpt-4o",
+			Messages: []providers.Message{{Role: "user", Content: "hi"}},
+		})
+		if err != nil {
+			t.Fatalf("RouteStream error = %v", err)
+		}
+		drainStream(t, ch)
+	}
+
+	p50, ok := gw.latencyTracker.Stats("stream", "gpt-4o")
+	if !ok {
+		t.Fatal("expected latency samples for the streams")
+	}
+	if p50 < 40*time.Millisecond {
+		t.Fatalf("p50 = %v, want the median time to first chunk (about 80ms); the stream starts were counted as samples too", p50)
+	}
+}
+
+// A stream whose first chunk is an error never began answering, so it leaves no
+// least-latency sample — the rule a failed unary call already follows. The walk
+// recorded one the moment the stream started, so a target that opened every
+// stream with an error frame was measured as a fast one.
+func TestGateway_RouteStream_ErrorFirstStreamRecordsNoLatencySample(t *testing.T) {
+	gw, err := newTestGateway(t, config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeLatency},
+		Targets:  []config.Target{{VirtualKey: "stream"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gw.RegisterProvider(&mockStreamProvider{
+		mockProvider: mockProvider{name: "stream", models: []string{"gpt-4o"}},
+		streamFn: func(context.Context, providers.Request) (<-chan providers.StreamChunk, error) {
+			ch := make(chan providers.StreamChunk, 1)
+			ch <- providers.StreamChunk{Error: errors.New("upstream error frame")}
+			close(ch)
+			return ch, nil
+		},
+	})
+
+	ch, err := gw.RouteStream(context.Background(), providers.Request{
+		Model:    "gpt-4o",
+		Messages: []providers.Message{{Role: "user", Content: "hi"}},
+	})
+	if err != nil {
+		t.Fatalf("RouteStream error = %v", err)
+	}
+	sawError := false
+	for chunk := range ch {
+		if chunk.Error != nil {
+			sawError = true
+		}
+	}
+	if !sawError {
+		t.Fatal("expected the stream's error chunk to be forwarded")
+	}
+
+	if gw.latencyTracker.HasSamples("stream") {
+		p50, _ := gw.latencyTracker.Stats("stream", "gpt-4o")
+		t.Fatalf("a stream that failed at its first chunk recorded a %v latency sample", p50)
+	}
+}
+
 // The least-latency sample for a stream is the time the serving target took to
 // begin answering, measured from when the walk asked it — as the unary path
 // measures it. Measured from the request's start, it charged the target that

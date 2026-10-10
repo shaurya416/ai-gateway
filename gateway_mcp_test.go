@@ -1057,6 +1057,90 @@ func TestGateway_RouteStream_MCPRedirect(t *testing.T) {
 	}
 }
 
+// A stream diverted into the agentic loop is replayed as one chunk outside
+// Meter, and must still honour the client's stream_options.include_usage:
+// false. It carried the usage block regardless.
+func TestGateway_RouteStream_MCPRedirectHonoursIncludeUsageFalse(t *testing.T) {
+	mcpSrv := newMCPTestServer(t)
+	defer mcpSrv.Close()
+
+	mp := &multiCallProvider{
+		name:   "mock-mcp-usage",
+		models: []string{"gpt-4o"},
+		responses: []*providers.Response{
+			{
+				ID:    "u1",
+				Model: "gpt-4o",
+				Choices: []providers.Choice{{
+					Message: providers.Message{
+						Role: "assistant",
+						ToolCalls: []providers.ToolCall{{
+							ID:       "tc-usage-1",
+							Type:     "function",
+							Function: providers.FunctionCall{Name: "get_answer", Arguments: `{"q":"test"}`},
+						}},
+					},
+				}},
+				Usage: providers.Usage{PromptTokens: 4, CompletionTokens: 1, TotalTokens: 5},
+			},
+			{
+				ID:    "u2",
+				Model: "gpt-4o",
+				Choices: []providers.Choice{{
+					Message:      providers.Message{Role: "assistant", Content: "The answer is 42."},
+					FinishReason: "stop",
+				}},
+				Usage: providers.Usage{PromptTokens: 6, CompletionTokens: 2, TotalTokens: 8},
+			},
+		},
+	}
+
+	gw, err := newTestGateway(t, config.Config{
+		Strategy:   config.StrategyConfig{Mode: config.ModeSingle},
+		Targets:    []config.Target{{VirtualKey: "mock-mcp-usage"}},
+		MCPServers: []mcp.ServerConfig{{Name: "test-mcp-usage", URL: mcpSrv.URL, TimeoutSeconds: 10}},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	gw.RegisterProvider(mp)
+
+	select {
+	case <-gw.MCPInitDone():
+	case <-time.After(5 * time.Second):
+		t.Fatal("MCP init timeout")
+	}
+	if gw.mcpRegistry == nil || len(gw.mcpRegistry.AllTools()) == 0 {
+		t.Fatal("no MCP tools registered; the stream would not be diverted and this would pass vacuously")
+	}
+
+	ch, err := gw.RouteStream(context.Background(), providers.Request{
+		Model:               "gpt-4o",
+		Stream:              true,
+		Messages:            []providers.Message{{Role: "user", Content: "What is the answer?"}},
+		ClientStreamOptions: &core.StreamOptions{IncludeUsage: false},
+	})
+	if err != nil {
+		t.Fatalf("RouteStream error: %v", err)
+	}
+	var chunks []providers.StreamChunk
+	for chunk := range ch {
+		if chunk.Error != nil {
+			t.Fatalf("stream chunk error: %v", chunk.Error)
+		}
+		chunks = append(chunks, chunk)
+	}
+	if len(chunks) != 1 || len(chunks[0].Choices) == 0 || chunks[0].Choices[0].Delta.Content != "The answer is 42." {
+		t.Fatalf("chunks = %+v, want the loop's final answer as one chunk", chunks)
+	}
+	if chunks[0].Usage != nil {
+		t.Errorf("usage = %+v, want none: the client sent include_usage: false", *chunks[0].Usage)
+	}
+	if mp.callCount() != 2 {
+		t.Errorf("provider calls = %d, want 2 (the loop ran)", mp.callCount())
+	}
+}
+
 // A stream diverted into the agentic loop is one request, so it opens one
 // request span — Route's, which ends with the request's outcome. RouteStream
 // used to open its own first and then call Route, so every diverted stream

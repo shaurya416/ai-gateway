@@ -258,7 +258,19 @@ func (g *Gateway) streamingTargetOrder(req providers.Request) ([]string, error) 
 	return s.SelectTargets(req)
 }
 
-func responseStream(resp *providers.Response) <-chan providers.StreamChunk {
+// suppressUsageForClient reports whether the caller explicitly declined the
+// usage block (stream_options.include_usage: false). It changes only what the
+// client is sent: accounting always reads the usage the provider reported.
+func suppressUsageForClient(req providers.Request) bool {
+	return req.ClientStreamOptions != nil && !req.ClientStreamOptions.IncludeUsage
+}
+
+// responseStream replays a complete response — a cache hit, or the answer the
+// MCP loop settled on — as a one-chunk stream. These streams never pass through
+// streamwrap.Meter, so the client's usage opt-out is applied here: honoured on
+// a provider-served stream and ignored on these, it left whether a client that
+// declined usage received it to depend on where the answer came from.
+func responseStream(resp *providers.Response, suppressUsage bool) <-chan providers.StreamChunk {
 	ch := make(chan providers.StreamChunk, 1)
 	streamChoices := make([]providers.StreamChoice, len(resp.Choices))
 	for i, c := range resp.Choices {
@@ -272,14 +284,17 @@ func responseStream(resp *providers.Response) <-chan providers.StreamChunk {
 			FinishReason: c.FinishReason,
 		}
 	}
-	ch <- providers.StreamChunk{
+	chunk := providers.StreamChunk{
 		ID:      resp.ID,
 		Object:  "chat.completion.chunk",
 		Created: resp.Created,
 		Model:   resp.Model,
 		Choices: streamChoices,
-		Usage:   &resp.Usage,
 	}
+	if !suppressUsage {
+		chunk.Usage = &resp.Usage
+	}
+	ch <- chunk
 	close(ch)
 	return ch
 }

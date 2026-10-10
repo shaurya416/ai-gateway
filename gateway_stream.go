@@ -101,7 +101,7 @@ func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-cha
 		if err != nil {
 			return nil, err
 		}
-		return responseStream(resp), nil
+		return responseStream(resp, suppressUsageForClient(req)), nil
 	}
 
 	// See Route: this entry point is exported too, and the trace ID read here is
@@ -147,7 +147,7 @@ func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-cha
 		return nil, err
 	}
 	if early != nil {
-		return responseStream(early), nil
+		return responseStream(early, suppressUsageForClient(req)), nil
 	}
 
 	// Select and start the provider according to strategy mode. This is the
@@ -206,7 +206,7 @@ func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-cha
 		// Usage is always requested upstream so metering, cost, and the budget
 		// plugin see real numbers; a caller that asked not to receive it just
 		// does not get the chunk forwarded.
-		SuppressUsageForClient: req.ClientStreamOptions != nil && !req.ClientStreamOptions.IncludeUsage,
+		SuppressUsageForClient: suppressUsageForClient(req),
 	}
 	if hooksEnabled {
 		meta.PublishFn = g.publishEvent
@@ -416,7 +416,7 @@ func (g *Gateway) recordStreamStartFailure(ctx context.Context, span observabili
 // and finalizes bookkeeping on every path except "continue routing": a
 // non-nil err means the caller must return (nil, err) immediately (metrics,
 // plugin-context release, and plugin-manager release are already done); a
-// non-nil early means the caller must return (responseStream(early), nil)
+// non-nil early means the caller must return (responseStream(early, …), nil)
 // immediately (success recording and release already done). Otherwise the
 // returned pctx (nil if no plugins are configured, non-nil and still live
 // otherwise) is what the rest of RouteStream continues to use.
