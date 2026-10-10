@@ -1,8 +1,8 @@
 import { KeyRound, Pencil, Plus, RefreshCw, RotateCw, ShieldOff, Trash2, type LucideIcon } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import { useAuth } from '../auth/AuthProvider'
 import { SessionsPanel } from '../components/SessionsPanel'
-import { Button, ConfirmDialog, CopyButton, EmptyState, LoadingState, Modal, Notice, PageHeader, Pagination, StatusPill } from '../components/ui'
+import { Button, ConfirmDialog, CopyButton, EmptyState, LoadingState, Modal, Notice, PageHeader, PageOutOfRange, Pagination, StatusPill } from '../components/ui'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
@@ -10,6 +10,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { cn } from '@/lib/utils'
 import { request } from '../lib/api'
 import { errorMessage, formatDateTime, formatNumber, maskKey, timeAgo } from '../lib/format'
+import { pastLastPage } from '../lib/paging'
 import type { APIKey, Scope } from '../types'
 
 type KeyAction = { kind: 'rotate' | 'revoke' | 'delete'; key: APIKey } | null
@@ -173,6 +174,8 @@ const mobileCell =
 export default function KeysPage() {
   const { isAdmin } = useAuth()
   const [usage, setUsage] = useState<KeyUsageResponse | null>(null)
+  /** The query string `usage` answers, so a failed change of query can drop it. */
+  const usageQuery = useRef<string | null>(null)
   const [sort, setSort] = useState<KeySort>('usage')
   const [activeFilter, setActiveFilter] = useState<ActiveFilter>('')
   const [offset, setOffset] = useState(0)
@@ -203,12 +206,26 @@ export default function KeysPage() {
     const controller = new AbortController()
     const params = new URLSearchParams({ limit: String(pageSize), offset: String(offset), sort })
     if (activeFilter) params.set('active', activeFilter)
+    const query = params.toString()
     setLoading(true)
     setError('')
-    request<KeyUsageResponse>(`/admin/keys/usage?${params.toString()}`, { signal: controller.signal })
-      .then(setUsage)
+    request<KeyUsageResponse>(`/admin/keys/usage?${query}`, { signal: controller.signal })
+      .then((response) => {
+        if (controller.signal.aborted) return
+        setUsage(response)
+        usageQuery.current = query
+      })
       .catch((loadError: unknown) => {
         if (loadError instanceof DOMException && loadError.name === 'AbortError') return
+        // A failed refresh of the same query keeps its rows beside the error:
+        // they are still the answer to the question on screen, only older. A
+        // failed sort, filter or page change must not — the previous query's
+        // keys would stand under the new one's controls, every active key
+        // listed under "Revoked only". useLoad applies the same rule.
+        if (!controller.signal.aborted && usageQuery.current !== null && usageQuery.current !== query) {
+          setUsage(null)
+          usageQuery.current = null
+        }
         setError(errorMessage(loadError, 'API keys could not be loaded.'))
       })
       .finally(() => {
@@ -395,9 +412,11 @@ export default function KeysPage() {
         * Rendered whenever the server has answered, not only when this page has
         * rows: a filter that matches nothing must not take the filter controls
         * and the pagination away with it, which is the only route back to a page
-        * that does have rows. LogsPage documents the same failure.
+        * that does have rows. LogsPage documents the same failure. A failed
+        * answer keeps the controls for the same reason, and nothing else: no
+        * rows and no counts, which would describe some other query or none.
         */}
-      {usage ? (
+      {usage || error ? (
         <section aria-labelledby="keys-table-heading" className="rounded-lg border border-border bg-card">
           <div className="flex flex-wrap items-end justify-between gap-3 border-b border-border px-4 py-2.5">
             <div className="min-w-0">
@@ -406,9 +425,11 @@ export default function KeysPage() {
                   underneath a reader with no other signal that anything moved.
                   The counts describe the filtered set, which is why they are
                   read from the response rather than counted from the rows. */}
-              <p aria-live="polite" className="text-sm text-muted-foreground">
-                {formatNumber(usage.summary.total_keys)} total · {formatNumber(usage.summary.active_keys)} active · {formatNumber(usage.summary.total_usage)} requests served
-              </p>
+              {usage ? (
+                <p aria-live="polite" className="text-sm text-muted-foreground">
+                  {formatNumber(usage.summary.total_keys)} total · {formatNumber(usage.summary.active_keys)} active · {formatNumber(usage.summary.total_usage)} requests served
+                </p>
+              ) : null}
             </div>
             <div className="flex flex-wrap items-center gap-2">
               <Select value={sort} onValueChange={(value) => changeQuery(() => setSort(value ?? sort))}>
@@ -432,9 +453,11 @@ export default function KeysPage() {
               </Select>
             </div>
           </div>
-          {keys.length === 0 ? (
+          {!usage ? null : keys.length === 0 ? (
             <div className="p-4">
-              {activeFilter ? (
+              {pastLastPage(offset, keys.length, total) ? (
+                <PageOutOfRange busy={loading} pageSize={pageSize} total={total} onOffsetChange={setOffset} />
+              ) : activeFilter ? (
                 <EmptyState
                   title="No keys match this filter"
                   description="Choose All keys to see every credential this gateway holds."

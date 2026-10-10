@@ -810,6 +810,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   column read a `revoked` field the Admin API does not send, so it printed `no`
   for every key, including one `ferrogw admin keys revoke` had just revoked. It
   now reads `revoked_at`, the field the dashboard reads.
+- A dashboard table whose page has run past the last result no longer reports
+  that nothing exists. Deleting the one key on the last page of API Keys left
+  "No API keys" with an offer to create the first one, while the pagination
+  read "Showing 0–20 of 20"; a Request Logs or Audit page that emptied as
+  entries aged out of the range, or a shared link to such a page, said nothing
+  had been recorded. The empty state was chosen from the rows on the page
+  alone. A page answered with no rows and a non-zero total now says it is past
+  the end, with a control to go to the last page, and its range reads
+  "Showing 0–0".
+- The API Keys page no longer lists the previous query's keys when a changed
+  sort, state filter or page fails to load — every active key shown under
+  "Revoked only", beside an error banner. It keeps its own loader rather than
+  the shared one, so the earlier fix for that shared loader did not reach it. A
+  failed change of query now clears the rows and the counts and keeps the sort
+  and filter controls; a failed refresh of the same query still keeps its rows.
+- The configuration editor now warns, before Save, about every field
+  `PUT /admin/config` refuses. It checked values only, and only under five
+  fixed paths, so a target's `model_map`, a stdio MCP server's `args`, a URL
+  with a password, and any `env` or `headers` block read back as
+  `{"[REDACTED_KEY_0]": "${TOKEN}"}` raised no warning and left Save enabled;
+  the gateway then refused the document one field at a time. The editor now
+  walks the whole document, map keys included, and names every refused field
+  at once. Where an entry's name was withheld it says so, since a `${VAR}`
+  reference cannot restore a name the Admin API never served.
 
 ## [1.5.9] — 2026-09-18
 

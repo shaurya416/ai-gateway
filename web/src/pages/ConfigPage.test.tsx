@@ -197,6 +197,31 @@ describe('ConfigPage save', () => {
     })
     await waitFor(() => expect(saveButton()).toBeEnabled())
   })
+
+  it('names every field the gateway would refuse, withheld names and argument lists included', async () => {
+    // What GET /admin/config serves for a target with a model_map, a stdio MCP
+    // server whose env is written as ${VAR} references, and an HTTP one with a
+    // password in its URL. Each of these is refused by PUT.
+    respondWithConfig({
+      strategy: { mode: 'fallback' },
+      targets: [{ virtual_key: 'openai', model_map: { '[REDACTED_KEY_0]': '[REDACTED]' } }],
+      mcp_servers: [
+        { name: 'fs', command: 'npx', args: ['-y', '[REDACTED]', '[REDACTED]'], env: { '[REDACTED_KEY_0]': '${TOKEN}' } },
+        { name: 'search', url: 'https://ops:[REDACTED]@mcp.example.com/mcp' },
+      ],
+    })
+    await renderPage()
+    await userEvent.click(screen.getByRole('button', { name: 'Edit JSON' }))
+
+    const warning = await screen.findByRole('status')
+    for (const field of ['targets[0].model_map', 'mcp_servers[0].args', 'mcp_servers[0].env', 'mcp_servers[1].url']) {
+      expect(warning).toHaveTextContent(field)
+    }
+    // A withheld name cannot be fixed with a ${VAR} reference; the message has
+    // to say where the real one is.
+    expect(warning).toHaveTextContent('had its name withheld too')
+    expect(saveButton()).toBeDisabled()
+  })
 })
 
 describe('ConfigPage unsaved edits', () => {

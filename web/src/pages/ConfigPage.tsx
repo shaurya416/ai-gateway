@@ -11,7 +11,7 @@ import { StrategyPanel } from '../components/StrategyPanel'
 import { Button, ConfirmDialog, EmptyState, LoadingState, Notice, PageHeader, StatusPill, TabCount } from '../components/ui'
 import { ApiError, request } from '../lib/api'
 import { changedTopLevelKeys } from '../lib/configDiff'
-import { findRedactedFields, redactedFieldsMessage } from '../lib/configRedaction'
+import { findRedactedFields, hasWithheldName, redactedFieldsMessage } from '../lib/configRedaction'
 import { errorMessage, formatDateTime } from '../lib/format'
 import { groupPlugins, readPlugins, usePluginCatalog } from '../lib/plugins'
 import { readStrategy } from '../lib/strategies'
@@ -97,11 +97,13 @@ export default function ConfigPage() {
     return () => controller.abort()
   }, [reload])
 
-  const redactedFields = useMemo(() => {
-    if (!editing) return []
-    const parsed = parseEditor(editor)
-    return parsed ? findRedactedFields(parsed) : []
+  const redacted = useMemo(() => {
+    const parsed = editing ? parseEditor(editor) : null
+    return parsed
+      ? { fields: findRedactedFields(parsed), withheldNames: hasWithheldName(parsed) }
+      : { fields: [], withheldNames: false }
   }, [editing, editor])
+  const redactedFields = redacted.fields
 
   const activeJson = useMemo(() => (config ? pretty(config) : ''), [config])
   const pluginGroups = useMemo(() => (config ? groupPlugins(readPlugins(config)) : []), [config])
@@ -136,7 +138,7 @@ export default function ConfigPage() {
     }
     const blocked = findRedactedFields(parsed)
     if (blocked.length > 0) {
-      setError(redactedFieldsMessage(blocked))
+      setError(redactedFieldsMessage(blocked, hasWithheldName(parsed)))
       return
     }
     setNotice('')
@@ -300,7 +302,7 @@ export default function ConfigPage() {
                 </div>
               </div>
               {editing && redactedFields.length > 0 ? (
-                <Notice tone="warning">{redactedFieldsMessage(redactedFields)}</Notice>
+                <Notice tone="warning">{redactedFieldsMessage(redactedFields, redacted.withheldNames)}</Notice>
               ) : null}
               {editing ? (
                 <JsonEditor

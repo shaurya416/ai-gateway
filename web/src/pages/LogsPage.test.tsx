@@ -254,6 +254,22 @@ describe('LogsPage', () => {
     expect(screen.queryByRole('button', { name: 'Next' })).toBeNull()
   })
 
+  it('says a page past the last entry is past the end, not that nothing was recorded', async () => {
+    const user = userEvent.setup()
+    // Entries age out of the range between polls, and a shared link can name a
+    // page that has since emptied: the store answers with no rows and a total.
+    route((path) => Promise.resolve(path.includes('offset=50') ? logsResponse([], 30) : logsResponse([log()], 30)))
+    renderPage('/logs?offset=50')
+
+    expect(await screen.findByText('This page is past the end of the results')).toBeInTheDocument()
+    expect(screen.queryByText('No request logs')).toBeNull()
+    expect(screen.getByText(/Showing 0–0 of 30/)).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Go to the last page' }))
+    await waitFor(() => expect(screen.getByTestId('query-string')).not.toHaveTextContent('offset='))
+    expect(await screen.findByText('trace-abc')).toBeInTheDocument()
+  })
+
   it('keeps the pagination when a search matches nothing on the page it is on', async () => {
     const user = userEvent.setup()
     const rows = Array.from({ length: 50 }, (_, index) => log({ trace_id: `trace-${index}` }))

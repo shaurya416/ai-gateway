@@ -21,6 +21,7 @@ import {
 } from '@/components/ui/dialog'
 import { cn } from '@/lib/utils'
 import { formatNumber } from '../lib/format'
+import { lastPageOffset } from '../lib/paging'
 
 /**
  * Application-level composites.
@@ -317,7 +318,10 @@ export function Pagination({
   onOffsetChange: (offset: number) => void
 }) {
   const first = returned === 0 ? 0 : offset + 1
-  const last = offset + returned
+  // An empty page is an empty range wherever it starts. Counting `last` from
+  // the offset read "Showing 0–20 of 20" on a page past the end, which claims
+  // twenty rows on a page that holds none.
+  const last = returned === 0 ? 0 : offset + returned
   return (
     <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border px-3 py-2 text-sm text-muted-foreground">
       <span>
@@ -345,6 +349,39 @@ export function Pagination({
         </Button>
       </div>
     </div>
+  )
+}
+
+/**
+ * What a table says in place of its empty state when its page starts after the
+ * last result — see `pastLastPage`.
+ *
+ * The empty state answers "is there anything here at all", and on such a page
+ * the answer is yes. Rendering it told an operator who had just deleted the one
+ * key on page two that the gateway held no API keys, with an offer to create the
+ * first, while the pagination below counted twenty.
+ */
+export function PageOutOfRange({
+  total,
+  pageSize,
+  busy = false,
+  onOffsetChange,
+}: {
+  total: number
+  pageSize: number
+  busy?: boolean
+  onOffsetChange: (offset: number) => void
+}) {
+  return (
+    <EmptyState
+      title="This page is past the end of the results"
+      description={`All ${formatNumber(total)} matching ${total === 1 ? 'result is' : 'results are'} on earlier pages; entries may have been removed since this page was opened.`}
+      action={
+        <Button disabled={busy} size="sm" type="button" variant="outline" onClick={() => onOffsetChange(lastPageOffset(total, pageSize))}>
+          Go to the last page
+        </Button>
+      }
+    />
   )
 }
 

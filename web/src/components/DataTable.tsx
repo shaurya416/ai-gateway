@@ -10,7 +10,8 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { cn } from '@/lib/utils'
-import { EmptyState, Pagination } from './ui'
+import { pastLastPage } from '../lib/paging'
+import { EmptyState, PageOutOfRange, Pagination } from './ui'
 
 export interface DataTableColumn<T> {
   id: string
@@ -137,7 +138,18 @@ export function DataTable<T>({
         <DataTableSkeleton columns={columns} label={loadingLabel} rows={skeletonRows} />
       ) : rows.length === 0 ? (
         <div className="p-3">
-          <EmptyState description={emptyDescription} title={emptyTitle} />
+          {/* `returned`, not `rows`: a page whose rows a client-side search
+              hid is not past the end, and keeps its own empty state. */}
+          {pagination && pastLastPage(pagination.offset, pagination.returned, pagination.total) ? (
+            <PageOutOfRange
+              busy={pagination.busy}
+              pageSize={pagination.pageSize}
+              total={pagination.total}
+              onOffsetChange={pagination.onOffsetChange}
+            />
+          ) : (
+            <EmptyState description={emptyDescription} title={emptyTitle} />
+          )}
         </div>
       ) : (
         <Table aria-label={ariaLabel} className="max-sm:block">

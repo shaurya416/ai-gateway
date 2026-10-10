@@ -252,6 +252,35 @@ describe('KeysPage', () => {
     await waitFor(() => expect(lastUsageCall(calls).has('active')).toBe(false))
   })
 
+  it('drops the previous rows when a changed filter cannot be loaded, and keeps the way back', async () => {
+    const user = userEvent.setup()
+    stubGateway((call) => {
+      if (call.url.startsWith('/admin/keys/usage') && call.url.includes('active=false')) {
+        return { status: 500, body: { error: { message: 'failed to list keys' } } }
+      }
+      return reads()(call) ?? { body: {} }
+    })
+
+    renderPage()
+    await screen.findByText('Ops laptop')
+
+    await user.click(screen.getByLabelText('Filter by state'))
+    await user.click(await screen.findByRole('option', { name: 'Revoked only' }))
+
+    expect(await screen.findByText('failed to list keys')).toBeInTheDocument()
+    // The active key is not a revoked key. Leaving it listed under "Revoked
+    // only" answered the question on screen with another query's rows.
+    expect(screen.queryByText('Ops laptop')).toBeNull()
+    expect(screen.queryByText(/1 total · 1 active/)).toBeNull()
+    expect(screen.queryByText('No keys match this filter')).toBeNull()
+
+    // The filter control survives the failure: it is the only way back.
+    await user.click(screen.getByLabelText('Filter by state'))
+    await user.click(await screen.findByRole('option', { name: 'All keys' }))
+    expect(await screen.findByText('Ops laptop')).toBeInTheDocument()
+    expect(screen.queryByText('failed to list keys')).toBeNull()
+  })
+
   it('shows the rotated secret once, because the gateway keeps only its hash', async () => {
     const user = userEvent.setup()
     const calls = stubGateway((call) => {
@@ -338,6 +367,45 @@ describe('KeysPage', () => {
     expect(await screen.findByText('Ops laptop was deleted.')).toBeInTheDocument()
     expect(screen.queryByRole('alertdialog')).toBeNull()
     expect(calls.some((call) => call.method === 'DELETE' && call.url === '/admin/keys/key-1')).toBe(true)
+  })
+
+  it('says a page emptied by a delete is past the end, not that the gateway holds no keys', async () => {
+    const user = userEvent.setup()
+    const firstPage = Array.from({ length: 20 }, (_, index) => apiKey({ id: `key-${index}`, name: `Key ${index}` }))
+    const lastKey = apiKey({ id: 'key-20', name: 'Key 20' })
+    let deleted = false
+    const calls = stubGateway((call) => {
+      if (call.method === 'DELETE') {
+        deleted = true
+        return { status: 204 }
+      }
+      if (call.url.startsWith('/admin/keys/usage')) {
+        const offset = new URLSearchParams(call.url.split('?')[1]).get('offset')
+        const total = deleted ? 20 : 21
+        if (offset === '20') return { body: usageBody(deleted ? [] : [lastKey], total) }
+        return { body: usageBody(firstPage, total) }
+      }
+      return reads()(call) ?? { body: {} }
+    })
+
+    renderPage()
+    await screen.findByText('Key 0')
+    await user.click(screen.getByRole('button', { name: 'Next' }))
+    await screen.findByText('Key 20')
+
+    await user.click(screen.getByRole('button', { name: 'Delete Key 20' }))
+    const confirm = await screen.findByRole('alertdialog')
+    await user.click(within(confirm).getByRole('button', { name: 'Delete key' }))
+    await screen.findByText('Key 20 was deleted.')
+
+    // The gateway still holds twenty keys; only this page has run out of them.
+    expect(await screen.findByText('This page is past the end of the results')).toBeInTheDocument()
+    expect(screen.queryByText('No API keys')).toBeNull()
+    expect(screen.getByText(/Showing 0–0 of 20/)).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Go to the last page' }))
+    await waitFor(() => expect(lastUsageCall(calls).get('offset')).toBe('0'))
+    expect(await screen.findByText('Key 0')).toBeInTheDocument()
   })
 
   it('refuses to be dismissed by Escape or a stray click while a new secret is on screen', async () => {
