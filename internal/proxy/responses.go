@@ -88,11 +88,13 @@ func ResponsesCreate(src ResponsesSource) http.HandlerFunc {
 		}
 
 		forwarded := false
+		var forwardErr error
 		forward := func(ctx context.Context) error {
 			forwarded = true
-			status, ferr := forwardFixedTarget(w, r.WithContext(ctx), target, authHeaders, providerName, propagatesTrace(src), wrapBody)
-			if ferr != nil {
-				return ferr
+			var status int
+			status, forwardErr = forwardFixedTarget(w, r.WithContext(ctx), target, authHeaders, providerName, propagatesTrace(src), wrapBody)
+			if forwardErr != nil {
+				return forwardErr
 			}
 			// A 5xx is the upstream failing; 4xx is the caller's and must not trip a
 			// shared breaker. The error never reaches the client (the upstream's own
@@ -104,6 +106,7 @@ func ResponsesCreate(src ResponsesSource) http.HandlerFunc {
 		}
 
 		err = src.RouteResponsesWithPricingProvider(r.Context(), providerName, priceProvider, model, projText, inspectable, maxOutputTokens, &usage, forward)
+		reraiseAbort(forwardErr)
 		if err != nil && !forwarded {
 			apierror.WriteRouteError(w, err)
 		}
@@ -152,8 +155,10 @@ func ResponsesIDs(src ResponsesSource) http.HandlerFunc {
 		}
 
 		// The id sub-routes are a straight forward like Files/Batches: no
-		// governance to score, so the reported status/error are unused.
-		_, _ = forwardFixedTarget(w, r, target, pp.AuthHeaders(), p.Name(), propagatesTrace(src), nil)
+		// governance to score, so the reported status is unused; only a mid-body
+		// abort is re-raised.
+		_, err = forwardFixedTarget(w, r, target, pp.AuthHeaders(), p.Name(), propagatesTrace(src), nil)
+		reraiseAbort(err)
 	}
 }
 

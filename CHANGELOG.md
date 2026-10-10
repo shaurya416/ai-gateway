@@ -9,6 +9,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A caller closing a streamed `/v1/responses` or `/v1/*` pass-through response
+  no longer counts against the target's circuit breaker. The reverse proxy
+  reports a body copy that breaks off by panicking, and the panic unwound
+  through the request lifecycle to the breaker, which scores any panic as a
+  failure — so with `failure_threshold: 1` one user pressing stop opened the
+  circuit and the target's next request on every surface was a `503`. The same
+  unwinding skipped `on_error`, so a stream the upstream dropped or that
+  stalled past the idle bound left no request-log row and no error metric. The
+  abort is now recovered into an error the lifecycle classifies by its cause:
+  the caller's cancellation is recorded and excluded from the breaker, a dead
+  or stalled upstream is recorded and counted, and the client connection is
+  still dropped afterwards so a truncated response never reads as complete.
+- `POST /v1/responses` is now priced when the client accepts a compressed
+  response. The caller's `Accept-Encoding` was forwarded upstream, so a client
+  accepting `gzip` — the official OpenAI Python SDK's HTTP client does on
+  every request — received a compressed body, and the usage tee parsed
+  compressed bytes, found no `usage`, and recorded the request with no tokens
+  and no cost: nothing for a budget to charge. The header is no longer
+  forwarded on this route; the gateway negotiates gzip itself, reads the
+  decoded body, and relays it uncompressed.
+- `X-Gateway-Metadata` no longer reaches a provider through the `/v1/*`
+  pass-through, `/v1/responses`, `/v1/files` or `/v1/batches`. It is
+  conditional routing's header and addresses the gateway, but the forwards
+  copied every inbound header upstream and stripped only the identity headers,
+  so a client that set it once as a default header handed its routing metadata
+  to the provider on every forwarded call. It is now removed with them.
 - A retry wait that cannot end before the request's deadline is no longer
   slept. With `request_timeout` set, a target answering `429` with a
   `Retry-After` inside the 30-second cap but beyond the time left held the

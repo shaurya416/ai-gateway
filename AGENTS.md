@@ -1008,7 +1008,12 @@ streams through, without altering a byte, feeding `Gateway.RouteResponses` →
 `priceSurface`. So catalog pricing, the request-log cost column, the span cost and
 the completed event all light up, where every other pass-through records
 *unpriced*. The tee (`internal/proxy/responses_usage.go`) scans the SSE stream
-line by line and never buffers more than one frame.
+line by line and never buffers more than one frame. It can only read a body it
+can decode, so the caller's `Accept-Encoding` is not forwarded on this route:
+the gateway negotiates gzip with the upstream itself, decodes it, and relays
+the response uncompressed. Forwarding the header let the upstream answer
+compressed — common HTTP clients accept gzip by default, the official OpenAI
+Python SDK's included — and left every such request unpriced.
 
 The body is forwarded **verbatim** — the gateway parses only three schema-stable
 fields from it: `model` (routing), `max_output_tokens` (surfaced as the

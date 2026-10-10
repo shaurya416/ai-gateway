@@ -31,7 +31,13 @@ import (
 // so left alone these travel upstream verbatim, carrying whatever a caller
 // put in them — including baggage-encoded user/session ids, which is exactly
 // the identity leak trace-context injection is meant not to introduce.
-var gatewayIdentityHeaders = []string{"baggage", "X-User-ID", "X-Session-ID"}
+//
+// X-Gateway-Metadata is conditional routing's header
+// (handler.HeaderRoutingMetadata, spelled out so this package does not import
+// the HTTP handlers). It carries the caller's routing metadata for the gateway
+// to read and never reaches a provider on the routed surfaces, so it does not
+// here either.
+var gatewayIdentityHeaders = []string{"baggage", "X-User-ID", "X-Session-ID", "X-Gateway-Metadata"}
 
 // stripGatewayIdentityHeaders deletes the caller-identity headers from the
 // outbound request. See gatewayIdentityHeaders for why they must not travel
@@ -274,8 +280,13 @@ func passThroughHandler(src providers.ProviderSource) http.HandlerFunc {
 		// WrapResponseWriter clears http.Server's WriteTimeout after the first
 		// write so long streams are not truncated. Cancelling this context on an
 		// idle upstream is what replaces the bound that removal gives up.
-		upstreamCtx, cancelUpstream := context.WithCancel(r.Context())
-		defer cancelUpstream()
+		//
+		// The governed forward runs under a context derived from this one, so
+		// the idle bound cancels with a cause: a bare cancel reads to the
+		// lifecycle as the caller's own cancellation, which the breaker
+		// excludes, when it is the upstream that stalled.
+		upstreamCtx, cancelUpstream := context.WithCancelCause(r.Context())
+		defer cancelUpstream(nil)
 		r = r.WithContext(upstreamCtx)
 
 		// The outcome of the forward, as the gateway lifecycle needs to hear it.
@@ -307,7 +318,7 @@ func passThroughHandler(src providers.ProviderSource) http.HandlerFunc {
 				// The scan buffers that body under a size cap that is not a time
 				// cap, and the idle bound installed below cannot stand in for one.
 				// See sanitizeScanBudget.
-				scanTimer := time.AfterFunc(sanitizeScanBudget, cancelUpstream)
+				scanTimer := time.AfterFunc(sanitizeScanBudget, func() { cancelUpstream(nil) })
 				sanitizeErr := sanitizeResponse(resp, secrets)
 				scanTimer.Stop()
 				if sanitizeErr != nil {
@@ -317,7 +328,7 @@ func passThroughHandler(src providers.ProviderSource) http.HandlerFunc {
 				// io.ReadWriteCloser, and a tunnelled connection (e.g. /v1/realtime)
 				// is legitimately idle. Bound only ordinary response bodies.
 				if resp.StatusCode != http.StatusSwitchingProtocols {
-					resp.Body = streamio.NewIdleReadCloser(resp.Body, streamio.IdleTimeout(), cancelUpstream)
+					resp.Body = streamio.NewIdleReadCloser(resp.Body, streamio.IdleTimeout(), func() { cancelUpstream(streamio.ErrIdleTimeout) })
 				}
 				return nil
 			},
@@ -362,10 +373,13 @@ func passThroughHandler(src providers.ProviderSource) http.HandlerFunc {
 		// wire and must not be written over. Before that, nothing has been
 		// written and the refusal is ours to report.
 		forwarded := false
+		var abortErr error
 		err = gov.RoutePassthrough(r.Context(), providerName, model, body, inspectable,
 			func(ctx context.Context) error {
 				forwarded = true
-				proxy.ServeHTTP(streamio.WrapResponseWriter(w), r.WithContext(ctx))
+				if abortErr = serveForward(proxy, streamio.WrapResponseWriter(w), r.WithContext(ctx)); abortErr != nil {
+					return abortErr
+				}
 				if forwardErr != nil {
 					return forwardErr
 				}
@@ -383,9 +397,60 @@ func passThroughHandler(src providers.ProviderSource) http.HandlerFunc {
 				}
 				return nil
 			})
+		reraiseAbort(abortErr)
 		if err != nil && !forwarded {
 			apierror.WriteRouteError(w, err)
 		}
+	}
+}
+
+// errResponseAborted is the failure a forward reports when the response it was
+// relaying broke off after the status line had already reached the client: the
+// upstream dropped the connection, the stream idle bound fired, or the client
+// went away. Which of those it was is carried by the wrapped context cause.
+var errResponseAborted = errors.New("pass-through response aborted mid-body")
+
+// serveForward runs proxy.ServeHTTP and reports a mid-body abort as an error
+// rather than as a panic.
+//
+// httputil.ReverseProxy cannot return a failure once it has begun copying the
+// body, so it panics with http.ErrAbortHandler and net/http drops the
+// connection. Unwound through the gateway lifecycle, that panic skipped every
+// record of the request — no on_error stage, no request-log row, no error
+// metric — and reached the circuit breaker only as a panic, which it scores as
+// a failure whatever caused it: a caller closing a stream counted against the
+// target exactly as an upstream crash does.
+//
+// Recovered here, the abort becomes an error the lifecycle classifies like any
+// other, by the context the forward ran under — the caller's own cancellation
+// is excluded from the breaker; the idle bound, the request deadline and a dead
+// upstream count. The caller re-raises it with reraiseAbort once the lifecycle
+// has returned, so the client still sees a broken response rather than a clean
+// end to a truncated one. Any other panic is re-raised untouched.
+func serveForward(proxy *httputil.ReverseProxy, w http.ResponseWriter, r *http.Request) (err error) {
+	defer func() {
+		recovered := recover()
+		if recovered == nil {
+			return
+		}
+		if recoveredErr, ok := recovered.(error); !ok || !errors.Is(recoveredErr, http.ErrAbortHandler) {
+			panic(recovered)
+		}
+		err = errResponseAborted
+		if cause := context.Cause(r.Context()); cause != nil {
+			err = fmt.Errorf("%w: %w", errResponseAborted, cause)
+		}
+	}()
+	proxy.ServeHTTP(w, r)
+	return nil
+}
+
+// reraiseAbort re-raises the abort serveForward recovered, so net/http drops
+// the client connection exactly as the reverse proxy meant it to. A nil error,
+// or any failure other than an abort, is a no-op.
+func reraiseAbort(err error) {
+	if errors.Is(err, errResponseAborted) {
+		panic(http.ErrAbortHandler)
 	}
 }
 
