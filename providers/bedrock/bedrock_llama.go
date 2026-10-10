@@ -36,7 +36,13 @@ func (p *Provider) completeLlama(ctx context.Context, req core.Request) (*core.R
 		if err != nil {
 			return nil, err
 		}
-		fmt.Fprintf(&sb, "<|start_header_id|>%s<|end_header_id|>\n\n%s<|eot_id|>\n", msg.Role, text)
+		// The template has no developer header, so OpenAI's successor to the
+		// system role is written as the system turn it is.
+		role := msg.Role
+		if core.IsSystemRole(role) {
+			role = core.RoleSystem
+		}
+		fmt.Fprintf(&sb, "<|start_header_id|>%s<|end_header_id|>\n\n%s<|eot_id|>\n", role, text)
 	}
 	sb.WriteString("<|start_header_id|>assistant<|end_header_id|>\n\n")
 

@@ -234,6 +234,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   either was configured for. It is now a load error naming the key, reported by
   `ferrogw validate` as well as at startup; an absent, null or empty `store_id`
   still takes the default.
+- A conversation replayed to Anthropic with a tool call whose arguments are
+  not valid JSON — the partial object a model leaves when it is cut off
+  mid-call, which OpenAI accepts back unchanged — is now sent, with that
+  call's input as an empty object. The arguments were placed into the request
+  as raw JSON, so encoding the body failed before any upstream call: the
+  caller got `500`, the request was retried and offered to the next target in
+  a pool, and every attempt counted against the target's circuit breaker. The
+  Bedrock-Anthropic and Gemini paths already sent the empty object; the
+  Anthropic provider now does too, streamed or not.
+- A `developer` message — OpenAI's successor to the `system` role — now
+  reaches Mistral and Bedrock's Llama models as a system turn. Mistral's
+  message schema names only the `system`, `user`, `assistant` and `tool`
+  roles, and the turn was forwarded as written, so Mistral refused the
+  request; Bedrock Llama wrote it under a `developer` header the Llama 3 chat
+  format does not define, so its instructions reached the model as an unknown
+  speaker's text under a `200`. The caller's own messages are left unchanged,
+  so a failover still hands the next target what was sent.
+- Together AI image generation now sends the requested size and base64 format
+  in the fields Together's image API defines. The OpenAI `size` was forwarded
+  as `size`, a field Together's schema does not have — it takes `width` and
+  `height` — so the dimensions the caller asked for were not part of the
+  request, and `response_format: b64_json` was forwarded as written, where
+  Together's values are `base64` and `url`. `size` now travels as `width` and
+  `height` and `b64_json` as `base64`; a `size` that is neither `auto` nor
+  `WIDTHxHEIGHT` is refused with `400` before any upstream call.
 - A provider request body now stays intact until the transport has finished
   sending it. Bodies were read straight out of a pooled buffer that went back
   to the pool when the provider call returned — on a stream, as soon as the

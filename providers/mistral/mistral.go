@@ -4,6 +4,7 @@ package mistral
 import (
 	"context"
 	"net/http"
+	"slices"
 	"strings"
 
 	providerhttp "github.com/ferro-labs/ai-gateway/internal/httpclient"
@@ -96,9 +97,32 @@ type mistralChatBody struct {
 }
 
 // mistralChatTransform maps core.Request onto Mistral's chat body, renaming
-// seed → random_seed.
+// seed → random_seed and sending a developer turn as a system turn.
 func mistralChatTransform(req core.Request) any {
+	req.Messages = developerAsSystem(req.Messages)
 	return mistralChatBody{Request: req, RandomSeed: req.Seed}
+}
+
+// developerAsSystem returns msgs with each OpenAI "developer" turn — the
+// system role's successor — sent as "system". Mistral's message union is
+// discriminated on role and names only system, user, assistant and tool, so a
+// developer turn forwarded as written refused the whole request. msgs is the
+// caller's slice and is never written: a failover hands the same messages to
+// the next target, so a copy is made only when there is a turn to rename.
+func developerAsSystem(msgs []core.Message) []core.Message {
+	for i := range msgs {
+		if msgs[i].Role != core.RoleDeveloper {
+			continue
+		}
+		out := slices.Clone(msgs)
+		for j := i; j < len(out); j++ {
+			if out[j].Role == core.RoleDeveloper {
+				out[j].Role = core.RoleSystem
+			}
+		}
+		return out
+	}
+	return msgs
 }
 
 // Complete sends a chat completion request to Mistral.

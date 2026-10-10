@@ -141,8 +141,13 @@ func buildContent(msg core.Message) any {
 	}
 
 	for _, tc := range msg.ToolCalls {
+		// Arguments are the caller's replay of a call already made, and they
+		// need not be JSON: a model cut off mid-call leaves a partial object,
+		// and OpenAI accepts any string back. Raw input that is not JSON fails
+		// the whole body's encoding, so it is sent as an empty object instead —
+		// the substitution the Bedrock-Anthropic and Gemini paths make.
 		input := json.RawMessage(tc.Function.Arguments)
-		if len(input) == 0 {
+		if len(input) == 0 || !json.Valid(input) {
 			input = json.RawMessage("{}")
 		}
 		blocks = append(blocks, anthropicwire.Block{
