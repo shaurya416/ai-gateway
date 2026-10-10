@@ -124,7 +124,8 @@ type MeterMeta struct {
 	// out of the usage chunk (stream_options.include_usage=false on the
 	// incoming request — see providers/core.Request.ClientStreamOptions).
 	// Meter clears the Usage field on the copy of each chunk forwarded to
-	// out when this is set; it never affects accounting — the usage/cost
+	// out when this is set, and does not forward a chunk that carried
+	// nothing but usage; it never affects accounting — the usage/cost
 	// seen by CompletionFn, PublishFn, SpanFinisher, and Prometheus metrics
 	// is always the real value the provider reported, captured before the
 	// client-facing copy is stripped.
@@ -179,7 +180,8 @@ func (m MeterMeta) priceModelName() string {
 // as its identity — the same one a non-streaming response reports, so the id a
 // per-target model mapping translated to never reaches the caller — and no
 // usage block when the client opted out of usage reporting. The chunk is not
-// dropped in that case: it may still carry content or a finish_reason.
+// dropped in that case when it still carries content or a finish_reason; one
+// that carried only usage is (see usageOnlyForClient).
 func (m MeterMeta) clientView(chunk providers.StreamChunk) providers.StreamChunk {
 	if m.Model != "" {
 		chunk.Model = m.Model
@@ -188,6 +190,12 @@ func (m MeterMeta) clientView(chunk providers.StreamChunk) providers.StreamChunk
 		chunk.Usage = nil
 	}
 	return chunk
+}
+
+// usageOnlyForClient reports whether chunk is a usage report and nothing else
+// while the client opted out of usage, so its client view would be empty.
+func (m MeterMeta) usageOnlyForClient(chunk providers.StreamChunk) bool {
+	return m.SuppressUsageForClient && chunk.Usage != nil && chunk.Error == nil && len(chunk.Choices) == 0
 }
 
 // Measurements are the per-request numbers a completed stream produced. They
@@ -237,7 +245,8 @@ func (f SpanFinisherFunc) Finish(o StreamOutcome) { f(o) }
 // Meter wraps src and returns a new channel that forwards every StreamChunk,
 // with one exception: when MeterMeta.SuppressUsageForClient is set, the Usage
 // field is cleared on the forwarded copy of any chunk that carries it (the
-// rest of the chunk — content, finish_reason, error — is untouched). Internal
+// rest of the chunk — content, finish_reason, error — is untouched), and a
+// chunk that carried nothing but usage is not forwarded at all. Internal
 // accounting always sees the real usage regardless. When a chunk carrying a
 // non-nil Error is received, or when src
 // closes, the goroutine emits request duration, token, and cost metrics then
@@ -333,6 +342,15 @@ func Meter(ctx context.Context, src <-chan providers.StreamChunk, start time.Tim
 			applyChunkToResponse(&resp, &choiceSlots, chunk)
 			if chunk.Error != nil {
 				streamErr = chunk.Error
+			}
+
+			// A chunk that carried nothing but the usage block the client
+			// declined is not forwarded at all. Stripping its usage left an
+			// empty frame — no choices, no usage — that exists only because
+			// the gateway requests usage upstream on the client's behalf, and
+			// a client that reads choices[0] from every chunk fails on it.
+			if meta.usageOnlyForClient(chunk) {
+				continue
 			}
 
 			// Forward the client's view of the chunk, but stop blocking if the

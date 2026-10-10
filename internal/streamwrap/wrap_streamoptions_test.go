@@ -59,13 +59,59 @@ func TestMeter_SuppressUsageForClient_AccountingSeesRealUsage(t *testing.T) {
 			pluginSawUsage, promptTokens, completionTokens, totalTokens)
 	}
 
-	if len(forwarded) != 2 {
-		t.Fatalf("forwarded %d chunks, want 2", len(forwarded))
+	// The content chunk only: the second chunk carried nothing but usage, so
+	// with its usage stripped there is nothing left to forward.
+	if len(forwarded) != 1 || len(forwarded[0].Choices) != 1 || forwarded[0].Choices[0].Delta.Content != "hello" {
+		t.Fatalf("forwarded %+v, want only the content chunk", forwarded)
 	}
 	for _, c := range forwarded {
 		if c.Usage != nil {
 			t.Fatalf("client-facing chunk %+v carries usage, want it stripped (client asked for include_usage:false)", c)
 		}
+	}
+}
+
+// TestMeter_SuppressUsageForClient_DropsUsageOnlyChunk: the gateway always asks
+// the upstream for usage, which answers with a terminal chunk carrying usage
+// and no choices. For a client that declined usage that chunk is not stripped
+// to an empty frame — no choices, no usage — it is not sent at all, so every
+// chunk the client receives still carries a choice. A usage-only chunk is
+// still delivered whole to a client that did not decline it.
+func TestMeter_SuppressUsageForClient_DropsUsageOnlyChunk(t *testing.T) {
+	forwardedFor := func(suppress bool) []providers.StreamChunk {
+		t.Helper()
+		src := feed(
+			providers.StreamChunk{ID: "1", Choices: []providers.StreamChoice{{
+				Delta:        providers.MessageDelta{Content: "hello"},
+				FinishReason: "stop",
+			}}},
+			providers.StreamChunk{
+				ID:      "1",
+				Choices: []providers.StreamChoice{},
+				Usage:   &providers.Usage{PromptTokens: 3, CompletionTokens: 1, TotalTokens: 4},
+			},
+		)
+		out := Meter(context.Background(), src, time.Now(), MeterMeta{
+			Provider:               "openai",
+			Model:                  "gpt-4o",
+			MetricModel:            "gpt-4o",
+			Catalog:                models.Catalog{},
+			SuppressUsageForClient: suppress,
+		})
+		var forwarded []providers.StreamChunk
+		for c := range out {
+			forwarded = append(forwarded, c)
+		}
+		return forwarded
+	}
+
+	for _, c := range forwardedFor(true) {
+		if len(c.Choices) == 0 {
+			t.Errorf("forwarded %+v: an empty frame left by stripping a usage-only chunk (client asked for include_usage:false)", c)
+		}
+	}
+	if got := forwardedFor(false); len(got) != 2 || got[1].Usage == nil || got[1].Usage.TotalTokens != 4 {
+		t.Errorf("forwarded %+v, want the usage chunk delivered when the client did not decline it", got)
 	}
 }
 

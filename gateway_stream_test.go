@@ -1939,3 +1939,47 @@ func TestGateway_RouteStream_TargetTimeoutBoundsOnlyTheStart(t *testing.T) {
 		t.Fatalf("received %d chunks, want 3", got)
 	}
 }
+
+// A client that sets include_usage: false receives no frame that existed only
+// to carry usage. The gateway asks the upstream for usage on its behalf, and
+// the upstream answers with a terminal chunk carrying usage and no choices;
+// stripping just its usage forwarded an empty frame with no choices, which a
+// client reading choices[0] from every chunk fails on.
+func TestGateway_RouteStream_IncludeUsageFalseSendsNoEmptyFrame(t *testing.T) {
+	gw, err := newTestGateway(t, config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeSingle},
+		Targets:  []config.Target{{VirtualKey: "stream"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gw.RegisterProvider(&mockStreamProvider{
+		mockProvider: mockProvider{name: "stream", models: []string{"gpt-4o"}},
+		streamFn: func(context.Context, providers.Request) (<-chan providers.StreamChunk, error) {
+			ch := make(chan providers.StreamChunk, 2)
+			ch <- providers.StreamChunk{ID: "s", Choices: []providers.StreamChoice{{
+				Delta: providers.MessageDelta{Role: "assistant", Content: "hi"}, FinishReason: "stop",
+			}}}
+			ch <- providers.StreamChunk{ID: "s", Choices: []providers.StreamChoice{}, Usage: &providers.Usage{PromptTokens: 3, CompletionTokens: 2, TotalTokens: 5}}
+			close(ch)
+			return ch, nil
+		},
+	})
+
+	ch, err := gw.RouteStream(context.Background(), providers.Request{
+		Model:               "gpt-4o",
+		Stream:              true,
+		Messages:            []providers.Message{{Role: "user", Content: "hi"}},
+		ClientStreamOptions: &core.StreamOptions{IncludeUsage: false},
+	})
+	if err != nil {
+		t.Fatalf("RouteStream: %v", err)
+	}
+	var chunks []providers.StreamChunk
+	for chunk := range ch {
+		chunks = append(chunks, chunk)
+	}
+	if len(chunks) != 1 || len(chunks[0].Choices) != 1 || chunks[0].Usage != nil {
+		t.Fatalf("chunks = %+v, want only the content chunk, with no usage", chunks)
+	}
+}

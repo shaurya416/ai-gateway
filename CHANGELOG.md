@@ -206,6 +206,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   clamped: `10`, meant as ten percent, sampled every trace, and a negative
   ratio sampled none while tracing reported itself enabled. Both are now
   `ferrogw validate` and startup errors naming the value.
+- A target or A/B variant weight that is not a finite number is now refused at
+  load. YAML spells NaN and infinity `.nan` and `.inf`, both decoded into a
+  weight without complaint, and the weighted draw then fell through to its last
+  entry on every request: `{openai: 9, groq: .nan}` sent all traffic to `groq`,
+  an A/B split of `{control: .inf, challenger: 1}` sent all of it to
+  `challenger`, and under `cost-optimized` such a weight skewed every
+  equal-cost tie. Finite weights so large that their sum overflows broke the
+  draw the same way and are refused with them. `ferrogw validate` and startup
+  now name the offending weight.
+- A streamed chat request that sets `stream_options.include_usage: false` no
+  longer receives an empty frame at the end of the stream. The gateway always
+  asks the upstream for usage, which answers with a terminal chunk carrying
+  usage and no choices; the meter stripped the usage from that chunk and
+  forwarded what was left — a frame with an empty `choices` array and nothing
+  else — so a client that reads `choices[0]` from every chunk failed on the
+  last one. A chunk that carried only the declined usage is no longer sent;
+  accounting still reads the real usage, and a client that did not decline it
+  receives the usage chunk as before.
 - A prompt longer than a target's context window no longer counts against that
   target's circuit breaker. Pool modes fail such a request over to a sibling
   whose model has a larger window, but the provider's `context_length_exceeded`

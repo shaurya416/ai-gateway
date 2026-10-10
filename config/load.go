@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -573,13 +574,12 @@ func validateStrategy(s StrategyConfig, targets []Target) error {
 	case ModeLoadBalance:
 		return validateWeights("target", targetWeights(targets))
 	case ModeCostOptimized:
-		// Weights break equal-cost ties here, so a negative one would silently
-		// drain a target; refuse it as load-balance does. Zero and unset stay
-		// legal — an all-zero set means an equal draw, not an outage.
-		for _, w := range targetWeights(targets) {
-			if w.weight < 0 {
-				return fmt.Errorf("target %q has negative weight %v", w.name, w.weight)
-			}
+		// Weights break equal-cost ties here, so a negative or non-finite one
+		// would silently skew or drain a target; refuse it as load-balance does.
+		// Zero and unset stay legal — an all-zero set means an equal draw, not
+		// an outage.
+		if _, err := sumWeights("target", targetWeights(targets)); err != nil {
+			return err
 		}
 		switch s.UnpricedStrategy {
 		case "", UnpricedStrategyFallback, UnpricedStrategySkip, UnpricedStrategyAllow:
@@ -796,7 +796,7 @@ func targetWeights(targets []Target) []namedWeight {
 	return weights
 }
 
-// validateWeights rejects a negative weight and an all-zero set.
+// validateWeights rejects a negative or non-finite weight and an all-zero set.
 //
 // Zero on a single entry is legal and means zero — that is the drain. Zero
 // across ALL of them is not the same statement: it leaves nothing selectable, so
@@ -807,17 +807,43 @@ func targetWeights(targets []Target) []namedWeight {
 // than 0" is a config-time rejection. Draining everything is spelled by removing
 // the targets or stopping the process, both of which say so out loud.
 func validateWeights(kind string, weights []namedWeight) error {
-	var sum float64
-	for _, w := range weights {
-		if w.weight < 0 {
-			return fmt.Errorf("%s %q has negative weight %v", kind, w.name, w.weight)
-		}
-		sum += w.weight
+	sum, err := sumWeights(kind, weights)
+	if err != nil {
+		return err
 	}
 	if sum <= 0 {
 		return fmt.Errorf("%s weights sum to zero; at least one must be positive", kind)
 	}
 	return nil
+}
+
+// sumWeights rejects every weight a weighted draw cannot honour and returns
+// their total.
+//
+// A negative weight is refused, and so is one that is not a finite number. YAML
+// spells NaN and infinity as `.nan` and `.inf`, and both decode into a float
+// without complaint, but the draw sums the weights and walks a cumulative total:
+// a NaN makes every comparison false, and an infinite weight makes the drawn
+// point infinite, so no cumulative bound ever exceeds it — either way the walk
+// falls through to its last entry. The effect is the operator's split ignored
+// or inverted: `{a: .inf, b: 1}` sent every request to b, and `{a: 9, b: .nan}`
+// every request to b. Finite weights whose SUM overflows to infinity fail the
+// same way and are refused with them.
+func sumWeights(kind string, weights []namedWeight) (float64, error) {
+	var sum float64
+	for _, w := range weights {
+		if math.IsNaN(w.weight) || math.IsInf(w.weight, 0) {
+			return 0, fmt.Errorf("%s %q has weight %v; a weight must be a finite number", kind, w.name, w.weight)
+		}
+		if w.weight < 0 {
+			return 0, fmt.Errorf("%s %q has negative weight %v", kind, w.name, w.weight)
+		}
+		sum += w.weight
+	}
+	if math.IsInf(sum, 1) {
+		return 0, fmt.Errorf("%s weights sum past the largest representable number; scale them down", kind)
+	}
+	return sum, nil
 }
 
 // requireDeclaredTarget resolves a rule's target_key against the declared
