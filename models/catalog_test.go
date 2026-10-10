@@ -290,6 +290,59 @@ func TestLoadWithInfoFallsBackWhenRemoteCatalogIsEmpty(t *testing.T) {
 	}
 }
 
+// A document whose members are objects describing no model — a catalog wrapped
+// in an envelope, as a schema change or a mirror can serve one — decodes without
+// error into one empty row per member. The row count passed the empty-catalog
+// check, so the load reported a remote success and the gateway's refresh swapped
+// in a catalog that routes and prices nothing. It falls back like an empty one.
+func TestLoadWithInfoFallsBackWhenRemoteRowsDescribeNoModel(t *testing.T) {
+	for name, body := range map[string]string{
+		"envelope":          `{"models":{"test/remote":{"provider":"test","model_id":"remote","mode":"chat"}}}`,
+		"envelope and meta": `{"meta":{"schema":{"major":2}},"catalog":{"test/remote":{"provider":"test"}}}`,
+		"empty rows":        `{"test/remote":{}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			var buf bytes.Buffer
+			previous := logger.Default()
+			logger.SetDefault(logger.New(logger.Options{Output: &buf}))
+			t.Cleanup(func() { logger.SetDefault(previous) })
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(body))
+			}))
+			t.Cleanup(server.Close)
+			t.Setenv(CatalogURLEnv, server.URL)
+
+			result, err := LoadWithInfo()
+			if err != nil {
+				t.Fatalf("LoadWithInfo returned error: %v", err)
+			}
+			if result.Source != LoadSourceFallback {
+				t.Fatalf("Source = %q with %d rows, want %q: a document describing no model must not replace the catalog",
+					result.Source, len(result.Catalog), LoadSourceFallback)
+			}
+			if _, ok := result.Catalog.Get("openai/gpt-4o"); !ok {
+				t.Fatal("the embedded fallback catalog was not served")
+			}
+			if !strings.Contains(buf.String(), "could not be parsed") {
+				t.Fatalf("fallback warning was not logged: %s", buf.String())
+			}
+		})
+	}
+}
+
+// One populated row is enough: a member describing no model beside real rows
+// is ignored data, not a reason to discard the document.
+func TestParseKeepsADocumentWithOneModelRow(t *testing.T) {
+	c, err := parse([]byte(`{"meta":{},"test/remote":{"provider":"test","model_id":"remote","mode":"chat"}}`))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if m, ok := c.Get("test/remote"); !ok || m.ModelID != "remote" {
+		t.Fatalf("Get(test/remote) = %+v, %v", m, ok)
+	}
+}
+
 func TestLoadWithInfoFallsBackForInvalidOverrideURL(t *testing.T) {
 	t.Setenv(CatalogURLEnv, "file:///tmp/catalog.json")
 

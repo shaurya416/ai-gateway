@@ -33,6 +33,29 @@ func TestCheckProductionSafety(t *testing.T) {
 			wantErr:     true,
 		},
 		{
+			// The same compose list entry that keeps the quotes on CORS_ORIGINS
+			// keeps them here. Read as the eleven-character `"production"`, it
+			// switched every production refusal and warning off while the
+			// deployment declared itself production.
+			name:        "production in quotes + unauthenticated proxy enabled",
+			allowUnauth: "true",
+			gatewayEnv:  `"production"`,
+			wantErr:     true,
+		},
+		{
+			name:        "production in single quotes + CORS_ORIGINS wildcard",
+			gatewayEnv:  " 'production' ",
+			corsOrigins: "*",
+			wantErr:     true,
+			wantErrText: "matched literally",
+		},
+		{
+			name:        "a value merely containing production is not production",
+			allowUnauth: "true",
+			gatewayEnv:  "pre-production",
+			wantErr:     false,
+		},
+		{
 			name:        "development + unauthenticated proxy allowed",
 			allowUnauth: "true",
 			gatewayEnv:  "development",
@@ -320,6 +343,12 @@ func TestWarnProductionRisks(t *testing.T) {
 		{
 			name:            "production with an in-memory key store",
 			gatewayEnv:      "production",
+			keyStoreBackend: BackendMemory,
+			want:            []string{"in-memory"},
+		},
+		{
+			name:            "production in quotes with an in-memory key store",
+			gatewayEnv:      `"production"`,
 			keyStoreBackend: BackendMemory,
 			want:            []string{"in-memory"},
 		},

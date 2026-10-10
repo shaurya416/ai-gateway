@@ -473,7 +473,7 @@ already presented a credential carrying `read_only` or `admin`.
 |----------|---------|
 | `MASTER_KEY` | Bootstrap and break-glass admin credential (use `ferrogw init` to generate) — see [Operator credentials](#operator-credentials) |
 | `GATEWAY_CONFIG` | Path to config YAML/JSON |
-| `GATEWAY_ENV` | Set to `production` to enable production-mode safety guards; unset or any other value is non-production mode. See [Production mode](#production-mode) for what it refuses and what it warns about |
+| `GATEWAY_ENV` | Set to `production` to enable production-mode safety guards; surrounding whitespace and quotes are ignored, and unset or any other value is non-production mode. See [Production mode](#production-mode) for what it refuses and what it warns about |
 | `PORT` | Server port (default: 8080) |
 | `FERRO_MODEL_CATALOG_URL` | Override the model catalog source URL (used by `/v1/models` and model routing) |
 | `FERRO_MODEL_CATALOG_TIMEOUT` | Go duration bounding the catalog fetch (default 10s). The fetch runs during startup, before the listener binds, so a blocked-egress deployment waits this long before falling back to the embedded catalog. Set `0` to skip the remote fetch entirely |

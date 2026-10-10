@@ -48,6 +48,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   which the target refused every request on every surface, chat included, with
   `503` until the breaker's timeout — a caller's malformed body took the target
   down for everyone.
+- `GATEWAY_ENV` wrapped in quotes now turns production mode on. A compose
+  list entry keeps its quotes, so `GATEWAY_ENV="production"` reached the
+  gateway as the quoted string, which matched nothing: the gateway started
+  with `ALLOW_UNAUTHENTICATED_PROXY=true` or a `*` in `CORS_ORIGINS` and
+  logged none of the production warnings, in a deployment that had declared
+  itself production. Surrounding whitespace and quotes are now trimmed before
+  the comparison, as they already are from each `CORS_ORIGINS` entry.
+- The startup report of unroutable targets now describes the config the
+  gateway runs. It was made while the gateway still held the file's config,
+  before a config persisted in the config store replaced it, so a stored
+  config whose every target named a provider with no credential started with
+  no error — every request then failing with a routing error — while a
+  superseded file naming one logged `no configured target resolves to a
+  registered provider` for a gateway that served. The report now runs once
+  the stored config has been adopted.
+- A remote model catalog whose members describe no model — a catalog wrapped
+  in an envelope such as `{"models": {...}}` — is now refused, and the
+  embedded catalog is used instead, as it is for an empty or unparseable
+  document. Each such member decoded without error into an empty row, so the
+  document passed the empty-catalog check: at startup, and on the 24-hour
+  refresh in place of the live catalog, the gateway then routed and priced no
+  catalog model while logging `model catalog refreshed` and counting the load
+  a success.
 - A config persisted in the config store now runs with its own observability
   section after a restart. The store's config replaces the file's whole, and
   `PUT /admin/config` accepts an observability change with a warning that it

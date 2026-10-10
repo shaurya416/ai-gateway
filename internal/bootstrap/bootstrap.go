@@ -31,8 +31,15 @@ import (
 
 // IsProduction reports whether GATEWAY_ENV names the production environment.
 // Unset, or any other value, is non-production.
+//
+// Surrounding whitespace and quotes are trimmed first, as they are from each
+// CORS_ORIGINS entry and for the same reason: a compose list entry written
+// `GATEWAY_ENV="production"` keeps its quotes, and compared verbatim that value
+// turned every production refusal and warning off in a deployment that had
+// declared itself production. Trimming can only ever turn production mode on.
 func IsProduction() bool {
-	return strings.EqualFold(strings.TrimSpace(os.Getenv("GATEWAY_ENV")), "production")
+	env := strings.Trim(strings.TrimSpace(os.Getenv("GATEWAY_ENV")), `"'`)
+	return strings.EqualFold(strings.TrimSpace(env), "production")
 }
 
 // corsOriginsWildcard reports whether a CORS_ORIGINS value contains a "*"
@@ -327,6 +334,11 @@ func buildServer(ctx context.Context, lg *logger.Logger) (app *serverRuntime, er
 	// outcome is named once, now, and the banner below is drawn from it rather
 	// than from the file.
 	active := ResolveActiveConfig(gw, cfgManager, cfg, configStoreBackend)
+	// Here rather than in BuildGateway, for the same reason: until the store
+	// has been adopted the gateway's targets are the file's, and a report run
+	// then named targets the gateway was about to stop routing to while saying
+	// nothing about the ones it would route to.
+	warnUnroutableTargets(gw)
 
 	keyStore, keyStoreBackend, err := CreateKeyStoreFromEnv(ctx)
 	if err != nil {
@@ -677,7 +689,6 @@ func BuildGateway(ctx context.Context, cfg *config.Config, registry *providers.R
 			gw.RegisterProvider(p)
 		}
 	}
-	warnUnroutableTargets(gw)
 	if len(cfg.Plugins) > 0 {
 		if err := gw.LoadPlugins(); err != nil {
 			logger.Default().Error("failed to load plugins", "error", err)

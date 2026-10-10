@@ -502,10 +502,30 @@ func parse(data []byte) (Catalog, error) {
 	if len(c) == 0 {
 		return nil, errors.New("catalog parse: document contains no models")
 	}
+	// A document whose members are all objects carrying none of a model's
+	// fields decodes without error too: an envelope such as {"models": {...}}
+	// becomes one empty row per member. len(c) counts those rows, so the check
+	// above let it through, and the 24-hour refresh swapped it in for the live
+	// catalog — every catalog model unrouted and unpriced while the load
+	// reported success. A catalog needs at least one row that describes a model.
+	if !hasModelRow(c) {
+		return nil, errors.New("catalog parse: no member of the document describes a model")
+	}
 	// Build the reverse modelID → key index so that Get() can resolve
 	// bare model IDs without scanning all entries.
 	BuildIndex(c)
 	return c, nil
+}
+
+// hasModelRow reports whether any row carries a field. A member the decoder
+// could match to no field of Model leaves every one at its zero value.
+func hasModelRow(c Catalog) bool {
+	for _, m := range c {
+		if m != (Model{}) {
+			return true
+		}
+	}
+	return false
 }
 
 func (c Catalog) lookupUnderPrefix(prefix, modelID string) (Model, bool) {
