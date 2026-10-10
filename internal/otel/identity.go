@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/ferro-labs/ai-gateway/observability"
 	"go.opentelemetry.io/otel/baggage"
@@ -49,14 +50,20 @@ func requestIdentityFromHeaders(ctx context.Context, h http.Header) observabilit
 }
 
 // IdentityValue returns v trimmed, or "" when v cannot be an id: empty, longer
-// than maxIdentityValueLen, or carrying a control character. It is the one
-// rule applied to every identity input — the HTTP headers here and the
+// than maxIdentityValueLen, carrying a control character, or not UTF-8. It is
+// the one rule applied to every identity input — the HTTP headers here and the
 // gateway core's own overlay of the OpenAI body `user` field — so a value a
 // caller cannot get past a header can not reach the same field through the
 // body either.
+//
+// A header value may hold any byte from 0x80 up, and Go's server accepts it, so
+// UTF-8 is checked rather than assumed. Such a value is dropped, not repaired,
+// for the reason a long one is: two different byte strings would repair to the
+// same id. Kept, it reached the span as-is and failed the OTLP export of every
+// span batched with it.
 func IdentityValue(v string) string {
 	v = strings.TrimSpace(v)
-	if v == "" || len(v) > maxIdentityValueLen {
+	if v == "" || len(v) > maxIdentityValueLen || !utf8.ValidString(v) {
 		return ""
 	}
 	for i := 0; i < len(v); i++ {

@@ -518,9 +518,13 @@ already presented a credential carrying `read_only` or `admin`.
 | `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | Signal-specific OTLP traces endpoint, used verbatim, and it outranks the variable above. Setting either variable turns tracing on |
 
 Those two are the only `OTEL_*` variables the gateway itself reads. Once the
-pipeline is active and either is set, its value is handed to the OTel SDK
+pipeline is active and either is set, a URL in it is handed to the OTel SDK
 unread, so the specification's own path rules apply — the base endpoint gets
-`v1/traces` appended, the signal-specific one does not. The head sampler is
+`v1/traces` appended, the signal-specific one does not. A bare `host:port`
+(`localhost:4317`, `jaeger:4317`) is the exception: the SDK cannot parse one —
+it reads the host name as a URL scheme and exports nowhere — so the gateway
+reads it the way it reads `observability.tracing.endpoint`, as plaintext to that
+host. The head sampler is
 built from `observability.tracing.sample_ratio` alone, so `OTEL_TRACES_SAMPLER`
 has no effect. (`OTEL_EXPORTER_OTLP_HEADERS` reaches the exporter through the
 SDK, not through the gateway.)

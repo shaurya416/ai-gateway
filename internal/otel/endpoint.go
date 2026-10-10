@@ -2,15 +2,17 @@ package otel
 
 import (
 	"fmt"
+	"net"
 	"net/url"
 	"path"
 	"strings"
 
+	"github.com/ferro-labs/ai-gateway/internal/tracingpolicy"
 	"github.com/ferro-labs/ai-gateway/pkg/logger"
 )
 
-// The standard OTLP endpoint variables. They are read here only to decide
-// whether the SDK is already configured; their *values* are never interpreted
+// The standard OTLP endpoint variables. A URL in either is handed to the SDK
+// uninterpreted; only a bare host:port, which the SDK cannot read, is resolved
 // by the gateway — see resolveExportTarget.
 const (
 	envEndpoint       = "OTEL_EXPORTER_OTLP_ENDPOINT"
@@ -23,9 +25,9 @@ const tracesSignalPath = "v1/traces"
 
 // exportTarget is how the span exporter is pointed at a collector.
 //
-// The zero value means "pass no endpoint option at all", which hands
-// OTEL_EXPORTER_OTLP_ENDPOINT and OTEL_EXPORTER_OTLP_TRACES_ENDPOINT to the
-// SDK's own handling of them. That is deliberate: those two variables have
+// The zero value means "pass no endpoint option at all", which hands a URL in
+// OTEL_EXPORTER_OTLP_ENDPOINT or OTEL_EXPORTER_OTLP_TRACES_ENDPOINT to the
+// SDK's own handling of it. That is deliberate: those two variables have
 // precise and *different* semantics in the specification — the first is a base
 // URL that v1/traces is appended to, the second is used verbatim — and the SDK
 // already implements both correctly. Re-deriving them here is how the gateway
@@ -56,7 +58,7 @@ func (t exportTarget) log() {
 
 // isHTTPProtocol reports whether the configured protocol selects OTLP/HTTP.
 func isHTTPProtocol(protocol string) bool {
-	return protocol == "http/protobuf" || protocol == "http"
+	return protocol == tracingpolicy.ProtocolHTTPProtobuf || protocol == tracingpolicy.ProtocolHTTP
 }
 
 // resolveExportTarget decides how to point the exporter at a collector,
@@ -64,11 +66,12 @@ func isHTTPProtocol(protocol string) bool {
 // (https://opentelemetry.io/docs/specs/otel/protocol/exporter/).
 //
 // Precedence is unchanged: the standard environment variables win over the
-// configured endpoint. What changed is that the gateway no longer parses them.
-// When either is set it returns the zero exportTarget, so no endpoint option is
-// passed and the SDK applies the specification's rules itself — appending
-// v1/traces to the non-signal-specific OTEL_EXPORTER_OTLP_ENDPOINT, using
-// OTEL_EXPORTER_OTLP_TRACES_ENDPOINT verbatim, and honouring the scheme.
+// configured endpoint, and the signal-specific one wins over the base one. A
+// variable holding a URL is not parsed here: the zero exportTarget passes no
+// endpoint option, and the SDK applies the specification's rules itself —
+// appending v1/traces to the non-signal-specific OTEL_EXPORTER_OTLP_ENDPOINT,
+// using OTEL_EXPORTER_OTLP_TRACES_ENDPOINT verbatim, and honouring the scheme.
+// A variable holding a bare host:port is the exception; see envExportTarget.
 //
 // observability.tracing.endpoint is the configured analogue of
 // OTEL_EXPORTER_OTLP_ENDPOINT and is therefore treated the same way: a base
@@ -78,10 +81,48 @@ func isHTTPProtocol(protocol string) bool {
 // variable does not — a base that already ends in the signal path is used as
 // written rather than having it appended twice; see parseConfiguredEndpoint.
 func resolveExportTarget(cfg Config, getenv func(string) string, httpProtocol bool) (exportTarget, error) {
-	if getenv(envEndpoint) != "" || getenv(envTracesEndpoint) != "" {
-		return exportTarget{}, nil
+	if v := strings.TrimSpace(getenv(envTracesEndpoint)); v != "" {
+		return envExportTarget(envTracesEndpoint, v, httpProtocol, true)
+	}
+	if v := strings.TrimSpace(getenv(envEndpoint)); v != "" {
+		return envExportTarget(envEndpoint, v, httpProtocol, false)
 	}
 	return parseConfiguredEndpoint(cfg.Endpoint, httpProtocol)
+}
+
+// envExportTarget resolves the value of one standard endpoint variable.
+//
+// A URL goes to the SDK unread. A bare host:port does not, because the SDK
+// cannot read it: it parses the value as a URL, so "127.0.0.1:4317" fails to
+// parse and is silently replaced by the default collector address, and
+// "jaeger:4317" parses with the host name as its scheme and no host at all —
+// the exporter then dials nowhere, over TLS, while the gateway reports that it
+// is exporting. That is the form the quick start and the full-stack compose file
+// use, so it is read here the way observability.tracing.endpoint reads it:
+// plaintext to that host. The signal-specific variable keeps its own path rule
+// — a signal endpoint with no path is sent to the root path — so under OTLP/HTTP
+// it becomes that URL rather than a base.
+//
+// A value with no port is left to the SDK as well: it reads a bare host as a
+// path, which gRPC dials over TLS on its default port, and that already works.
+//
+// A scheme-less host:port carrying a path is refused, as it is for the
+// configured endpoint: there is no reading of it the exporter can use.
+func envExportTarget(name, v string, httpProtocol, signal bool) (exportTarget, error) {
+	if strings.Contains(v, "://") {
+		return exportTarget{}, nil
+	}
+	if _, _, err := net.SplitHostPort(v); err != nil {
+		return exportTarget{}, nil
+	}
+	if strings.ContainsAny(v, "/?#") {
+		return exportTarget{}, fmt.Errorf(
+			"%s %q has a path but no scheme: write it as a URL (http://host:port/...) or as a bare host:port", name, v)
+	}
+	if signal && httpProtocol {
+		return exportTarget{url: "http://" + v + "/"}, nil
+	}
+	return exportTarget{hostPort: v}, nil
 }
 
 // parseConfiguredEndpoint validates observability.tracing.endpoint and resolves

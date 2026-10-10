@@ -63,6 +63,10 @@ func TestMiddleware_IdentityRejectsUnusableValues(t *testing.T) {
 		"too long":          strings.Repeat("a", maxIdentityValueLen+1),
 		"control character": "user\x00id",
 		"blank":             "   ",
+		// Go's HTTP server accepts any byte >= 0x80 in a header value. Kept,
+		// such a value reached the span and the request-log row as-is, and an
+		// OTLP export cannot marshal a string that is not UTF-8.
+		"not UTF-8": "user\xffid",
 	}
 	for name, value := range cases {
 		t.Run(name, func(t *testing.T) {

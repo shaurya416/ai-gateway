@@ -88,10 +88,12 @@ const (
 	PrivacyLevelFull     = tracingpolicy.PrivacyLevelFull
 )
 
-// Validate returns an error when PrivacyLevel is set to an unrecognised value
-// or Endpoint cannot be understood. An empty string is accepted for both:
-// PrivacyLevel is then the default ("metadata"), and an empty Endpoint means
-// tracing is driven by the OTEL_EXPORTER_OTLP_* environment or not at all.
+// Validate returns an error when PrivacyLevel or Protocol is set to an
+// unrecognised value, SampleRatio is outside 0.0–1.0, or Endpoint cannot be
+// understood. An empty string is accepted for PrivacyLevel, Protocol and
+// Endpoint: the first two then take their defaults ("metadata", gRPC), and an
+// empty Endpoint means tracing is driven by the OTEL_EXPORTER_OTLP_*
+// environment or not at all.
 // Callers should invoke this before constructing a provider. The allowed
 // privacy levels live in the internal tracingpolicy package so this validator
 // and the gateway config validator share one source of truth.
@@ -102,6 +104,12 @@ const (
 // per-batch error deep inside the SDK long after anyone was watching.
 func (c Config) Validate() error {
 	if err := tracingpolicy.ValidatePrivacyLevel(c.PrivacyLevel); err != nil {
+		return err
+	}
+	if err := tracingpolicy.ValidateProtocol(c.Protocol); err != nil {
+		return err
+	}
+	if err := tracingpolicy.ValidateSampleRatio(c.SampleRatio); err != nil {
 		return err
 	}
 	_, err := parseConfiguredEndpoint(c.Endpoint, isHTTPProtocol(c.Protocol))

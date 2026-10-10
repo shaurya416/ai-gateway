@@ -73,23 +73,23 @@ func (p *otelProvider) StartRequestSpan(ctx context.Context, attrs observability
 	// Seed the request attribute catalog. Keep this set small and
 	// stable — heavyweight attributes are added later via Set* methods.
 	span.SetAttributes(
-		attribute.String(observability.AttrGenAISystem, attrs.System),
-		attribute.String(observability.AttrGenAIOperationName, attrs.Operation),
-		attribute.String(observability.AttrGenAIRequestModel, attrs.RequestModel),
+		attribute.String(observability.AttrGenAISystem, validUTF8(attrs.System)),
+		attribute.String(observability.AttrGenAIOperationName, validUTF8(attrs.Operation)),
+		attribute.String(observability.AttrGenAIRequestModel, validUTF8(attrs.RequestModel)),
 		attribute.Bool(observability.AttrGenAIRequestIsStream, attrs.IsStream),
 		attribute.String(observability.AttrFerroSchemaVersion, observability.SchemaVersion),
 	)
 	if attrs.RoutingStrategy != "" {
-		span.SetAttributes(attribute.String(observability.AttrFerroRoutingStrategy, attrs.RoutingStrategy))
+		span.SetAttributes(attribute.String(observability.AttrFerroRoutingStrategy, validUTF8(attrs.RoutingStrategy)))
 	}
 	if attrs.TargetKey != "" {
-		span.SetAttributes(attribute.String(observability.AttrFerroRoutingTargetKey, attrs.TargetKey))
+		span.SetAttributes(attribute.String(observability.AttrFerroRoutingTargetKey, validUTF8(attrs.TargetKey)))
 	}
 	if attrs.TraceID != "" {
-		span.SetAttributes(attribute.String(observability.AttrFerroGatewayTraceID, attrs.TraceID))
+		span.SetAttributes(attribute.String(observability.AttrFerroGatewayTraceID, validUTF8(attrs.TraceID)))
 	}
 	if attrs.ResponseModel != "" {
-		span.SetAttributes(attribute.String(observability.AttrGenAIResponseModel, attrs.ResponseModel))
+		span.SetAttributes(attribute.String(observability.AttrGenAIResponseModel, validUTF8(attrs.ResponseModel)))
 	}
 	stampIdentity(span, attrs.User, attrs.SessionID, attrs.Metadata)
 
@@ -100,13 +100,13 @@ func (p *otelProvider) StartRequestSpan(ctx context.Context, attrs observability
 // the caller left empty so an anonymous request carries none of them.
 func stampIdentity(span trace.Span, user, sessionID string, metadata map[string]string) {
 	if user != "" {
-		span.SetAttributes(attribute.String(observability.AttrEndUserID, user))
+		span.SetAttributes(attribute.String(observability.AttrEndUserID, validUTF8(user)))
 	}
 	if sessionID != "" {
-		span.SetAttributes(attribute.String(observability.AttrSessionID, sessionID))
+		span.SetAttributes(attribute.String(observability.AttrSessionID, validUTF8(sessionID)))
 	}
 	for key, value := range metadata {
-		span.SetAttributes(attribute.String(observability.AttrFerroRequestMetadataPrefix+key, value))
+		span.SetAttributes(attribute.String(observability.AttrFerroRequestMetadataPrefix+validUTF8(key), validUTF8(value)))
 	}
 }
 
@@ -414,11 +414,13 @@ func toOTelSpanKind(k observability.SpanKind) trace.SpanKind {
 }
 
 // toAttribute converts an arbitrary Go value to an OTel attribute.
-// Unsupported types fall back to fmt.Sprintf via attribute.String.
+// Unsupported types fall back to fmt.Sprintf via attribute.String. Strings are
+// made valid UTF-8 first; see validUTF8.
 func toAttribute(key string, value any) attribute.KeyValue {
+	key = validUTF8(key)
 	switch v := value.(type) {
 	case string:
-		return attribute.String(key, v)
+		return attribute.String(key, validUTF8(v))
 	case bool:
 		return attribute.Bool(key, v)
 	case int:
@@ -428,9 +430,9 @@ func toAttribute(key string, value any) attribute.KeyValue {
 	case float64:
 		return attribute.Float64(key, v)
 	case []string:
-		return attribute.StringSlice(key, v)
+		return attribute.StringSlice(key, validUTF8Slice(v))
 	default:
-		return attribute.String(key, sprint(v))
+		return attribute.String(key, validUTF8(sprint(v)))
 	}
 }
 
@@ -479,7 +481,7 @@ func (p *otelProvider) StartAttemptSpan(ctx context.Context, targetKey string, s
 	ctx, attempt := p.tracer.Start(ctx, observability.SpanNameRoutingAttempt,
 		trace.WithSpanKind(trace.SpanKindClient),
 		trace.WithAttributes(
-			attribute.String(observability.AttrFerroRoutingTargetKey, targetKey),
+			attribute.String(observability.AttrFerroRoutingTargetKey, validUTF8(targetKey)),
 			attribute.Int(observability.AttrFerroRoutingSequence, sequence),
 		),
 	)

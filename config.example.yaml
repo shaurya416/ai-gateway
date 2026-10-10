@@ -596,8 +596,9 @@ mcp_servers:
 # When unset (or endpoint empty) the gateway runs with a zero-alloc
 # NoOp provider — there is no cost to leaving this section out.
 # OTEL_EXPORTER_OTLP_ENDPOINT and OTEL_EXPORTER_OTLP_TRACES_ENDPOINT both take
-# precedence over the endpoint set here; when either is set its value is handed
-# to the OTel SDK unread, so the specification's own path rules apply to it.
+# precedence over the endpoint set here; when either is set a URL in it is
+# handed to the OTel SDK unread, so the specification's own path rules apply to
+# it, and a bare host:port in it means plaintext, as it does here.
 # Setting either one turns tracing on. They are the only OTEL_* variables
 # the gateway itself reads: sampling comes from sample_ratio below, not from
 # OTEL_TRACES_SAMPLER.
@@ -611,8 +612,8 @@ observability:
     # already ending in v1/traces is used as written rather than having the path
     # appended twice. A value that cannot be understood at all is rejected at
     # startup rather than silently exporting nothing. Leave blank to fall back
-    # to the OTEL_EXPORTER_OTLP_* environment, whose values are handed to the
-    # SDK unread and therefore follow the specification exactly: the base
+    # to the OTEL_EXPORTER_OTLP_* environment, whose URL values are handed to
+    # the SDK unread and therefore follow the specification exactly: the base
     # variable gets v1/traces appended, the signal-specific one does not.
     endpoint: ""
     protocol: grpc           # grpc | http/protobuf

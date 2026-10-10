@@ -35,6 +35,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   could be proxied, so they sent the request under that provider's credential
   to a path its upstream does not serve — anthropic, gemini, azure-openai — and
   relayed whatever it answered.
+- One request carrying bytes that are not UTF-8 no longer discards the trace
+  spans exported alongside it. OTLP carries every attribute, status
+  description and event attribute as a protobuf string, which must be UTF-8,
+  and nothing checked: an `X-User-ID` or `X-Session-ID` header holding a byte
+  from `0x80` up, a multipart `model` field on `/v1/audio/transcriptions`, or
+  an error message quoting one reached the span as-is, the export failed to
+  marshal, and the whole batch — every other request's spans with it — was
+  dropped. An identity header that is not UTF-8 is now dropped like any other
+  unusable id, and the request and attempt spans' other string attributes, and
+  every error message a span records, have invalid sequences replaced with
+  U+FFFD.
+- `OTEL_EXPORTER_OTLP_ENDPOINT=localhost:4317` — the form the quick start and
+  the full-stack compose file (`jaeger:4317`) use — exports traces again. The
+  variable was handed to the OTel SDK unread, and the SDK parses it as a URL:
+  a bare IP and port fails to parse and is replaced by the default collector
+  address, and a bare host name and port is read with the host name as the
+  URL scheme, so the exporter dialled no host at all, over TLS, while the
+  gateway logged that it was exporting. A bare `host:port` in either standard
+  endpoint variable now means plaintext to that host, as it already did in
+  `observability.tracing.endpoint`; a URL or a host with no port is still left
+  to the SDK, and a scheme-less `host:port` carrying a path is refused at
+  startup.
+- `observability.tracing.protocol` and `sample_ratio` are validated at load.
+  An unrecognised protocol — `http/json`, which the exporter does not
+  implement, or `HTTP/protobuf` — silently selected gRPC and failed every
+  export to the HTTP collector it named, and a ratio outside 0.0–1.0 was
+  clamped: `10`, meant as ten percent, sampled every trace, and a negative
+  ratio sampled none while tracing reported itself enabled. Both are now
+  `ferrogw validate` and startup errors naming the value.
 - A caller closing a streamed `/v1/responses` or `/v1/*` pass-through response
   no longer counts against the target's circuit breaker. The reverse proxy
   reports a body copy that breaks off by panicking, and the panic unwound

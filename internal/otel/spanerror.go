@@ -67,13 +67,14 @@ func recordSpanError(span trace.Span, privacy string, redactor *redact.Redactor,
 			semconv.ExceptionMessageKey.String("redacted"),
 		))
 	case PrivacyLevelFull:
-		// Attach the raw error message with no redaction.
-		raw := err.Error()
+		// Attach the raw error message with no redaction — but as valid UTF-8,
+		// which OTLP requires of every string it carries; see validUTF8.
+		raw := validUTF8(err.Error())
 		span.SetStatus(codes.Error, raw)
 		span.RecordError(redactedError(raw))
 	default:
 		// "metadata" and any unknown/empty value: apply redaction (safe default).
-		msg := redactor.Redact(err.Error())
+		msg := validUTF8(redactor.Redact(err.Error()))
 		span.SetStatus(codes.Error, msg)
 		span.RecordError(redactedError(msg))
 	}
