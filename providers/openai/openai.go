@@ -338,6 +338,9 @@ func (p *Provider) GenerateImage(ctx context.Context, req core.ImageRequest) (*c
 			RevisedPrompt: d.RevisedPrompt,
 		}
 	}
+	if err := core.RequireGeneratedImage(Name, images); err != nil {
+		return nil, err
+	}
 
 	return &core.ImageResponse{
 		Created: result.Created,

@@ -70,6 +70,9 @@ func (p *Provider) GenerateImage(ctx context.Context, req core.ImageRequest) (*c
 	if err := json.Unmarshal(respBody, &decoded); err != nil {
 		return nil, fmt.Errorf("together: failed to decode image response: %w", err)
 	}
+	if err := core.RequireGeneratedImage("together", decoded.Data); err != nil {
+		return nil, err
+	}
 
 	if decoded.Created == 0 {
 		decoded.Created = time.Now().Unix()

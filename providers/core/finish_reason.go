@@ -33,13 +33,22 @@ func NormalizeFinishReason(native string) string {
 	// a client checking for "stop" reads as an unfinished answer.
 	case "stop", "end_turn", "stop_sequence", "complete", "finish", "finished", "stop_criteria_met":
 		return FinishReasonStop
-	case "length", "max_tokens", "model_length", "max_completion_tokens":
+	// "model_context_window_exceeded" is Anthropic's (and Bedrock's) reason for
+	// an answer cut off by the model's context window rather than by
+	// max_tokens. It is a truncation like the others here; passed through, a
+	// client checking for "length" read the cut-off answer as one that had not
+	// been truncated.
+	case "length", "max_tokens", "model_length", "max_completion_tokens", "model_context_window_exceeded":
 		return FinishReasonLength
 	case "tool_use", "tool_call", "tool_calls", "function_call":
 		return FinishReasonToolCalls
 	case "content_filtered", "content_filter", "refusal", "safety", "error_toxic",
-		// Gemini content-blocking reasons.
-		"recitation", "blocklist", "prohibited_content", "spii", "image_safety":
+		// Bedrock's reason when a guardrail blocked the output.
+		"guardrail_intervened",
+		// Gemini content-blocking reasons, including the image-generation
+		// counterparts of PROHIBITED_CONTENT and RECITATION.
+		"recitation", "blocklist", "prohibited_content", "spii", "image_safety",
+		"image_prohibited_content", "image_recitation":
 		return FinishReasonContentFilter
 	default:
 		return native

@@ -323,6 +323,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   now followed to the last page. A listing that never ends — more than 1024
   pages, or more than the 10 MiB one response may carry in all — fails the
   server's initialization instead of holding the handshake open.
+- A Replicate stream for a prediction that did not complete now ends in an
+  error instead of a successful answer. Replicate sends its `done` event when a
+  prediction succeeds, is canceled or fails, and the stream treated every
+  `done` as a completion, so a canceled or failed prediction was delivered,
+  recorded and billed as a finished answer with `finish_reason: stop`. A
+  stream body that ran out before any `done` — the connection can close before
+  the prediction finishes — likewise closed cleanly with whatever part of the
+  answer had arrived. The stream now reads the prediction's status at `done`,
+  as the non-streaming path does, and fails a canceled or failed one with the
+  token usage it reports; a stream that ends without `done` fails as
+  incomplete.
+- A response Anthropic or Bedrock cut off at the model's context window now
+  finishes `length`. Both report it as `model_context_window_exceeded`, which
+  the finish-reason normalizer did not know and passed through verbatim, so a
+  client checking for `length` read a truncated answer as one that had not
+  been truncated. Bedrock's `guardrail_intervened` and Gemini's
+  `IMAGE_PROHIBITED_CONTENT` and `IMAGE_RECITATION` now finish
+  `content_filter`, as Bedrock's `content_filtered` and Gemini's
+  `IMAGE_SAFETY` already did.
+- An image generation whose success response carries no image now fails
+  instead of answering `200` with an empty `data` list. OpenAI, Azure OpenAI,
+  xAI, Together, DeepInfra and Replicate returned whatever a 2xx body decoded
+  to — an empty list, entries with neither a URL nor base64, an error envelope,
+  or a Replicate prediction whose output is not a URL — so the caller received
+  no image and the target was recorded as having served one. Each now fails
+  the call when no usable image decoded, so it counts against the breaker and
+  fails over like any other target failure.
 
 ## [1.5.9] — 2026-09-18
 

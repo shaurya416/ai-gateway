@@ -458,6 +458,11 @@ func (p *Provider) GenerateImage(ctx context.Context, req core.ImageRequest) (*c
 			}
 		}
 	}
+	// A prediction can succeed with an output that is not a URL or a list of
+	// them — null, or an object from a model with a structured output type.
+	if err := core.RequireGeneratedImage(Name, images); err != nil {
+		return nil, err
+	}
 
 	return &core.ImageResponse{
 		Created: time.Now().Unix(),
@@ -610,30 +615,39 @@ func doneFinishReason(payload string) string {
 	return core.NormalizeFinishReason(reason)
 }
 
-// streamUsage reads the finished prediction's token metrics, for the terminal
-// chunk of a stream. Replicate's SSE stream carries no token counts — they live
-// on the prediction object — so without this a streaming request bills zero
-// while the polled Complete path reports usage from the same field.
+// streamEnd reads the finished prediction once the stream's "done" event has
+// arrived, for two things the event itself does not carry.
 //
-// It runs once, on the stream's "done" event, so the prediction is already
-// complete and this costs one GET at the end rather than latency on every chunk.
+// The first is token usage. Replicate's SSE stream carries no token counts —
+// they live on the prediction object — so without this a streaming request
+// bills zero while the polled Complete path reports usage from the same field.
 //
-// It is best-effort: the content has already been delivered to the caller, so a
-// failed or unreadable fetch reports no usage rather than failing the stream —
-// the same nil a model that reports no metrics gives.
-func (p *Provider) streamUsage(ctx context.Context, predictionID string) *core.Usage {
+// The second is how the prediction ended. "done" is emitted when a prediction
+// finishes successfully, is canceled, or produces an error, so the event alone
+// is not a success; the prediction's status is, and a failed or canceled one is
+// returned as the error Complete gives the same prediction. Reading only the
+// event ended a canceled prediction's stream as a successful answer.
+//
+// It runs once, at the end, so the prediction is already complete and this
+// costs one GET rather than latency on every chunk. A failed or unreadable
+// fetch is best-effort: it reports no usage and no failure, the same as a model
+// that reports no metrics, because the event is then all there is to go on.
+func (p *Provider) streamEnd(ctx context.Context, predictionID string) (*core.Usage, error) {
 	if predictionID == "" {
-		return nil
+		return nil, nil
 	}
 	pred, err := p.pollOnce(ctx, fmt.Sprintf("%s/predictions/%s", p.baseURL, predictionID))
 	if err != nil {
-		return nil
+		return nil, nil
 	}
-	usage, ok := usageFromMetrics(pred)
-	if !ok {
-		return nil
+	var usage *core.Usage
+	if u, ok := usageFromMetrics(pred); ok {
+		usage = &u
 	}
-	return &usage
+	if pred.Status == statusFailed || pred.Status == statusCanceled {
+		return usage, fmt.Errorf("replicate prediction %s: %s", pred.Status, pred.Error)
+	}
+	return usage, nil
 }
 
 func (p *Provider) readStream(ctx context.Context, body io.ReadCloser, ch chan<- core.StreamChunk, predictionID, model string) {
@@ -644,6 +658,9 @@ func (p *Provider) readStream(ctx context.Context, body io.ReadCloser, ch chan<-
 
 	event := eventMessage
 	var data strings.Builder
+	// ended records that the stream reached a terminal event, "done" or
+	// "error". See the end of the function for why it has to be tracked.
+	ended := false
 	dispatch := func() bool {
 		if data.Len() == 0 && event == eventMessage {
 			return true
@@ -660,9 +677,21 @@ func (p *Provider) readStream(ctx context.Context, body io.ReadCloser, ch chan<-
 				}},
 			})
 		case "error":
+			ended = true
 			core.SendChunk(ctx, ch, core.StreamChunk{Error: fmt.Errorf("replicate stream error: %s", payload)})
 			return false
 		case "done":
+			ended = true
+			usage, err := p.streamEnd(ctx, predictionID)
+			if err != nil {
+				core.SendChunk(ctx, ch, core.StreamChunk{
+					ID:    predictionID,
+					Model: model,
+					Usage: usage,
+					Error: err,
+				})
+				return false
+			}
 			core.SendChunk(ctx, ch, core.StreamChunk{
 				ID:    predictionID,
 				Model: model,
@@ -670,7 +699,7 @@ func (p *Provider) readStream(ctx context.Context, body io.ReadCloser, ch chan<-
 					Index:        0,
 					FinishReason: doneFinishReason(payload),
 				}},
-				Usage: p.streamUsage(ctx, predictionID),
+				Usage: usage,
 			})
 			return false
 		}
@@ -706,10 +735,23 @@ func (p *Provider) readStream(ctx context.Context, body io.ReadCloser, ch chan<-
 			data.WriteByte('\n')
 		}
 	}
-	if data.Len() > 0 {
+	if data.Len() > 0 || event != eventMessage {
 		_ = dispatch()
 	}
 	if err := scanner.Err(); err != nil {
 		core.SendChunk(ctx, ch, core.StreamChunk{Error: fmt.Errorf("stream read error: %w", err)})
+		return
+	}
+	// A clean EOF is not the end of a prediction: "done" is. The stream
+	// connection can close before the prediction finishes — Replicate's Go
+	// client reconnects with Last-Event-ID in exactly that case — so a body
+	// that ran out with no terminal event delivered only part of the answer.
+	// Closing the channel without saying so recorded it as a complete one.
+	if !ended {
+		core.SendChunk(ctx, ch, core.StreamChunk{
+			ID:    predictionID,
+			Model: model,
+			Error: fmt.Errorf("replicate stream for prediction %s ended before its done event", predictionID),
+		})
 	}
 }

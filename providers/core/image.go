@@ -1,6 +1,7 @@
 package core
 
 import (
+	"fmt"
 	"slices"
 	"strings"
 )
@@ -75,6 +76,21 @@ func EnforceImageResponseFormat(provider string, req ImageRequest, produced ...s
 	return NewUnsupportedParamError(provider, []string{
 		"response_format=" + req.ResponseFormat + " (produces: " + strings.Join(produced, ", ") + ")",
 	})
+}
+
+// RequireGeneratedImage fails an image generation whose success response
+// carried no usable image — no entry with a URL or base64 data. A 2xx body
+// that is not an image result (an error envelope, an empty list, a prediction
+// whose output is not a URL) decodes without error, and returned as an answer
+// it was served as a 200 with nothing in it and recorded as a generation the
+// target had served. label names the provider in the error.
+func RequireGeneratedImage(label string, images []GeneratedImage) error {
+	for _, img := range images {
+		if img.URL != "" || img.B64JSON != "" {
+			return nil
+		}
+	}
+	return fmt.Errorf("%s image response carried no image", label)
 }
 
 // ImageRequest mirrors the OpenAI /v1/images/generations request schema.

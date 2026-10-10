@@ -35,6 +35,8 @@ func TestComplete_NormalizesFinishReason(t *testing.T) {
 		{"max_tokens -> length", "max_tokens", "length"},
 		{"tool_use -> tool_calls", "tool_use", "tool_calls"},
 		{"refusal -> content_filter", "refusal", "content_filter"},
+		// A context-window cut-off is a truncation, so it reads as one.
+		{"model_context_window_exceeded -> length", "model_context_window_exceeded", "length"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

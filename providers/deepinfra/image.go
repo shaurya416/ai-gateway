@@ -71,6 +71,9 @@ func (p *Provider) GenerateImage(ctx context.Context, req core.ImageRequest) (*c
 	if err := json.Unmarshal(respBody, &decoded); err != nil {
 		return nil, fmt.Errorf("deepinfra: failed to decode image response: %w", err)
 	}
+	if err := core.RequireGeneratedImage("deepinfra", decoded.Data); err != nil {
+		return nil, err
+	}
 
 	if decoded.Created == 0 {
 		decoded.Created = time.Now().Unix()

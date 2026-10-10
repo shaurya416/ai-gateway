@@ -89,6 +89,9 @@ func (p *Provider) GenerateImage(ctx context.Context, req core.ImageRequest) (*c
 	if err := json.Unmarshal(respBody, &pResp); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal image response: %w", err)
 	}
+	if err := core.RequireGeneratedImage("azure openai", pResp.Data); err != nil {
+		return nil, err
+	}
 	return &core.ImageResponse{
 		Created: pResp.Created,
 		Data:    pResp.Data,

@@ -429,7 +429,7 @@ func TestAzureOpenAIProvider_GenerateImage_FallbackDeployment(t *testing.T) {
 		gotPath = r.URL.Path
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"created":1,"data":[]}`))
+		_, _ = w.Write([]byte(`{"created":1,"data":[{"url":"https://example.com/a.png"}]}`))
 	}))
 	defer srv.Close()
 

@@ -14,6 +14,7 @@ func TestNormalizeFinishReason(t *testing.T) {
 		{"anthropic max_tokens", "max_tokens", "length"},
 		{"anthropic tool_use", "tool_use", "tool_calls"},
 		{"anthropic refusal", "refusal", "content_filter"},
+		{"anthropic model_context_window_exceeded", "model_context_window_exceeded", "length"},
 
 		// Bedrock Titan (uppercase completionReason)
 		{"titan FINISH", "FINISH", "stop"},
@@ -21,6 +22,10 @@ func TestNormalizeFinishReason(t *testing.T) {
 		{"titan STOP_CRITERIA_MET", "STOP_CRITERIA_MET", "stop"},
 		{"titan LENGTH", "LENGTH", "length"},
 		{"titan CONTENT_FILTERED", "CONTENT_FILTERED", "content_filter"},
+
+		// Bedrock stop reasons (bedrockruntime types.StopReason)
+		{"bedrock guardrail_intervened", "guardrail_intervened", "content_filter"},
+		{"bedrock model_context_window_exceeded", "model_context_window_exceeded", "length"},
 
 		// Bedrock Llama (already lowercase-ish)
 		{"llama stop", "stop", "stop"},
@@ -42,6 +47,8 @@ func TestNormalizeFinishReason(t *testing.T) {
 		{"gemini PROHIBITED_CONTENT", "PROHIBITED_CONTENT", "content_filter"},
 		{"gemini SPII", "SPII", "content_filter"},
 		{"gemini IMAGE_SAFETY", "IMAGE_SAFETY", "content_filter"},
+		{"gemini IMAGE_PROHIBITED_CONTENT", "IMAGE_PROHIBITED_CONTENT", "content_filter"},
+		{"gemini IMAGE_RECITATION", "IMAGE_RECITATION", "content_filter"},
 		// Ambiguous Gemini reasons are surfaced unchanged rather than mis-signaled.
 		{"gemini OTHER passthrough", "OTHER", "OTHER"},
 		{"gemini MALFORMED_FUNCTION_CALL passthrough", "MALFORMED_FUNCTION_CALL", "MALFORMED_FUNCTION_CALL"},
