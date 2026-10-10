@@ -46,12 +46,27 @@ func IsProduction() bool {
 // state the refusal exists to prevent, reached by the spelling an operator is
 // most likely to use.
 func corsOriginsWildcard(value string) bool {
-	for _, origin := range strings.Split(value, ",") {
-		if strings.Trim(strings.TrimSpace(origin), `"'`) == "*" {
+	for _, origin := range corsOriginList(value) {
+		if origin == "*" {
 			return true
 		}
 	}
 	return false
+}
+
+// corsOriginList splits a CORS_ORIGINS value into the origins the CORS
+// middleware matches, trimming surrounding whitespace and quotes. A compose
+// list entry keeps its quotes, and no origin can contain one, so stripping them
+// never widens the allowlist; left in, `"https://app.example.com"` is an origin
+// no browser sends. The wildcard check reads the same list, so the two cannot
+// disagree about what was configured.
+func corsOriginList(value string) []string {
+	parts := strings.Split(value, ",")
+	origins := make([]string, 0, len(parts))
+	for _, origin := range parts {
+		origins = append(origins, strings.Trim(strings.TrimSpace(origin), `"'`))
+	}
+	return origins
 }
 
 // CheckProductionSafety returns an error naming every production setting the
@@ -326,7 +341,7 @@ func buildServer(ctx context.Context, lg *logger.Logger) (app *serverRuntime, er
 
 	var corsOrigins []string
 	if origins := os.Getenv("CORS_ORIGINS"); origins != "" {
-		corsOrigins = strings.Split(origins, ",")
+		corsOrigins = corsOriginList(origins)
 		// Production refuses this outright (CheckProductionSafety), so this
 		// line is what a non-production run gets instead of silence.
 		if corsOriginsWildcard(origins) {
@@ -445,18 +460,30 @@ func gracefulShutdown(app *serverRuntime, gracePeriod time.Duration) error {
 	return errors.Join(shutdownErr, cleanupErr)
 }
 
+// minDiscoveryInterval guards against a hot-loop of provider API calls.
+const minDiscoveryInterval = time.Minute
+
 // discoveryIntervalFromEnv reads the FERRO_MODEL_DISCOVERY_INTERVAL env var and
-// returns the opt-in refresh interval for live model discovery. It is pure: it
-// performs no logging. Returns (0, false) when the var is unset/empty, fails to
-// parse, or resolves to a duration below the 1-minute minimum (which guards
-// against a hot-loop of provider API calls); otherwise (interval, true).
+// returns the opt-in refresh interval for live model discovery. Returns
+// (0, false) when the var is unset/empty or zero, fails to parse, or resolves to
+// a duration below minDiscoveryInterval; otherwise (interval, true).
+//
+// A value that is set and ignored is logged at WARN. Discovery being off is
+// otherwise visible only as the absence of the "model discovery enabled" line,
+// so a typo or a too-short interval left the gateway serving the model lists it
+// booted with while its configuration said they refreshed.
 func discoveryIntervalFromEnv() (time.Duration, bool) {
 	raw := strings.TrimSpace(os.Getenv("FERRO_MODEL_DISCOVERY_INTERVAL"))
 	if raw == "" {
 		return 0, false
 	}
 	d, err := time.ParseDuration(raw)
-	if err != nil || d < time.Minute {
+	if err == nil && d == 0 {
+		return 0, false
+	}
+	if err != nil || d < minDiscoveryInterval {
+		logger.Default().Warn("FERRO_MODEL_DISCOVERY_INTERVAL is not a usable interval; live model discovery is disabled -- set a Go duration of at least the minimum, e.g. 6h",
+			"value", raw, "minimum", minDiscoveryInterval.String())
 		return 0, false
 	}
 	return d, true

@@ -1143,6 +1143,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   filter the gateway was running read as one it did not have. That statement
   is now made only once the catalog has answered; until then a card says only
   that no description is available.
+- A SQLite store whose DSN sets `_busy_timeout=<ms>` now waits on a locked
+  database for that long instead of not at all. The SQLite driver ignores that
+  parameter — it reads only `_pragma=busy_timeout(<ms>)` — but the gateway
+  counted any DSN mentioning `busy_timeout` as already set and skipped its
+  5-second default, so the connection ran with no busy timeout and a write
+  blocked by another store on the same file failed at once with `SQLITE_BUSY`.
+  The value is now carried into the pragma the driver reads; a
+  `_pragma=busy_timeout(...)` setting, in any letter case, still takes
+  precedence over it.
+- `CORS_ORIGINS` entries wrapped in quotes are now matched. A compose list
+  entry keeps its quotes, so `CORS_ORIGINS="https://app.example.com"` reached
+  the allowlist as the quoted string — an origin no browser sends — and every
+  cross-origin request was denied while an allowlist was in force. The
+  production `*` check already stripped those quotes; the allowlist now strips
+  the same surrounding whitespace and quotes from each entry, so the two read
+  one list.
+- A `FERRO_MODEL_DISCOVERY_INTERVAL` that live model discovery cannot use — an
+  unparseable value such as `6 hours`, a negative duration, or one under the
+  one-minute minimum — is now logged at startup as a warning. Discovery stayed
+  off with no log line at all, so a gateway configured to refresh its model
+  lists read exactly like one that did, while serving the lists it started
+  with. Discovery is still left off for such a value; `0` and an unset
+  variable remain a silent off.
 
 ## [1.5.9] — 2026-09-18
 

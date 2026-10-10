@@ -218,6 +218,47 @@ func TestDiscoveryIntervalFromEnv(t *testing.T) {
 	}
 }
 
+// TestDiscoveryIntervalFromEnvWarnsWhenIgnored is the regression for a set
+// FERRO_MODEL_DISCOVERY_INTERVAL that live discovery ignores. An unparseable
+// value or one under the one-minute minimum disabled discovery with no log line
+// at all, so a gateway configured to refresh its model lists started reading
+// exactly like one that was, and kept serving the lists it booted with.
+func TestDiscoveryIntervalFromEnvWarnsWhenIgnored(t *testing.T) {
+	const envVar = "FERRO_MODEL_DISCOVERY_INTERVAL"
+
+	for _, value := range []string{"6 hours", "30s", "-5m"} {
+		t.Run(value, func(t *testing.T) {
+			t.Setenv(envVar, value)
+			buf := captureDefaultLogger(t)
+
+			if _, ok := discoveryIntervalFromEnv(); ok {
+				t.Fatalf("%s=%q enabled discovery", envVar, value)
+			}
+			entry := findEntry(t, buf, envVar)
+			if entry["level"] != "WARN" {
+				t.Errorf("level = %v, want WARN", entry["level"])
+			}
+			if entry["value"] != value {
+				t.Errorf("value = %v, want %q", entry["value"], value)
+			}
+		})
+	}
+
+	// Unset, and the conventional "0" for off, are deliberate and stay silent,
+	// as does a usable interval.
+	for _, value := range []string{"", "0", "0s", "6h"} {
+		t.Run("silent "+value, func(t *testing.T) {
+			t.Setenv(envVar, value)
+			buf := captureDefaultLogger(t)
+
+			discoveryIntervalFromEnv()
+			if hasEntry(t, buf, envVar) {
+				t.Errorf("%s=%q logged a warning:\n%s", envVar, value, buf.String())
+			}
+		})
+	}
+}
+
 // TestWarnProductionRisks covers the settings production allows but must not
 // pass over in silence. Each was previously an INFO line or nothing at all, so
 // a production gateway's own startup log did not distinguish it from a laptop.

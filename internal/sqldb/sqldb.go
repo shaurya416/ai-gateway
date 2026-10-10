@@ -9,6 +9,8 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -61,9 +63,14 @@ const sqliteBusyTimeout = 5 * time.Second
 // modernc.org/sqlite takes PRAGMA settings only as "_pragma=name(value)". A
 // "_busy_timeout=5000" query parameter — the spelling several other SQLite
 // drivers use — is accepted and ignored, so a DSN carrying one has no busy
-// timeout at all while reading as though it does. Detection matches the bare
-// name so either spelling counts as the operator having set it.
+// timeout at all while reading as though it does. Only the _pragma spelling
+// therefore counts as the operator having set it; the other is translated into
+// one (see withBusyTimeout).
 const sqliteBusyTimeoutName = "busy_timeout"
+
+// sqliteForeignBusyTimeoutParam is the query parameter other SQLite drivers
+// read the busy timeout from, in milliseconds.
+const sqliteForeignBusyTimeoutParam = "_busy_timeout"
 
 // Open opens a tuned, reachable database for the dialect.
 //
@@ -126,17 +133,33 @@ func Open(ctx context.Context, dialect Dialect, dsn, defaultDSN string) (*sql.DB
 }
 
 // withBusyTimeout returns dsn carrying the default SQLite busy timeout, leaving
-// it untouched when the operator already set one.
+// it untouched when the operator already set one with a busy_timeout pragma.
 //
-// The query is appended textually rather than through net/url, because a SQLite
-// DSN is not always a URL: a bare path is the documented default and the common
-// case, and round-tripping one through url.Parse would rewrite it.
+// A "_busy_timeout" parameter is the operator setting one too, under a spelling
+// this driver ignores, so its value is carried over into the pragma rather than
+// counted as set: counted, it left the connection with no busy timeout at all.
+//
+// The query is read with the parser the driver itself applies, and appended
+// textually rather than re-encoded through net/url, because a SQLite DSN is not
+// always a URL: a bare path is the documented default and the common case, and
+// round-tripping one through url.Parse would rewrite it. A query that parser
+// refuses is returned as it is; the driver refuses it at open.
 func withBusyTimeout(dsn string) string {
 	base, query := sqlitefile.SplitQuery(dsn)
-	if strings.Contains(query, sqliteBusyTimeoutName) {
+	params, err := url.ParseQuery(query)
+	if err != nil {
 		return dsn
 	}
-	setting := fmt.Sprintf("_pragma=%s(%d)", sqliteBusyTimeoutName, sqliteBusyTimeout.Milliseconds())
+	for _, pragma := range params["_pragma"] {
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(pragma)), sqliteBusyTimeoutName) {
+			return dsn
+		}
+	}
+	timeout := sqliteBusyTimeout.Milliseconds()
+	if ms, err := strconv.ParseInt(strings.TrimSpace(params.Get(sqliteForeignBusyTimeoutParam)), 10, 64); err == nil && ms >= 0 {
+		timeout = ms
+	}
+	setting := fmt.Sprintf("_pragma=%s(%d)", sqliteBusyTimeoutName, timeout)
 	if query == "" {
 		return base + "?" + setting
 	}

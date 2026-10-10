@@ -104,12 +104,52 @@ func TestWithBusyTimeout(t *testing.T) {
 		{"existing query is preserved", "/data/ferrogw.db?_txlock=immediate", "/data/ferrogw.db?_txlock=immediate&_pragma=busy_timeout(5000)"},
 		{"file URI gains the setting", "file:/data/ferrogw.db", "file:/data/ferrogw.db?_pragma=busy_timeout(5000)"},
 		{"operator pragma wins", "/data/ferrogw.db?_pragma=busy_timeout(60000)", "/data/ferrogw.db?_pragma=busy_timeout(60000)"},
-		{"operator _busy_timeout spelling wins", "/data/ferrogw.db?_busy_timeout=60000", "/data/ferrogw.db?_busy_timeout=60000"},
+		{"operator pragma wins in any case", "/data/ferrogw.db?_pragma=BUSY_TIMEOUT(7000)", "/data/ferrogw.db?_pragma=BUSY_TIMEOUT(7000)"},
+		// The driver ignores _busy_timeout, so it is carried into the pragma the
+		// driver reads rather than counted as already set.
+		{"operator _busy_timeout spelling is carried into the pragma", "/data/ferrogw.db?_busy_timeout=60000", "/data/ferrogw.db?_busy_timeout=60000&_pragma=busy_timeout(60000)"},
+		{"unreadable _busy_timeout falls back to the default", "/data/ferrogw.db?_busy_timeout=soon", "/data/ferrogw.db?_busy_timeout=soon&_pragma=busy_timeout(5000)"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := withBusyTimeout(tc.dsn); got != tc.want {
 				t.Fatalf("withBusyTimeout(%q) = %q, want %q", tc.dsn, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestOpen_SQLiteBusyTimeoutIsInEffect reads the busy timeout back from an open
+// connection for each spelling an operator can write. "_busy_timeout" is the
+// spelling other SQLite drivers read and this one ignores; counting it as set
+// suppressed the default and left the connection with no busy timeout at all,
+// so a writer blocked by another store on the same file failed at once with
+// SQLITE_BUSY instead of waiting.
+func TestOpen_SQLiteBusyTimeoutIsInEffect(t *testing.T) {
+	cases := []struct {
+		name  string
+		query string
+		want  int
+	}{
+		{"default", "", 5000},
+		{"pragma spelling", "?_pragma=busy_timeout(60000)", 60000},
+		{"_busy_timeout spelling", "?_busy_timeout=60000", 60000},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dsn := filepath.Join(t.TempDir(), "busy.db") + tc.query
+			db, err := Open(context.Background(), SQLite, dsn, "")
+			if err != nil {
+				t.Fatalf("Open(%q): %v", dsn, err)
+			}
+			t.Cleanup(func() { _ = db.Close() })
+
+			var got int
+			if err := db.QueryRowContext(context.Background(), "PRAGMA busy_timeout").Scan(&got); err != nil {
+				t.Fatalf("read busy_timeout: %v", err)
+			}
+			if got != tc.want {
+				t.Fatalf("busy_timeout for DSN query %q = %d ms, want %d ms", tc.query, got, tc.want)
 			}
 		})
 	}
