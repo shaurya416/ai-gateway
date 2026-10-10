@@ -162,20 +162,24 @@ func TestWrite_IdleTimeoutNamesItsCause(t *testing.T) {
 // yet never goes quiet for a full period — does not emit a timeout.
 //
 // The timing is deliberately chosen so a non-resetting implementation fails:
-//   - idle timeout D = 150ms.
-//   - chunk1 is buffered (delivered at ~T0); chunk2 arrives one gap (100ms)
-//     later; the channel closes one more gap (100ms) after that, at ~200ms.
+//   - idle timeout D = 900ms.
+//   - chunk1 is buffered (delivered at ~T0); chunk2 arrives one gap (600ms)
+//     later; the channel closes one more gap (600ms) after that, at ~1200ms.
 //
-// A NON-resetting implementation keeps its original T0+150ms deadline. That
-// deadline fires at ~150ms, while the stream is still active (close is at
-// ~200ms), so it would emit a stream_timeout and fail this test. The correct
+// A NON-resetting implementation keeps its original T0+900ms deadline. That
+// deadline fires at ~900ms, while the stream is still active (close is at
+// ~1200ms), so it would emit a stream_timeout and fail this test. The correct
 // resetting implementation re-arms the deadline when chunk2 arrives (to
-// ~250ms), so the ~200ms close lands first and the stream ends cleanly with
-// [DONE]. Each quiet gap (100ms) stays comfortably under D, leaving ~50ms of
-// slack for scheduler jitter under -race.
+// ~1500ms), so the ~1200ms close lands first and the stream ends cleanly with
+// [DONE].
+//
+// A gap of two thirds of D leaves the same slack, D/3, on both sides: each
+// quiet gap is 300ms under D, and the two gaps together are 300ms over it. At
+// 150ms/100ms the slack was 50ms, which a sleeping goroutine on a loaded runner
+// under -race overshot often enough to fail an unrelated change's run.
 func TestWrite_ResetsIdleTimeoutAfterChunk(t *testing.T) {
-	const idle = 150 * time.Millisecond
-	const gap = 100 * time.Millisecond
+	const idle = 900 * time.Millisecond
+	const gap = 600 * time.Millisecond
 
 	restore := SetIdleTimeoutForTest(idle)
 	defer restore()
