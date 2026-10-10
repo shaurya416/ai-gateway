@@ -441,7 +441,7 @@ func Meter(ctx context.Context, src <-chan providers.StreamChunk, start time.Tim
 			HasCost: cost.Priced,
 		}
 
-		if handleCompletionFn(ctx, meta, usage, &resp, out, measured) {
+		if handleCompletionFn(ctx, meta, usage, &resp, out, latency, measured) {
 			return
 		}
 
@@ -525,15 +525,16 @@ func finishStreamOnError(
 // handleCompletionFn invokes meta.CompletionFn when it is set. It returns
 // true if the caller (the Meter goroutine) should return immediately, which
 // happens when CompletionFn returns a non-nil error. On error it emits plugin
-// error metrics, forwards an error chunk on out, finalises the span, and
-// records a successful circuit-breaker outcome (the provider stream itself
-// completed successfully; only the plugin failed).
+// error metrics, publishes the failed event, forwards an error chunk on out,
+// finalises the span, and records a successful circuit-breaker outcome (the
+// provider stream itself completed successfully; only the plugin failed).
 func handleCompletionFn(
 	ctx context.Context,
 	meta MeterMeta,
 	usage providers.Usage,
 	resp *providers.Response,
 	out chan<- providers.StreamChunk,
+	latency time.Duration,
 	measured Measurements,
 ) bool {
 	if meta.CompletionFn == nil {
@@ -551,6 +552,21 @@ func handleCompletionFn(
 	requestMetrics.Duration.Observe(measured.DurationMs / 1000.0)
 	requestMetrics.Error.Inc()
 	metrics.ForProviderError(meta.Provider, metrics.ErrTypePlugin).Inc()
+	// The request ended failed, so it is published as failed — the event the
+	// non-streaming path sends for the same after_request failure. Publishing
+	// nothing here left a stream an after_request guardrail rejected, or a
+	// plugin broke on, as the one request event hooks never heard about:
+	// neither completed nor failed.
+	if meta.PublishFn != nil {
+		meta.PublishFn(ctx, events.FailedRequest(
+			meta.TraceID,
+			meta.Provider,
+			meta.Model,
+			err,
+			latency,
+			true,
+		))
+	}
 	select {
 	case out <- providers.StreamChunk{Error: err}:
 	case <-ctx.Done():
@@ -646,6 +662,13 @@ func applyChunkToResponse(resp *providers.Response, slots *map[int]int, chunk pr
 			choice.Message.Role = streamChoice.Delta.Role
 		}
 		choice.Message.Content += streamChoice.Delta.Content
+		// The reasoning is the answer's own text, streamed alongside it, and the
+		// after_request stage reads it on a unary response: a guardrail screens
+		// it (plugin.ResponseText) and the response cache stores it. Assembled
+		// without it, a streamed answer reached that stage stripped of its
+		// reasoning, so a match there went unseen and a cached stream replayed
+		// without it.
+		choice.Message.ReasoningContent += streamChoice.Delta.ReasoningContent
 		for _, delta := range streamChoice.Delta.ToolCalls {
 			choice.Message.ToolCalls = mergeToolCallDelta(choice.Message.ToolCalls, delta)
 		}

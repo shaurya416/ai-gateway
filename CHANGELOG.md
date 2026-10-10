@@ -26,6 +26,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   other client of the Admin API was handed a credential that could never
   authenticate. `PUT /admin/keys/{id}` is unchanged: a past expiry there is
   how an existing key is retired.
+- A streamed chat request that an `after_request` plugin rejects or fails on
+  now reaches the event hooks as `gateway.request.failed`. The client was sent
+  the error and the metrics counted it, but the stream's metering published no
+  event on that path — neither completed nor failed — so a hook registered with
+  `AddHook` heard of every request except a stream an `after_request`
+  guardrail had rejected. The event carries the status the non-streaming path
+  reports for the same failure (`502` for a rejected response).
+- A streamed answer now keeps its `reasoning_content` in the response the
+  `after_request` stage reads. The stream's assembled response dropped it, so
+  an `after_request` guardrail screened a reasoning model's streamed answer
+  without its reasoning — a match there went unseen, though the same answer
+  unstreamed was caught — and the response cache stored the stream without it,
+  so every cache hit replayed the answer with its reasoning gone.
+- A response replayed as a stream — a response-cache hit, or the answer the
+  MCP tool loop settled on — now carries its `reasoning_content` and gives each
+  tool call the `index` a streamed tool call is keyed by. The replay forwarded
+  the message's tool calls as a unary response holds them, with no `index`,
+  which the chunk schema requires: the Node SDK's stream helper filed every
+  such call under one missing key and finished with `finish_reason:
+  tool_calls` and an empty `tool_calls` list. The reasoning a non-streamed
+  request for the same answer received was dropped from the replay.
 - A credential change, sign-in, config change or log purge whose caller
   disconnects before the response is written now keeps its durable audit row.
   The row was appended on the request context, so once the client had gone a

@@ -577,3 +577,58 @@ func TestMeter_LatencySampleIsMeasuredFromLatencyStart(t *testing.T) {
 		t.Errorf("sample without LatencyStart = %v, want it measured from start", got)
 	}
 }
+
+// TestMeter_PublishesFailedEventOnAfterPluginError pins the event a stream an
+// after_request plugin ended is published under. The request failed — the
+// client is sent an error chunk and the metrics count it — but no event was
+// published at all, so an event hook heard of every request except a stream
+// an after_request guardrail rejected or a plugin broke on.
+func TestMeter_PublishesFailedEventOnAfterPluginError(t *testing.T) {
+	pluginErr := &plugin.RejectionError{Plugin: "secret-scan", PluginType: plugin.TypeGuardrail, Stage: plugin.StageAfterRequest, Reason: "secret in response"}
+	var (
+		mu        sync.Mutex
+		published []events.HookEvent
+	)
+	out := Meter(context.Background(), feed(
+		providers.StreamChunk{ID: "1", Choices: []providers.StreamChoice{{
+			Delta:        providers.MessageDelta{Content: "ok"},
+			FinishReason: "stop",
+		}}},
+	), time.Now(), MeterMeta{
+		Provider:    "openai",
+		Model:       "gpt-4o",
+		MetricModel: "gpt-4o",
+		Catalog:     models.Catalog{},
+		TraceID:     "trace-after",
+		PublishFn: func(_ context.Context, ev events.HookEvent) {
+			mu.Lock()
+			published = append(published, ev)
+			mu.Unlock()
+		},
+		CompletionFn: func(context.Context, *providers.Response, Measurements) error {
+			return pluginErr
+		},
+	})
+	var sawError bool
+	for chunk := range out {
+		if chunk.Error != nil {
+			sawError = true
+		}
+	}
+	if !sawError {
+		t.Fatal("the client was not sent the plugin's error")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(published) != 1 {
+		t.Fatalf("published %d events, want exactly one for the failed request: %+v", len(published), published)
+	}
+	ev := published[0]
+	if ev.Subject != "gateway.request.failed" || !ev.Stream || ev.TraceID != "trace-after" || ev.Provider != "openai" {
+		t.Errorf("event = %+v, want a failed stream event for this request", ev)
+	}
+	if ev.Status != 502 {
+		t.Errorf("event Status = %d, want 502 — the after_request rejection the non-streaming path reports", ev.Status)
+	}
+}

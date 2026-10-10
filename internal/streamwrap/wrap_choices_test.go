@@ -56,3 +56,32 @@ func TestMeter_AssemblesInterleavedChoicesInIndexOrder(t *testing.T) {
 		}
 	}
 }
+
+// TestMeter_AssemblesReasoningContent pins the reasoning a reasoning model
+// streams beside its answer into the response the after_request stage reads.
+// That stage reads it on a unary response — a guardrail screens it and the
+// response cache stores it — and the assembly dropped it, so a streamed answer
+// reached the stage, and later the cache's replay, without its reasoning.
+func TestMeter_AssemblesReasoningContent(t *testing.T) {
+	reasoningDelta := func(text string) providers.StreamChunk {
+		return providers.StreamChunk{Choices: []providers.StreamChoice{{
+			Delta: providers.MessageDelta{ReasoningContent: text},
+		}}}
+	}
+	resp := completedResponse(t,
+		reasoningDelta("The user greets; "),
+		reasoningDelta("answer in kind."),
+		contentDelta(0, "Hello", "stop"),
+	)
+
+	if len(resp.Choices) != 1 {
+		t.Fatalf("assembled %d choices, want 1", len(resp.Choices))
+	}
+	got := resp.Choices[0].Message
+	if got.ReasoningContent != "The user greets; answer in kind." {
+		t.Errorf("reasoning_content = %q, want the streamed reasoning in order", got.ReasoningContent)
+	}
+	if got.Content != "Hello" {
+		t.Errorf("content = %q, want %q", got.Content, "Hello")
+	}
+}

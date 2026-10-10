@@ -8,6 +8,7 @@ import (
 
 	"github.com/ferro-labs/ai-gateway/pkg/circuitbreaker"
 	"github.com/ferro-labs/ai-gateway/providers"
+	"github.com/ferro-labs/ai-gateway/providers/core"
 )
 
 // startStreamWithStrategy runs the stream START through the same pipeline
@@ -270,6 +271,11 @@ func suppressUsageForClient(req providers.Request) bool {
 // streamwrap.Meter, so the client's usage opt-out is applied here: honoured on
 // a provider-served stream and ignored on these, it left whether a client that
 // declined usage received it to depend on where the answer came from.
+//
+// The delta carries everything the message does, in the streaming shape: the
+// reasoning a provider-served stream delivers as reasoning_content, and each
+// tool call with the index a streamed tool call is keyed by (see
+// streamToolCalls).
 func responseStream(resp *providers.Response, suppressUsage bool) <-chan providers.StreamChunk {
 	ch := make(chan providers.StreamChunk, 1)
 	streamChoices := make([]providers.StreamChoice, len(resp.Choices))
@@ -277,9 +283,10 @@ func responseStream(resp *providers.Response, suppressUsage bool) <-chan provide
 		streamChoices[i] = providers.StreamChoice{
 			Index: c.Index,
 			Delta: providers.MessageDelta{
-				Role:      c.Message.Role,
-				Content:   c.Message.Content,
-				ToolCalls: c.Message.ToolCalls,
+				Role:             c.Message.Role,
+				Content:          c.Message.Content,
+				ToolCalls:        streamToolCalls(c.Message.ToolCalls),
+				ReasoningContent: c.Message.ReasoningContent,
 			},
 			FinishReason: c.FinishReason,
 		}
@@ -297,6 +304,29 @@ func responseStream(resp *providers.Response, suppressUsage bool) <-chan provide
 	ch <- chunk
 	close(ch)
 	return ch
+}
+
+// streamToolCalls returns calls as streamed tool-call deltas, each keyed by its
+// position. A streamed tool call is addressed by index — the chunk schema
+// requires it, and a client's accumulator files every fragment under it — while
+// a unary response's calls carry none. Forwarded as they were, they reached the
+// client with no slot to land in: the Node SDK's stream helper filed every call
+// under one missing key and finished with finish_reason tool_calls and an empty
+// tool_calls list. The whole call travels in this one delta, so its position in
+// the message is its index.
+//
+// The calls are copied, not stamped in place: a cache hit replays a response
+// the cache still holds and hands to every other hit.
+func streamToolCalls(calls []providers.ToolCall) []providers.ToolCall {
+	if len(calls) == 0 {
+		return calls
+	}
+	out := make([]providers.ToolCall, len(calls))
+	for i, call := range calls {
+		call.Index = core.Ptr(i)
+		out[i] = call
+	}
+	return out
 }
 
 // Target resolution — registered, serves the model, can stream, and decorated
