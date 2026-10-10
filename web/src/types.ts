@@ -451,7 +451,8 @@ export interface ChatMessage {
 }
 
 export interface ChatStreamChunk {
-  choices?: Array<{ delta?: { content?: string } }>
+  /** `finish_reason` is omitted on every chunk but the one that ends a choice — `core.StreamChoice`. */
+  choices?: Array<{ delta?: { content?: string }; finish_reason?: string }>
   usage?: {
     prompt_tokens?: number
     completion_tokens?: number

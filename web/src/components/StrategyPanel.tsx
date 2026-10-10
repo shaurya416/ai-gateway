@@ -64,7 +64,24 @@ function ActiveStrategy({ state }: { state: StrategyState }) {
   )
 }
 
-function TargetTable({ targets }: { targets: StrategyState['targets'] }) {
+/**
+ * The modes that read `targets[].weight`: load-balance draws the first target by
+ * it, and cost-optimized breaks equal-cost ties with it. Every other mode
+ * ignores the field.
+ */
+const WEIGHTED_MODES: readonly string[] = ['load-balance', 'cost-optimized']
+
+/**
+ * Whether an absent weight reads as 0. It does only under a mode that reads
+ * weights and only when some sibling carries a positive one: cost-optimized
+ * with no positive weight anywhere breaks ties uniformly, so 0 on every row
+ * would read as every target drained when each is taking an equal share.
+ */
+function readsWeights(state: StrategyState): boolean {
+  return WEIGHTED_MODES.includes(state.info?.id ?? '') && state.targets.some((target) => (target.weight ?? 0) > 0)
+}
+
+function TargetTable({ targets, weighted }: { targets: StrategyState['targets']; weighted: boolean }) {
   return (
     <section aria-labelledby="strategy-targets-heading" className="rounded-xl border border-border bg-card">
       <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1 border-b border-border px-4 py-2.5">
@@ -96,7 +113,20 @@ function TargetTable({ targets }: { targets: StrategyState['targets'] }) {
                 </span>
               </TableCell>
               <TableCell className={cn(mobileCell, 'tabular-nums')} data-label="Weight">
-                {target.weight === undefined ? <span className="text-muted-foreground">default</span> : target.weight}
+                {/*
+                  * Under a mode that reads it, an absent weight is 0, not a
+                  * default: the field has none, and GET /admin/config omits a
+                  * zero weight, so a target drained with `weight: 0` arrives
+                  * here with no weight at all. It never leads a draw against a
+                  * weighted sibling.
+                  */}
+                {weighted ? (
+                  target.weight ?? 0
+                ) : target.weight === undefined ? (
+                  <span className="text-muted-foreground">default</span>
+                ) : (
+                  target.weight
+                )}
               </TableCell>
               <TableCell className={cn(mobileCell, 'tabular-nums')} data-label="Retry">
                 {target.retryAttempts === undefined ? (
@@ -264,7 +294,7 @@ export function StrategyPanel({ state, showCatalog = false }: { state: StrategyS
           title="No routing targets configured"
         />
       ) : (
-        <TargetTable targets={state.targets} />
+        <TargetTable targets={state.targets} weighted={readsWeights(state)} />
       )}
 
       {state.rules.length > 0 ? <RuleTable state={state} /> : null}

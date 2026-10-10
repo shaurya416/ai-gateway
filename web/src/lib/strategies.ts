@@ -116,7 +116,11 @@ function text(value: unknown): string {
 /** One `targets[]` entry, reduced to what this dashboard renders. */
 export interface StrategyTarget {
   virtualKey: string
-  /** Undefined rather than 1 when unset: the strategy's own default applies. */
+  /**
+   * Undefined rather than 1 when the document carries none. The field has no
+   * default: GET /admin/config omits a zero weight, so a mode that reads it —
+   * load-balance, cost-optimized — reads undefined as 0.
+   */
   weight?: number
   retryAttempts?: number
   maxConcurrency?: number

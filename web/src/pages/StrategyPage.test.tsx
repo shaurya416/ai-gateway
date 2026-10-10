@@ -89,6 +89,49 @@ describe('StrategyPage', () => {
     expect(within(anthropic).getByText('Configured')).toBeInTheDocument()
   })
 
+  it('reads a target with no weight as drained under a mode that reads weights', async () => {
+    // `targets[].weight` has no default, and GET /admin/config omits a zero
+    // weight, so a target drained with `weight: 0` arrives here with no weight
+    // at all. Load-balance never starts a request on it. Shown as "default", it
+    // read as a target still taking its share — the reading an operator drains
+    // a target to check before revoking its credential.
+    arm({
+      strategy: { mode: 'load-balance' },
+      targets: [
+        { virtual_key: 'openai', weight: 3 },
+        { virtual_key: 'anthropic' },
+        { virtual_key: 'groq', weight: 0.0001 },
+      ],
+    })
+    render(<StrategyPage />)
+    await screen.findByRole('heading', { name: 'Load balance' })
+
+    const anthropic = screen.getByRole('row', { name: /anthropic/ })
+    expect(within(anthropic).getByText('0')).toBeInTheDocument()
+    expect(within(anthropic).queryByText('default')).toBeNull()
+    expect(within(screen.getByRole('row', { name: /openai/ })).getByText('3')).toBeInTheDocument()
+    // A canary's small positive weight is not rounded down into a drained one.
+    expect(within(screen.getByRole('row', { name: /groq/ })).getByText('0.0001')).toBeInTheDocument()
+  })
+
+  it('does not read unset weights as drained when no target carries one', async () => {
+    // Cost-optimized with no positive weight anywhere breaks ties uniformly,
+    // so every target takes an equal share. Zero on every row would read as
+    // the whole pool drained.
+    arm({
+      strategy: { mode: 'cost-optimized' },
+      targets: [{ virtual_key: 'openai' }, { virtual_key: 'anthropic' }],
+    })
+    render(<StrategyPage />)
+    await screen.findByRole('heading', { name: 'Cost optimized' })
+
+    for (const name of [/openai/, /anthropic/]) {
+      const row = screen.getByRole('row', { name })
+      expect(within(row).getByText('default')).toBeInTheDocument()
+      expect(within(row).queryByText('0')).toBeNull()
+    }
+  })
+
   it('shows the variant split the gateway actually applies, zero weights included', async () => {
     // A zero weight is zero traffic — `weightedPick` skips the variant outright
     // — so a drained variant must read as 0%. The panel used to normalise it to

@@ -972,6 +972,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   exited 0 — and `--expires-in 0` reads as "never expires". It now fails
   without creating a key; omitting the flag is how a key that does not expire
   is created.
+- The Routing Strategies page and the Configuration page's Strategy tab no
+  longer show a drained target as taking a default share. Under
+  `load-balance` and `cost-optimized` a target with no weight read "default",
+  but `targets[].weight` has no default and `GET /admin/config` omits a zero
+  weight, so a target drained with `weight: 0` before its credential is
+  revoked arrived with no weight and was rendered as though it still took
+  traffic. Such a target's weight now reads 0 under the two modes that read it,
+  whenever a sibling carries a positive weight; with none anywhere,
+  `cost-optimized` breaks ties evenly and every target still reads "default".
+- The Playground no longer leaves a prompt unanswered when the model returns no
+  text. A reasoning model that spends the whole token limit before writing, or
+  a reply a content filter ends before it starts, closes the response cleanly
+  with an empty message; the page committed nothing, said nothing, and the next
+  send carried two user turns in a row. Such a reply is now undone like a
+  failed send: the prompt goes back in the message box, the finish reason is
+  named, and the token usage it cost is still shown.
+- The Plugins page and the Configuration page's Plugins tab no longer declare
+  every configured plugin foreign to the build when the plugin catalog has not
+  been read. Each card said "Not a plugin this build ships" whenever
+  `GET /admin/plugins/catalog` was still loading or had failed, so a word
+  filter the gateway was running read as one it did not have. That statement
+  is now made only once the catalog has answered; until then a card says only
+  that no description is available.
 
 ## [1.5.9] — 2026-09-18
 

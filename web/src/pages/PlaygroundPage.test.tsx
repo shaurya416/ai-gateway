@@ -188,6 +188,44 @@ describe('PlaygroundPage', () => {
     ])
   })
 
+  it('hands the prompt back when the model answers with no text, rather than leaving it unanswered', async () => {
+    // A reasoning model can spend the whole token limit before writing a word,
+    // and a content filter can end a reply before it starts: the stream still
+    // closes cleanly. That left the prompt on screen with no reply and nothing
+    // said about why, and the next send carried two user turns in a row.
+    const user = userEvent.setup()
+    rawRequestMock
+      .mockResolvedValueOnce(
+        streamResponse([
+          'data: {"choices":[{"index":0,"delta":{"role":"assistant"}}]}\n',
+          'data: {"choices":[{"index":0,"delta":{},"finish_reason":"length"}]}\n',
+          'data: {"choices":[],"usage":{"prompt_tokens":9,"completion_tokens":64}}\n',
+          'data: [DONE]\n',
+        ]),
+      )
+      .mockResolvedValueOnce(
+        streamResponse([
+          'data: {"choices":[{"index":0,"delta":{"content":"Here it is."}}]}\n',
+          'data: [DONE]\n',
+        ]),
+      )
+    renderPage()
+
+    await user.type(await screen.findByLabelText('Message'), 'explain')
+    await user.click(screen.getByRole('button', { name: /send/i }))
+
+    expect(await screen.findByText(/returned no text \(finish reason: length\)/)).toBeInTheDocument()
+    expect(screen.getByLabelText('Message')).toHaveValue('explain')
+    // What the empty reply cost is still reported.
+    expect(screen.getByText('64 output tokens')).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: /send/i }))
+    expect(await screen.findByText('Here it is.')).toBeInTheDocument()
+    expect(bodyOf(rawRequestMock.mock.calls[1] as unknown[]).messages).toEqual([
+      { role: 'user', content: 'explain' },
+    ])
+  })
+
   it('says that a streamed answer cannot report its target, and stops saying it when streaming is off', async () => {
     const user = userEvent.setup()
     renderPage()

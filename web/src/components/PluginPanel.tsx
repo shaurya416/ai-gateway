@@ -72,8 +72,14 @@ function ConfiguredCard({ catalog, group }: { catalog: PluginCatalogEntry[] | nu
             <h3 className="text-sm font-semibold text-foreground">{group.name}</h3>
             <StatusPill tone={status.tone}>{status.label}</StatusPill>
           </div>
+          {/*
+            * "Not a plugin this build ships" is a statement about the catalog,
+            * so it is made only once the catalog has answered. Without it —
+            * still loading, or unreadable — every built-in plugin on the page
+            * was declared foreign to the binary running it.
+            */}
           <p className="mt-0.5 text-xs text-muted-foreground">
-            {info?.summary ?? 'Not a plugin this build ships, so no description is available.'}
+            {info?.summary ?? (catalog ? 'Not a plugin this build ships, so no description is available.' : 'No description available.')}
           </p>
         </div>
       </div>

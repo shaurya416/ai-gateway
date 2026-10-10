@@ -117,6 +117,7 @@ export function PlaygroundChat({
     let completionTokens = 0
     let usageReceived = false
     let answeredBy = ''
+    let finishReason = ''
     try {
       if (streamEnabled) {
         const stream = await rawRequest('/v1/chat/completions', {
@@ -153,6 +154,8 @@ export function PlaygroundChat({
               return
             }
             if (chunk.provider) answeredBy = chunk.provider
+            const reason = chunk.choices?.[0]?.finish_reason
+            if (reason) finishReason = reason
             const content = chunk.choices?.[0]?.delta?.content
             if (content) {
               fullText += content
@@ -202,6 +205,7 @@ export function PlaygroundChat({
         )
         const body = (await single.json()) as ChatCompletionResponse
         fullText = body.choices?.[0]?.message?.content ?? ''
+        finishReason = body.choices?.[0]?.finish_reason ?? ''
         answeredBy = body.provider ?? ''
         if (body.usage) {
           promptTokens = body.usage.prompt_tokens
@@ -212,6 +216,19 @@ export function PlaygroundChat({
 
       if (fullText) {
         setMessages((current) => [...current, { role: 'assistant', content: fullText, servedBy: answeredBy }])
+      } else {
+        // A completion that carries no text — a reasoning model that spent the
+        // whole token limit before writing anything, or a content filter —
+        // left the prompt standing with no reply and nothing said about it,
+        // and the next send then carried two user turns in a row. It is undone
+        // like a failed send, with the finish reason that explains it; the
+        // usage below still shows what the empty reply cost.
+        setMessages((current) => current.slice(0, -1))
+        setPrompt(userText)
+        setError(
+          `The model returned no text${finishReason ? ` (finish reason: ${finishReason})` : ''}. `
+            + 'The message is back in the box to send again; raise Max tokens if the reply hit the limit.',
+        )
       }
       setResponse('')
       setUsage({

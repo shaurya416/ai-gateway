@@ -1,4 +1,4 @@
-import { render, screen, within } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { resetPluginCatalog } from '../lib/plugins'
 import PluginsPage from './PluginsPage'
@@ -175,6 +175,19 @@ describe('PluginsPage', () => {
     render(<PluginsPage />)
 
     expect(await screen.findByText(/Not a plugin this build ships/)).toBeInTheDocument()
+  })
+
+  it('does not call a built-in plugin foreign to the build when the catalog could not be read', async () => {
+    // The catalog is what says which plugins this build ships. Unread, it says
+    // nothing either way — and declaring every configured plugin foreign to the
+    // binary running it reads as a guardrail that is not actually there.
+    arm(config, false)
+    render(<PluginsPage />)
+    await screen.findByRole('heading', { name: 'word-filter' })
+    await waitFor(() => expect(request).toHaveBeenCalledWith('/admin/plugins/catalog', expect.anything()))
+
+    expect(screen.queryAllByText(/Not a plugin this build ships/)).toHaveLength(0)
+    expect(within(card(/word-filter/)).getByText('No description available.')).toBeInTheDocument()
   })
 
   it('says a gateway runs no middleware rather than showing an empty grid', async () => {
