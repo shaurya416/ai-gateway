@@ -263,3 +263,85 @@ func TestClearParam_ParallelToolCalls(t *testing.T) {
 		t.Fatalf("clearParam left parallel_tool_calls = %v; drop mode would forward it", *req.ParallelToolCalls)
 	}
 }
+
+// TestEnforce_ReconciledMaxCompletionTokensStaysOffClosedSchema verifies a
+// max_completion_tokens the gateway reconciled onto max_tokens is not forwarded
+// to a provider that declares the field Unsupported, in any mode. Mistral's
+// request schema is closed, so the copy refused a request whose ceiling
+// max_tokens already carried; max_tokens must still travel with that value.
+func TestEnforce_ReconciledMaxCompletionTokensStaysOffClosedSchema(t *testing.T) {
+	modes := []struct {
+		name string
+		mode core.UnsupportedParamMode
+	}{
+		{"warn", core.UnsupportedParamWarn},
+		{"drop", core.UnsupportedParamDrop},
+		{"reject", core.UnsupportedParamReject},
+	}
+	for _, m := range modes {
+		t.Run(m.name, func(t *testing.T) {
+			var body map[string]json.RawMessage
+			srv := capturingServer(t, &body)
+			defer srv.Close()
+
+			req := core.Request{
+				Model:               "mistral-large-latest",
+				Messages:            []core.Message{{Role: core.RoleUser, Content: "hi"}},
+				MaxCompletionTokens: core.Ptr(256),
+			}
+			req.NormalizeCompletionTokenLimits()
+
+			_, err := PostChat(context.Background(), ChatParams{
+				HTTPClient:         srv.Client(),
+				URL:                srv.URL,
+				Provider:           "mistral",
+				Label:              "mistral",
+				Headers:            map[string]string{"Content-Type": "application/json"},
+				OnUnsupportedParam: m.mode,
+			}, req)
+			if err != nil {
+				t.Fatalf("PostChat: %v", err)
+			}
+			if raw, ok := body["max_completion_tokens"]; ok {
+				t.Errorf("max_completion_tokens = %s forwarded, want it omitted", raw)
+			}
+			if got := string(body["max_tokens"]); got != "256" {
+				t.Errorf("max_tokens = %q, want 256", got)
+			}
+		})
+	}
+}
+
+// TestEnforce_ReconciledMaxCompletionTokensForwardedWhereExpressible verifies
+// the omission is scoped to providers that cannot express the field: one with
+// no matrix entry (together) and one whose entry does not mark it Unsupported
+// (deepseek) still receive both.
+func TestEnforce_ReconciledMaxCompletionTokensForwardedWhereExpressible(t *testing.T) {
+	for _, provider := range []string{"together", "deepseek"} {
+		t.Run(provider, func(t *testing.T) {
+			var body map[string]json.RawMessage
+			srv := capturingServer(t, &body)
+			defer srv.Close()
+
+			req := core.Request{
+				Model:               "m",
+				Messages:            []core.Message{{Role: core.RoleUser, Content: "hi"}},
+				MaxCompletionTokens: core.Ptr(256),
+			}
+			req.NormalizeCompletionTokenLimits()
+
+			if _, err := PostChat(context.Background(), ChatParams{
+				HTTPClient: srv.Client(),
+				URL:        srv.URL,
+				Provider:   provider,
+				Label:      provider,
+				Headers:    map[string]string{"Content-Type": "application/json"},
+			}, req); err != nil {
+				t.Fatalf("PostChat: %v", err)
+			}
+			if got := string(body["max_completion_tokens"]); got != "256" {
+				t.Errorf("max_completion_tokens = %q, want 256", got)
+			}
+		})
+	}
+}

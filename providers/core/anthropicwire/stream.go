@@ -30,7 +30,7 @@ type StreamDecoder struct {
 	cacheWriteTokens int
 
 	toolCallIndexes   map[int]int  // Anthropic content-block index -> OpenAI tool-call index
-	toolArgsSeen      map[int]bool // OpenAI tool-call index -> received any input_json_delta
+	toolArgsSeen      map[int]bool // OpenAI tool-call index -> received a non-empty input_json_delta
 	nextToolCallIndex int
 }
 
@@ -163,7 +163,13 @@ func (d *StreamDecoder) contentBlockDelta(data []byte) []core.StreamChunk {
 		if !ok {
 			toolCallIndex = evt.Index
 		}
-		d.toolArgsSeen[toolCallIndex] = true
+		// Anthropic opens every tool_use block with an empty partial_json, so
+		// only a fragment that carries text counts as arguments. Counting the
+		// empty one left a zero-argument call with "" for arguments instead of
+		// the "{}" message_delta supplies.
+		if evt.Delta.PartialJSON != "" {
+			d.toolArgsSeen[toolCallIndex] = true
+		}
 		return []core.StreamChunk{d.toolChunk(core.ToolCall{
 			Index:    core.Ptr(toolCallIndex),
 			Type:     "function",

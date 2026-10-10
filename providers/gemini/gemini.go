@@ -216,7 +216,26 @@ type geminiResponse struct {
 		} `json:"content"`
 		FinishReason string `json:"finishReason"`
 	} `json:"candidates"`
-	UsageMetadata geminiUsageMetadata `json:"usageMetadata"`
+	PromptFeedback geminiPromptFeedback `json:"promptFeedback"`
+	UsageMetadata  geminiUsageMetadata  `json:"usageMetadata"`
+}
+
+// geminiPromptFeedback is Gemini's verdict on the prompt itself. blockReason is
+// set only when the prompt was refused before any candidate was generated, and
+// the response then carries no candidates at all; on a stream it arrives on the
+// first chunk.
+type geminiPromptFeedback struct {
+	BlockReason string `json:"blockReason"`
+}
+
+// promptBlocked reports whether a response with candidateCount candidates is
+// Gemini refusing the prompt. Without a candidate there is nothing to report a
+// finish reason on, so the refusal is answered with one choice finishing
+// content_filter — the reason a candidate Gemini blocks for SAFETY already
+// gets. Mapping it to no choices at all delivered a successful answer with
+// nothing in it and no reason why.
+func (f geminiPromptFeedback) promptBlocked(candidateCount int) bool {
+	return candidateCount == 0 && f.BlockReason != ""
 }
 
 type geminiStreamResponse struct {
@@ -228,7 +247,8 @@ type geminiStreamResponse struct {
 		} `json:"content"`
 		FinishReason string `json:"finishReason,omitempty"`
 	} `json:"candidates"`
-	UsageMetadata geminiUsageMetadata `json:"usageMetadata"`
+	PromptFeedback geminiPromptFeedback `json:"promptFeedback"`
+	UsageMetadata  geminiUsageMetadata  `json:"usageMetadata"`
 	// Error is Gemini's error envelope — the body a non-success status carries
 	// (testdata/error.401.json) — sent as a frame in place of a chunk when the
 	// generation fails after the 200 was written. Decoding only the chunk fields
@@ -710,6 +730,13 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 			FinishReason: geminiFinishReason(candidate.FinishReason, len(toolCalls) > 0),
 		})
 	}
+	if geminiResp.PromptFeedback.promptBlocked(len(geminiResp.Candidates)) {
+		choices = []core.Choice{{
+			Index:        0,
+			Message:      core.Message{Role: "assistant"},
+			FinishReason: core.FinishReasonContentFilter,
+		}}
+	}
 
 	responseID := geminiResp.ResponseID
 	if responseID == "" {
@@ -794,6 +821,13 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 					// every call the candidate has streamed so far.
 					FinishReason: geminiFinishReason(candidate.FinishReason, counter > 0),
 				})
+			}
+			if chunk.PromptFeedback.promptBlocked(len(chunk.Candidates)) {
+				sc.Choices = []core.StreamChoice{{
+					Index:        0,
+					Delta:        core.MessageDelta{Role: "assistant"},
+					FinishReason: core.FinishReasonContentFilter,
+				}}
 			}
 			// Gemini reports usage on the final streamed chunk.
 			if chunk.UsageMetadata.TotalTokenCount > 0 {

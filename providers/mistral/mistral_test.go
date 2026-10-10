@@ -421,3 +421,56 @@ func assertMistralEmbeddingInput(t *testing.T, got any, want any) {
 		t.Fatalf("unsupported test input type %T", want)
 	}
 }
+
+// TestMistralProvider_MaxCompletionTokensTravelsAsMaxTokens verifies a caller's
+// max_completion_tokens reaches Mistral as max_tokens alone. Mistral's request
+// schema is closed and declares only max_tokens, so forwarding the reconciled
+// copy as well refused the request.
+func TestMistralProvider_MaxCompletionTokensTravelsAsMaxTokens(t *testing.T) {
+	var bodies []map[string]json.RawMessage
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]json.RawMessage
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("failed to decode request body: %v", err)
+		}
+		bodies = append(bodies, body)
+		if string(body["stream"]) == "true" {
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte("data: [DONE]\n\n"))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-1","model":"mistral-large-latest","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+	}))
+	defer srv.Close()
+
+	req := core.Request{
+		Model:               "mistral-large-latest",
+		Messages:            []core.Message{{Role: "user", Content: "Hi"}},
+		MaxCompletionTokens: core.Ptr(128),
+	}
+	req.NormalizeCompletionTokenLimits()
+
+	p, _ := New("test-key", srv.URL)
+	if _, err := p.Complete(context.Background(), req); err != nil {
+		t.Fatalf("Complete() error: %v", err)
+	}
+	ch, err := p.CompleteStream(context.Background(), req)
+	if err != nil {
+		t.Fatalf("CompleteStream() error: %v", err)
+	}
+	for range ch { //nolint:revive // drain so the upstream request completes before the bodies are read
+	}
+
+	if len(bodies) != 2 {
+		t.Fatalf("upstream requests = %d, want 2", len(bodies))
+	}
+	for i, body := range bodies {
+		if raw, ok := body["max_completion_tokens"]; ok {
+			t.Errorf("request %d: max_completion_tokens = %s forwarded, want it omitted", i, raw)
+		}
+		if got := string(body["max_tokens"]); got != "128" {
+			t.Errorf("request %d: max_tokens = %q, want 128", i, got)
+		}
+	}
+}

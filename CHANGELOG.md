@@ -148,6 +148,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   received fewer vectors than it sent texts and the target was recorded as
   healthy; it now counts against the breaker and fails over like any other
   target failure.
+- A prompt Gemini refuses now answers with a choice finishing
+  `content_filter`, streamed or not. Gemini reports the refusal as a `200`
+  carrying `promptFeedback.blockReason` and no candidates, and the response
+  was built from the candidates alone: the caller received a successful answer
+  with no choices — nothing to read and no reason why — and a stream ended
+  cleanly without ever giving a finish reason. The refusal now finishes
+  `content_filter`, the reason a candidate Gemini blocks for safety already
+  gets, with the prompt tokens Gemini reports. It stays a `200`: the caller's
+  prompt is not an upstream fault, so it neither trips the breaker nor fails
+  over.
+- A streamed Anthropic or Bedrock-Anthropic tool call that takes no arguments
+  now arrives with `{}` for its arguments instead of an empty string. Anthropic
+  opens every `tool_use` block with an `input_json_delta` whose `partial_json`
+  is empty, and that empty fragment was counted as the call's arguments, so the
+  `{}` the decoder supplies for an argument-free call was never sent and a
+  client parsing the accumulated arguments as JSON failed. Only a fragment that
+  carries text now counts.
+- A request that sets `max_completion_tokens` is no longer refused by Mistral.
+  The gateway reconciles the field onto `max_tokens` and both travel with the
+  same value, but Mistral's request schema is closed and declares only
+  `max_tokens`, so the copy failed the request under every
+  `on_unsupported_param` mode — the reconciled value was never reported as
+  unsupported, so not even `drop` removed it. A provider whose capability
+  matrix marks `max_completion_tokens` unsupported now receives the ceiling as
+  `max_tokens` alone.
 
 ## [1.5.9] — 2026-09-18
 

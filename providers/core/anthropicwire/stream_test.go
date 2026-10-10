@@ -205,3 +205,48 @@ func TestStreamDecoder_PromptTokensUnchangedWithoutCache(t *testing.T) {
 		t.Fatalf("usage = %+v, want prompt 2000 / total 2050 / cache 0", u)
 	}
 }
+
+// TestStreamDecoder_EmptyFirstArgumentFragment replays the tool_use framing
+// Anthropic streams (anthropic-sdk-python tests/lib/streaming/fixtures): every
+// tool_use block opens with an input_json_delta whose partial_json is "". A
+// zero-argument call must still accumulate to "{}", and a call whose arguments
+// follow the empty fragment must not gain a second, synthesised object.
+func TestStreamDecoder_EmptyFirstArgumentFragment(t *testing.T) {
+	d := NewStreamDecoder("anthropic", "")
+	chunks, err := drain(d,
+		`{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"get_time","input":{}}}`,
+		`{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":""}}`,
+		`{"type":"content_block_stop","index":0}`,
+		`{"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_2","name":"get_weather","input":{}}}`,
+		`{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":""}}`,
+		`{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"locati"}}`,
+		`{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"on\": \"Paris\"}"}}`,
+		`{"type":"content_block_stop","index":1}`,
+		`{"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":null},"usage":{"output_tokens":65}}`,
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Accumulate arguments per tool-call index the way an OpenAI client does.
+	args := map[int]string{}
+	for _, c := range chunks {
+		for _, choice := range c.Choices {
+			for _, tc := range choice.Delta.ToolCalls {
+				if tc.Index == nil {
+					t.Fatalf("tool-call delta without an index: %#v", tc)
+				}
+				args[*tc.Index] += tc.Function.Arguments
+			}
+		}
+	}
+	if args[0] != "{}" {
+		t.Errorf("zero-argument call arguments = %q, want {}", args[0])
+	}
+	if args[1] != `{"location": "Paris"}` {
+		t.Errorf("call arguments = %q, want {\"location\": \"Paris\"}", args[1])
+	}
+	if got := chunks[len(chunks)-1].Choices[0].FinishReason; got != core.FinishReasonToolCalls {
+		t.Errorf("finish = %q, want tool_calls", got)
+	}
+}

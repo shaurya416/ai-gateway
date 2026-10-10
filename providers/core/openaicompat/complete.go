@@ -131,6 +131,18 @@ func enforceUnsupportedParams(ctx context.Context, p ChatParams, req *core.Reque
 	if !capabilities.HasProfile(p.Provider) {
 		return nil
 	}
+	// A max_completion_tokens reconciled onto max_tokens
+	// (Request.NormalizeCompletionTokenLimits) is a ceiling max_tokens already
+	// carries, so ParamPopulated rightly reports nothing unsupported. The copy
+	// must still stay off the wire of a provider that cannot express the field:
+	// Mistral's request schema is closed (additionalProperties: false), so a
+	// caller who sent only max_completion_tokens had the request refused in
+	// every mode. Dropping it loses nothing — max_tokens travels with the same
+	// value.
+	if capabilities.SupportOf(p.Provider, "max_completion_tokens") == capabilities.Unsupported &&
+		!core.ParamPopulated(*req, "max_completion_tokens") {
+		req.MaxCompletionTokens = nil
+	}
 	mode := resolveUnsupportedMode(ctx, p)
 	var offending []string
 	for _, param := range capabilities.AllParams {

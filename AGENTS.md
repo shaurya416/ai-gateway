@@ -1037,7 +1037,9 @@ favour, and o-series models accept only the newer field).
 Resolving matters because which field travels is a *provider* decision — OpenAI,
 Azure OpenAI, Azure AI Foundry, Groq and Cerebras send **only**
 `max_completion_tokens` (`PreferCompletionTokens`), while others forward
-`max_tokens`. While the two
+`max_tokens` — and a provider whose capability-matrix entry marks
+`max_completion_tokens` unsupported (Mistral, whose request schema is closed)
+receives `max_tokens` alone. While the two
 could disagree, the ceiling a request actually imposed depended on which provider
 it landed on, and a guardrail reading one field could be handed the other: a
 request carrying `max_tokens: 5` with `max_completion_tokens: 500000` passed a
