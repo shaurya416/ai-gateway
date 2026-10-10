@@ -647,3 +647,41 @@ func TestCompletionsHandler_ForwardsChatExpressibleParams(t *testing.T) {
 		t.Errorf("logit_bias = %v, want %v", got.LogitBias, want)
 	}
 }
+
+// TestCompletionsHandler_EnforcesChatParameterRanges pins that /v1/completions
+// refuses the out-of-range sampling parameters /v1/chat/completions refuses,
+// with the same answer. The legacy shim never ran the chat surface's range
+// check, so temperature 2.5 was a 400 on chat and was forwarded from here,
+// where an upstream that does not check it answered 200.
+func TestCompletionsHandler_EnforcesChatParameterRanges(t *testing.T) {
+	for _, param := range []string{
+		`"temperature":2.5`,
+		`"temperature":-0.1`,
+		`"top_p":1.5`,
+		`"presence_penalty":-2.5`,
+		`"frequency_penalty":2.5`,
+	} {
+		t.Run(param, func(t *testing.T) {
+			p := &nonProxyProvider{name: "shim", models: []string{legacyTestModel}}
+			gw := shimGateway(t, p)
+
+			w := postCompletions(t, gw, `{"model":"`+legacyTestModel+`","prompt":"hi",`+param+`}`)
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400: %s", w.Code, w.Body.String())
+			}
+			if p.calls != 0 {
+				t.Fatalf("provider called %d times; an out-of-range request must not reach it", p.calls)
+			}
+
+			chat := httptest.NewRecorder()
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/chat/completions",
+				strings.NewReader(`{"model":"`+legacyTestModel+`","messages":[{"role":"user","content":"hi"}],`+param+`}`))
+			req.Header.Set("Content-Type", "application/json")
+			ChatCompletions(gw)(chat, req)
+			if chat.Code != w.Code || chat.Body.String() != w.Body.String() {
+				t.Errorf("chat answered %d %s; completions answered %d %s — the surfaces must agree",
+					chat.Code, chat.Body.String(), w.Code, w.Body.String())
+			}
+		})
+	}
+}

@@ -179,6 +179,18 @@ func Completions(gw *aigateway.Gateway) http.HandlerFunc {
 			// constraint had not been applied.
 			LogitBias: legacyReq.LogitBias,
 		}
+		// The ranges /v1/chat/completions enforces, enforced here as well. Both
+		// surfaces reach the same targets through the same entry point, yet a
+		// temperature, top_p or penalty chat refuses with a 400 was forwarded
+		// from here — and answered 200 by any upstream that does not check it.
+		// max_tokens is not part of the check: this surface forwards
+		// max_tokens: 0, which chat refuses, and that difference is kept.
+		rangeCheck := chatReq
+		rangeCheck.MaxTokens = nil
+		if err := rangeCheck.Validate(); err != nil {
+			apierror.WriteOpenAI(w, http.StatusBadRequest, err.Error(), "invalid_request_error", "invalid_request")
+			return
+		}
 		metadata, err := routingMetadata(r.Header)
 		if err != nil {
 			writeRoutingMetadataError(w, err)

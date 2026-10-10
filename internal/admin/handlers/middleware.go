@@ -141,12 +141,11 @@ func AuthMiddlewareWithSessions(store repository.Store, sessions repository.Sess
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			auth := r.Header.Get("Authorization")
-			if auth == "" || !strings.HasPrefix(auth, "Bearer ") {
+			presented, ok := bearerCredential(r.Header.Get("Authorization"))
+			if !ok {
 				writeError(w, http.StatusUnauthorized, "missing or invalid authorization header", "authentication_error", "missing_api_key")
 				return
 			}
-			presented := strings.TrimPrefix(auth, "Bearer ")
 
 			if sessions != nil && strings.HasPrefix(presented, model.SessionTokenPrefix) {
 				sess, err := sessions.AuthenticateSession(r.Context(), presented)
@@ -241,6 +240,24 @@ func AuthMiddlewareWithSessions(store repository.Store, sessions repository.Sess
 			next.ServeHTTP(w, r.WithContext(model.StoreKeyInContext(r.Context(), apiKey, "")))
 		})
 	}
+}
+
+// bearerCredential returns the credential an Authorization header presents
+// under the Bearer scheme, and false when the header is absent or names another
+// scheme.
+//
+// The scheme is matched without regard to case, and any run of spaces may
+// separate it from the credential: RFC 9110 §11.1 defines an auth-scheme as a
+// case-insensitive token followed by 1*SP. Matching the literal "Bearer " byte
+// for byte answered a valid credential from a client that spells the scheme
+// "bearer" with 401 "missing or invalid authorization header" — a refusal that
+// reads as a bad credential, and that no client retries.
+func bearerCredential(header string) (string, bool) {
+	scheme, credential, ok := strings.Cut(header, " ")
+	if !ok || !strings.EqualFold(scheme, "Bearer") {
+		return "", false
+	}
+	return strings.TrimLeft(credential, " "), true
 }
 
 // writeCredentialStoreError answers a request whose credential could not be

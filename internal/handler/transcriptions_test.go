@@ -19,8 +19,12 @@ import (
 const srtTranscript = "1\n00:00:00,000 --> 00:00:01,500\nHello there.\n\n"
 
 // subtitleProvider answers every transcription with srtTranscript and records
-// the response_format it was asked for.
-type subtitleProvider struct{ gotFormat string }
+// the response_format and temperature it was asked for.
+type subtitleProvider struct {
+	gotFormat      string
+	gotTemperature *float64
+	calls          int
+}
 
 func (*subtitleProvider) Name() string                { return "stt" }
 func (*subtitleProvider) SupportsModel(m string) bool { return m == "whisper-1" }
@@ -28,11 +32,24 @@ func (*subtitleProvider) Complete(context.Context, providers.Request) (*provider
 	return &providers.Response{}, nil
 }
 func (p *subtitleProvider) Transcribe(_ context.Context, req providers.TranscriptionRequest) (*providers.TranscriptionResponse, error) {
+	p.calls++
 	p.gotFormat = req.ResponseFormat
+	p.gotTemperature = req.Temperature
 	return &providers.TranscriptionResponse{Text: srtTranscript}, nil
 }
 
 func audioUpload(t *testing.T, path, format string) *http.Request {
+	t.Helper()
+	fields := map[string]string{}
+	if format != "" {
+		fields["response_format"] = format
+	}
+	return audioUploadWith(t, path, fields)
+}
+
+// audioUploadWith builds a whisper-1 upload carrying fields as extra form
+// values.
+func audioUploadWith(t *testing.T, path string, fields map[string]string) *http.Request {
 	t.Helper()
 	var body bytes.Buffer
 	form := multipart.NewWriter(&body)
@@ -42,8 +59,8 @@ func audioUpload(t *testing.T, path, format string) *http.Request {
 	}
 	_, _ = part.Write([]byte("RIFF....WAVE"))
 	_ = form.WriteField("model", "whisper-1")
-	if format != "" {
-		_ = form.WriteField("response_format", format)
+	for name, value := range fields {
+		_ = form.WriteField(name, value)
 	}
 	_ = form.Close()
 	r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, path, &body)
@@ -132,4 +149,56 @@ func TestTranscriptions_JSONFormatsKeepTheEnvelope(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestTranscriptions_TemperatureMustBeANumber pins that a temperature the
+// handler cannot read is refused rather than dropped. The parse error was
+// discarded, so "temperature=warm" reached the provider as no temperature at
+// all and was answered 200 at its default sampling — a request that had asked
+// for something specific, served as though it had not.
+func TestTranscriptions_TemperatureMustBeANumber(t *testing.T) {
+	newGateway := func(t *testing.T) (*subtitleProvider, http.HandlerFunc) {
+		t.Helper()
+		gw, err := newTestGateway(t, config.Config{
+			Strategy: config.StrategyConfig{Mode: config.ModeSingle},
+			Targets:  []config.Target{{VirtualKey: "stt", Models: []string{"whisper-1"}}},
+		})
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		stub := &subtitleProvider{}
+		gw.RegisterProvider(stub)
+		return stub, Transcriptions(gw, false)
+	}
+
+	for _, value := range []string{"warm", "0.2x", "NaN", "Inf", "1e400"} {
+		t.Run("rejects "+value, func(t *testing.T) {
+			stub, handle := newGateway(t)
+			w := httptest.NewRecorder()
+			handle(w, audioUploadWith(t, "/v1/audio/transcriptions", map[string]string{"temperature": value}))
+
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400: %s", w.Code, w.Body.String())
+			}
+			if !strings.Contains(w.Body.String(), "temperature") {
+				t.Errorf("body = %s, want the error to name temperature", w.Body.String())
+			}
+			if stub.calls != 0 {
+				t.Errorf("provider called %d times; a refused request must not reach it", stub.calls)
+			}
+		})
+	}
+
+	t.Run("forwards a number", func(t *testing.T) {
+		stub, handle := newGateway(t)
+		w := httptest.NewRecorder()
+		handle(w, audioUploadWith(t, "/v1/audio/transcriptions", map[string]string{"temperature": "0.2"}))
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+		}
+		if stub.gotTemperature == nil || *stub.gotTemperature != 0.2 {
+			t.Errorf("provider temperature = %v, want 0.2", stub.gotTemperature)
+		}
+	})
 }

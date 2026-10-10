@@ -9,6 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A valid credential sent as `Authorization: bearer <key>` — or with the
+  scheme in any other case, or with more than one space before the key — is
+  now accepted on `/v1/*`, `/admin/*`, `/metrics` and the `POST /admin/session`
+  exchange. The auth middleware and the session exchange matched the literal
+  `"Bearer "` byte for byte, so such a request was answered `401` — `missing
+  or invalid authorization header` for the scheme's case, `invalid or revoked
+  API key` for the extra spaces, which were kept as part of the key — and
+  reads as a bad credential that is not retried. The scheme is now matched
+  case-insensitively and followed by one or more spaces, as RFC 9110 defines
+  it; any other scheme is still refused.
+- `/v1/audio/transcriptions` and `/v1/audio/translations` now answer `400` for
+  a `temperature` form value that is not a number. The parse error was
+  discarded, so `temperature=warm` reached the provider as no temperature at
+  all and was answered `200` at its default sampling, with nothing in the
+  response to say the value was never applied.
+- `/v1/completions` now refuses an out-of-range `temperature`, `top_p`,
+  `presence_penalty` or `frequency_penalty` with the same `400` that
+  `/v1/chat/completions` gives. The legacy surface never ran the chat
+  surface's range check, so a value chat refuses was forwarded from here — and
+  answered `200` by any upstream that does not check it — after the request
+  had already spent its rate-limit and budget allowance. `max_tokens` is
+  unchanged: this surface still forwards `max_tokens: 0`.
 - An upstream that refuses a `/v1/responses` or `/v1/*` pass-through request
   with a `4xx` — a `401` from a revoked provider credential, a `429` from a
   throttled upstream — is now recorded as the failed request it is. The

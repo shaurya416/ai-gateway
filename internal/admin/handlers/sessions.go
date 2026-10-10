@@ -23,13 +23,13 @@ func (h *Handlers) createSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	auth := r.Header.Get("Authorization")
-	if auth == "" || !strings.HasPrefix(auth, "Bearer ") {
+	presented, ok := bearerCredential(r.Header.Get("Authorization"))
+	if !ok {
 		writeError(w, http.StatusUnauthorized, "missing or invalid authorization header", "authentication_error", "missing_api_key")
 		return
 	}
 
-	identity, err := h.Credentials(r.Context(), strings.TrimPrefix(auth, "Bearer "))
+	identity, err := h.Credentials(r.Context(), presented)
 	if err != nil && !errors.Is(err, model.ErrInvalidCredential) {
 		// The key store could not answer, so nothing was learned about the
 		// credential: it is neither a denied sign-in nor a session to mint.

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"math"
 	"net/http"
 	"strconv"
 
@@ -58,6 +59,20 @@ func Transcriptions(gw *aigateway.Gateway, translate bool) http.HandlerFunc {
 			return
 		}
 
+		// A temperature that is not a number is the caller's mistake, and it
+		// is reported as one. Dropping it instead answered 200 at the
+		// provider's default sampling, with nothing in the response to say the
+		// value the caller set was never applied.
+		var temperature *float64
+		if t := r.FormValue("temperature"); t != "" {
+			v, perr := strconv.ParseFloat(t, 64)
+			if perr != nil || math.IsNaN(v) || math.IsInf(v, 0) {
+				apierror.WriteOpenAI(w, http.StatusBadRequest, "temperature must be a number", "invalid_request_error", "invalid_request")
+				return
+			}
+			temperature = &v
+		}
+
 		audio, err := io.ReadAll(file)
 		if err != nil {
 			writeAudioBodyError(w, err, "failed to read audio file")
@@ -71,12 +86,8 @@ func Transcriptions(gw *aigateway.Gateway, translate bool) http.HandlerFunc {
 			Language:       r.FormValue("language"),
 			Prompt:         r.FormValue("prompt"),
 			ResponseFormat: r.FormValue("response_format"),
+			Temperature:    temperature,
 			Translate:      translate,
-		}
-		if t := r.FormValue("temperature"); t != "" {
-			if v, perr := strconv.ParseFloat(t, 64); perr == nil {
-				req.Temperature = &v
-			}
 		}
 
 		attribution := &aigateway.RoutingAttribution{}
