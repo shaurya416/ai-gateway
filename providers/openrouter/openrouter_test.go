@@ -3,6 +3,7 @@ package openrouter
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -334,5 +335,79 @@ func TestNewOpenRouter_BaseURLIsTheAPIRoot(t *testing.T) {
 		if got := p.BaseURL(); got != want {
 			t.Errorf("New(_, %q).BaseURL() = %q, want %q", base, got, want)
 		}
+	}
+}
+
+// TestOpenRouterProvider_Complete_ErrorEnvelopeOn200 pins the non-streaming
+// failure OpenRouter reports with a 200: its documented response is either a
+// completion or an {"error":{…}} envelope. Decoded only as a completion, the
+// envelope became a successful answer with no choices.
+func TestOpenRouterProvider_Complete_ErrorEnvelopeOn200(t *testing.T) {
+	tests := []struct {
+		name       string
+		body       string
+		wantStatus int
+		wantMsg    string
+	}{
+		{
+			name:       "provider failure",
+			body:       `{"error":{"code":502,"message":"Provider returned error","metadata":{"provider_name":"Example"}},"user_id":"user_1"}`,
+			wantStatus: http.StatusBadGateway,
+			wantMsg:    "Provider returned error",
+		},
+		{
+			name:       "rate limited upstream",
+			body:       `{"error":{"code":429,"message":"Rate limit exceeded"}}`,
+			wantStatus: http.StatusTooManyRequests,
+			wantMsg:    "Rate limit exceeded",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(tt.body))
+			}))
+			defer srv.Close()
+
+			p, _ := New("test-key", srv.URL)
+			resp, err := p.Complete(context.Background(), core.Request{
+				Model:    "openrouter/auto",
+				Messages: []core.Message{{Role: "user", Content: "Hi"}},
+			})
+			if err == nil {
+				t.Fatalf("Complete() = %+v with no error; an error envelope was served as a successful answer", resp)
+			}
+			var statusErr *core.HTTPStatusError
+			if !errors.As(err, &statusErr) {
+				t.Fatalf("Complete() error = %v, want *core.HTTPStatusError", err)
+			}
+			if statusErr.StatusCode != tt.wantStatus || statusErr.Message != tt.wantMsg {
+				t.Errorf("error = (%d, %q), want (%d, %q)", statusErr.StatusCode, statusErr.Message, tt.wantStatus, tt.wantMsg)
+			}
+		})
+	}
+}
+
+// TestOpenRouterProvider_Complete_NullErrorIsHealthy keeps a completion that
+// carries "error": null — the empty form some compatible servers always write —
+// a success.
+func TestOpenRouterProvider_Complete_NullErrorIsHealthy(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"gen-1","model":"openrouter/auto","choices":[{"index":0,"message":{"role":"assistant","content":"Hello"},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":1,"total_tokens":4},"error":null}`))
+	}))
+	defer srv.Close()
+
+	p, _ := New("test-key", srv.URL)
+	resp, err := p.Complete(context.Background(), core.Request{
+		Model:    "openrouter/auto",
+		Messages: []core.Message{{Role: "user", Content: "Hi"}},
+	})
+	if err != nil {
+		t.Fatalf("Complete() error = %v, want success", err)
+	}
+	if len(resp.Choices) != 1 || resp.Choices[0].Message.Content != "Hello" {
+		t.Errorf("Choices = %+v, want one choice with content Hello", resp.Choices)
 	}
 }

@@ -102,6 +102,9 @@ type response struct {
 	Model   string        `json:"model"`
 	Choices []core.Choice `json:"choices"`
 	Usage   usage         `json:"usage"`
+	// Error is an error envelope sent in place of a completion on a 200; see
+	// core.SuccessBodyError.
+	Error json.RawMessage `json:"error"`
 }
 
 // usage extends the OpenAI usage shape with DeepSeek's cache-accounting and
@@ -173,6 +176,9 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 	var pResp response
 	if err := json.Unmarshal(respBody, &pResp); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+	}
+	if err := core.SuccessBodyError("deepseek", httpResp.Header, pResp.Error); err != nil {
+		return nil, err
 	}
 	// Normalize finish reasons to the canonical OpenAI vocabulary, matching the
 	// shared streaming path (the hand-rolled decode here is kept only to capture

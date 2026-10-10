@@ -590,3 +590,34 @@ func TestOpenAIProvider_DiscoverModels_WireEndpoint(t *testing.T) {
 
 func floatPtr(f float64) *float64 { return &f }
 func intPtr(i int) *int           { return &i }
+
+// TestOpenAIProvider_Complete_ErrorEnvelopeOn200 covers an OpenAI-compatible
+// server behind OPENAI_BASE_URL — an aggregator such as OpenRouter — that fails
+// the generation after answering 200 and reports it in the body. Decoded only
+// as a completion, the envelope was served as a successful answer with no
+// choices.
+func TestOpenAIProvider_Complete_ErrorEnvelopeOn200(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"error":{"code":502,"message":"Provider returned error"}}`))
+	}))
+	defer srv.Close()
+
+	provider, err := New("sk-test-key", srv.URL)
+	if err != nil {
+		t.Fatalf("New() returned error: %v", err)
+	}
+	resp, err := provider.Complete(context.Background(), core.Request{
+		Model:    "gpt-4o-mini",
+		Messages: []core.Message{{Role: "user", Content: "hi"}},
+	})
+	if err == nil {
+		t.Fatalf("Complete() = %+v with no error; an error envelope was served as a successful answer", resp)
+	}
+	if got := core.ParseStatusCode(err); got != http.StatusBadGateway {
+		t.Errorf("status = %d, want 502; err = %v", got, err)
+	}
+	if !strings.Contains(err.Error(), "Provider returned error") {
+		t.Errorf("error = %v, want the upstream's message", err)
+	}
+}

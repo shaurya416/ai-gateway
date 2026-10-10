@@ -63,3 +63,62 @@ func TestUsage_FlatCacheReadTokensBeatsPromptCacheHitTokens(t *testing.T) {
 		t.Errorf("CacheReadTokens = %d, want 9 (flat precedence)", u.CacheReadTokens)
 	}
 }
+
+// TestUsage_FoldsDisjointReasoningIntoCompletion covers a provider that counts
+// reasoning outside completion_tokens while summing both into total_tokens —
+// the xAI accounting. Read as reported, the reasoning was priced at nothing.
+func TestUsage_FoldsDisjointReasoningIntoCompletion(t *testing.T) {
+	tests := []struct {
+		name           string
+		body           string
+		wantCompletion int
+		wantReasoning  int
+		wantTotal      int
+	}{
+		{
+			name:           "reasoning reported outside completion",
+			body:           `{"prompt_tokens":32,"completion_tokens":9,"total_tokens":135,"completion_tokens_details":{"reasoning_tokens":94}}`,
+			wantCompletion: 103, wantReasoning: 94, wantTotal: 135,
+		},
+		{
+			name:           "OpenAI convention: reasoning already inside completion",
+			body:           `{"prompt_tokens":10,"completion_tokens":20,"total_tokens":30,"completion_tokens_details":{"reasoning_tokens":7}}`,
+			wantCompletion: 20, wantReasoning: 7, wantTotal: 30,
+		},
+		{
+			name:           "total that matches neither reading is left alone",
+			body:           `{"prompt_tokens":10,"completion_tokens":20,"total_tokens":45,"completion_tokens_details":{"reasoning_tokens":7}}`,
+			wantCompletion: 20, wantReasoning: 7, wantTotal: 45,
+		},
+		{
+			name:           "no reasoning",
+			body:           `{"prompt_tokens":10,"completion_tokens":20,"total_tokens":30}`,
+			wantCompletion: 20, wantReasoning: 0, wantTotal: 30,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var u Usage
+			if err := json.Unmarshal([]byte(tt.body), &u); err != nil {
+				t.Fatalf("Unmarshal: %v", err)
+			}
+			if u.CompletionTokens != tt.wantCompletion || u.ReasoningTokens != tt.wantReasoning || u.TotalTokens != tt.wantTotal {
+				t.Errorf("completion/reasoning/total = %d/%d/%d, want %d/%d/%d",
+					u.CompletionTokens, u.ReasoningTokens, u.TotalTokens,
+					tt.wantCompletion, tt.wantReasoning, tt.wantTotal)
+			}
+			// Decoding the gateway's own re-encoding must not fold a second time.
+			out, err := json.Marshal(u)
+			if err != nil {
+				t.Fatalf("Marshal: %v", err)
+			}
+			var again Usage
+			if err := json.Unmarshal(out, &again); err != nil {
+				t.Fatalf("Unmarshal round trip: %v", err)
+			}
+			if again != u {
+				t.Errorf("round trip = %+v, want %+v", again, u)
+			}
+		})
+	}
+}

@@ -325,6 +325,46 @@ func APIError(label string, status int, body []byte) error {
 	return StatusError(label, status, upstreamMessage(body)).withEnvelope(body)
 }
 
+// SuccessBodyError reports the failure a 2xx response carries in place of a
+// result, or nil when it carries none. raw is the body's top-level "error"
+// field.
+//
+// An aggregator answers 200 and then fails the generation, and a request that
+// fails that way has nowhere to report it but the body: OpenRouter documents
+// its non-streaming response as either a completion or {"error":{…}}. Such a
+// body decodes as a completion with no choices, so read only as one it was
+// served as a successful, empty answer and recorded as a call the target had
+// handled. Only a populated message counts, the rule openaicompat.StreamErrorFrom
+// applies to the same envelope on a stream: OpenAI-compatible servers that always
+// write the field send it null or empty on a healthy response.
+//
+// The status is the envelope's own code when that is an HTTP error status —
+// OpenRouter's codes are — and 502 otherwise, the status for an upstream that
+// answered with something other than a result.
+func SuccessBodyError(provider string, header http.Header, raw json.RawMessage) error {
+	msg := errorMessage(raw)
+	if strings.TrimSpace(msg) == "" {
+		return nil
+	}
+	e := StatusError(provider, successBodyStatus(raw), msg)
+	e.Code, e.Type = errorCodeAndType(raw)
+	return e.WithRetryAfter(header)
+}
+
+// successBodyStatus returns the HTTP error status an error object names in its
+// "code", or 502 when it names none.
+func successBodyStatus(raw json.RawMessage) int {
+	var fields struct {
+		Code json.Number `json:"code"`
+	}
+	if json.Unmarshal(raw, &fields) == nil {
+		if n, err := strconv.Atoi(fields.Code.String()); err == nil && n >= 400 && n <= 599 {
+			return n
+		}
+	}
+	return http.StatusBadGateway
+}
+
 // withEnvelope records the provider's own code and type from body, when the
 // envelope carries them. Both are short identifiers the provider documents,
 // never free text, so they are safe to keep whole.
@@ -342,12 +382,17 @@ func upstreamCodeAndType(body []byte) (code, typ string) {
 	if json.Unmarshal(body, &e) != nil || len(e.Error) == 0 {
 		return "", ""
 	}
+	return errorCodeAndType(e.Error)
+}
+
+// errorCodeAndType is upstreamCodeAndType applied to the "error" field itself.
+func errorCodeAndType(raw json.RawMessage) (code, typ string) {
 	var fields struct {
 		Code   json.RawMessage `json:"code"`
 		Type   string          `json:"type"`
 		Status string          `json:"status"`
 	}
-	if json.Unmarshal(e.Error, &fields) != nil {
+	if json.Unmarshal(raw, &fields) != nil {
 		return "", ""
 	}
 	if len(fields.Code) > 0 {

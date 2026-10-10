@@ -383,6 +383,12 @@ type Choice struct {
 //
 // CacheWriteTokens is NOT part of PromptTokens: it bills at its own write rate
 // on top of the prompt, and the OpenAI schema has no equivalent field.
+//
+// CompletionTokens is likewise INCLUSIVE of ReasoningTokens, the OpenAI
+// convention for reasoning models. Cost accounting prices reasoning output as
+// part of CompletionTokens at the output rate (plugin/budget treats
+// ReasoningTokens as a subset of it), so a provider that left the two disjoint
+// had its reasoning billed at nothing. See UnmarshalJSON.
 type Usage struct {
 	PromptTokens     int `json:"prompt_tokens"`
 	CompletionTokens int `json:"completion_tokens"`
@@ -413,6 +419,16 @@ type usageAlias Usage
 // CacheReadTokens/ReasoningTokens fields so providers that report usage in
 // these alternate forms (OpenRouter, xAI, DeepSeek's streaming path, …)
 // surface it consistently. A nonzero flat field takes precedence.
+//
+// It also restores the OpenAI invariant total = prompt + completion where a
+// provider reports reasoning outside completion_tokens. xAI does: its
+// reasoning models count reasoning_tokens apart from completion_tokens while
+// summing both into total_tokens, so a grok answer that reasoned for thousands
+// of tokens reported a completion of a few dozen and was costed — and charged
+// against a budget — as one. The fold applies only when the reported total
+// proves the two were disjoint (total = prompt + completion + reasoning), so a
+// provider already following the convention, or a usage this method has
+// folded before, is left as it is.
 func (u *Usage) UnmarshalJSON(data []byte) error {
 	var raw struct {
 		usageAlias
@@ -432,6 +448,9 @@ func (u *Usage) UnmarshalJSON(data []byte) error {
 	}
 	if u.ReasoningTokens == 0 && raw.CompletionTokensDetails != nil {
 		u.ReasoningTokens = raw.CompletionTokensDetails.ReasoningTokens
+	}
+	if u.ReasoningTokens > 0 && u.TotalTokens == u.PromptTokens+u.CompletionTokens+u.ReasoningTokens {
+		u.CompletionTokens += u.ReasoningTokens
 	}
 	return nil
 }

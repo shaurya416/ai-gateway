@@ -1,6 +1,7 @@
 package core
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -348,5 +349,60 @@ func TestIsContextLengthError(t *testing.T) {
 	}
 	if IsContextLengthError(errors.New("plain")) {
 		t.Fatal("a non-status error is never a context-length error")
+	}
+}
+
+// TestSuccessBodyError covers the error envelope a 2xx body carries in place of
+// a result: a populated message is a failure under the status its code names,
+// and the empty forms OpenAI-compatible servers write on healthy responses are
+// not.
+func TestSuccessBodyError(t *testing.T) {
+	tests := []struct {
+		name       string
+		raw        string
+		wantStatus int // 0 means no error
+		wantMsg    string
+		wantCode   string
+	}{
+		{name: "absent", raw: ``},
+		{name: "null", raw: `null`},
+		{name: "empty string", raw: `""`},
+		{name: "empty object", raw: `{}`},
+		{name: "empty message", raw: `{"message":"","code":null}`},
+		{name: "OpenRouter provider failure", raw: `{"code":502,"message":"Provider returned error","metadata":{"provider_name":"x"}}`, wantStatus: 502, wantMsg: "Provider returned error", wantCode: "502"},
+		{name: "OpenRouter rate limit", raw: `{"code":429,"message":"Rate limit exceeded"}`, wantStatus: 429, wantMsg: "Rate limit exceeded", wantCode: "429"},
+		{name: "numeric code as a string", raw: `{"code":"503","message":"overloaded"}`, wantStatus: 503, wantMsg: "overloaded", wantCode: "503"},
+		{name: "identifier code", raw: `{"code":"server_error","type":"api_error","message":"boom"}`, wantStatus: http.StatusBadGateway, wantMsg: "boom", wantCode: "server_error"},
+		{name: "code that is not an error status", raw: `{"code":200,"message":"odd"}`, wantStatus: http.StatusBadGateway, wantMsg: "odd", wantCode: "200"},
+		{name: "plain string", raw: `"upstream exploded"`, wantStatus: http.StatusBadGateway, wantMsg: "upstream exploded"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := http.Header{}
+			h.Set("Retry-After", "7")
+			err := SuccessBodyError("openrouter", h, json.RawMessage(tt.raw))
+			if tt.wantStatus == 0 {
+				if err != nil {
+					t.Fatalf("SuccessBodyError(%s) = %v, want nil for a healthy body", tt.raw, err)
+				}
+				return
+			}
+			var statusErr *HTTPStatusError
+			if !errors.As(err, &statusErr) {
+				t.Fatalf("SuccessBodyError(%s) = %v, want *HTTPStatusError", tt.raw, err)
+			}
+			if statusErr.StatusCode != tt.wantStatus {
+				t.Errorf("StatusCode = %d, want %d", statusErr.StatusCode, tt.wantStatus)
+			}
+			if statusErr.Message != tt.wantMsg {
+				t.Errorf("Message = %q, want %q", statusErr.Message, tt.wantMsg)
+			}
+			if statusErr.Code != tt.wantCode {
+				t.Errorf("Code = %q, want %q", statusErr.Code, tt.wantCode)
+			}
+			if statusErr.RetryAfter != 7*time.Second {
+				t.Errorf("RetryAfter = %v, want 7s from the response header", statusErr.RetryAfter)
+			}
+		})
 	}
 }

@@ -369,3 +369,127 @@ func TestNewXAI_BaseURLIsTheAPIRoot(t *testing.T) {
 		}
 	}
 }
+
+// xaiReasoningUsage is usage as xAI's reasoning models report it:
+// reasoning_tokens counted apart from completion_tokens and summed with it into
+// total_tokens (32 + 9 + 94 = 135).
+const xaiReasoningUsage = `{"prompt_tokens":32,"completion_tokens":9,"total_tokens":135,"prompt_tokens_details":{"text_tokens":32,"cached_tokens":6},"completion_tokens_details":{"reasoning_tokens":94}}`
+
+// TestXAIProvider_ReasoningCountsAsCompletion pins the reasoning a grok model
+// spent to the completion it is billed in, on both surfaces. Reported as
+// received, completion_tokens left the reasoning out and the request was costed
+// and charged to a budget as a nine-token answer.
+func TestXAIProvider_ReasoningCountsAsCompletion(t *testing.T) {
+	check := func(t *testing.T, u *core.Usage) {
+		t.Helper()
+		if u == nil {
+			t.Fatal("no usage reported")
+		}
+		if u.CompletionTokens != 103 || u.ReasoningTokens != 94 || u.TotalTokens != 135 {
+			t.Errorf("completion/reasoning/total = %d/%d/%d, want 103/94/135 (reasoning folded into completion)",
+				u.CompletionTokens, u.ReasoningTokens, u.TotalTokens)
+		}
+		if u.PromptTokens+u.CompletionTokens != u.TotalTokens {
+			t.Errorf("prompt %d + completion %d != total %d", u.PromptTokens, u.CompletionTokens, u.TotalTokens)
+		}
+	}
+	req := core.Request{Model: "grok-3-mini", Messages: []core.Message{{Role: "user", Content: "Hi"}}}
+
+	t.Run("complete", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"id":"chatcmpl-1","model":"grok-3-mini","choices":[{"index":0,"message":{"role":"assistant","content":"4"},"finish_reason":"stop"}],"usage":` + xaiReasoningUsage + `}`))
+		}))
+		defer srv.Close()
+
+		p, _ := New("test-key", srv.URL)
+		resp, err := p.Complete(context.Background(), req)
+		if err != nil {
+			t.Fatalf("Complete() error: %v", err)
+		}
+		check(t, &resp.Usage)
+	})
+
+	t.Run("stream", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte(
+				`data: {"id":"chatcmpl-1","model":"grok-3-mini","choices":[{"index":0,"delta":{"role":"assistant","content":"4"}}]}` + "\n\n" +
+					`data: {"id":"chatcmpl-1","model":"grok-3-mini","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}` + "\n\n" +
+					`data: {"id":"chatcmpl-1","model":"grok-3-mini","choices":[],"usage":` + xaiReasoningUsage + `}` + "\n\n" +
+					"data: [DONE]\n\n"))
+		}))
+		defer srv.Close()
+
+		p, _ := New("test-key", srv.URL)
+		ch, err := p.CompleteStream(context.Background(), req)
+		if err != nil {
+			t.Fatalf("CompleteStream() error: %v", err)
+		}
+		var usage *core.Usage
+		for c := range ch {
+			if c.Error != nil {
+				t.Fatalf("stream error: %v", c.Error)
+			}
+			if c.Usage != nil {
+				usage = c.Usage
+			}
+		}
+		check(t, usage)
+	})
+}
+
+// TestXAIProvider_Complete_ToolCallsWithEmptyFinishReason covers xAI answering
+// a tool call with an empty finish_reason. Passed through, the choice carried
+// tool calls under no reason at all, and a client detecting tool use from
+// finish_reason "tool_calls" — the value the gateway normalizes every
+// provider's to — never ran them.
+func TestXAIProvider_Complete_ToolCallsWithEmptyFinishReason(t *testing.T) {
+	tests := []struct {
+		name   string
+		choice string
+		want   string
+	}{
+		{
+			name:   "tool calls with an empty reason",
+			choice: `{"index":0,"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"Paris\"}"}}]},"finish_reason":""}`,
+			want:   core.FinishReasonToolCalls,
+		},
+		{
+			name:   "tool calls with a null reason",
+			choice: `{"index":0,"message":{"role":"assistant","tool_calls":[{"id":"call_1","type":"function","function":{"name":"get_weather","arguments":"{}"}}]},"finish_reason":null}`,
+			want:   core.FinishReasonToolCalls,
+		},
+		{
+			name:   "a stated reason is kept",
+			choice: `{"index":0,"message":{"role":"assistant","tool_calls":[{"id":"call_1","type":"function","function":{"name":"get_weather","arguments":"{\"ci"}}]},"finish_reason":"length"}`,
+			want:   core.FinishReasonLength,
+		},
+		{
+			name:   "no tool calls and no reason is left alone",
+			choice: `{"index":0,"message":{"role":"assistant","content":"Hi"},"finish_reason":""}`,
+			want:   "",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"id":"chatcmpl-1","model":"grok-4","choices":[` + tt.choice + `],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}`))
+			}))
+			defer srv.Close()
+
+			p, _ := New("test-key", srv.URL)
+			resp, err := p.Complete(context.Background(), core.Request{
+				Model:    "grok-4",
+				Messages: []core.Message{{Role: "user", Content: "Weather in Paris?"}},
+			})
+			if err != nil {
+				t.Fatalf("Complete() error: %v", err)
+			}
+			if got := resp.Choices[0].FinishReason; got != tt.want {
+				t.Errorf("FinishReason = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}

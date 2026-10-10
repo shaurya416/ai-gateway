@@ -258,3 +258,30 @@ func TestDeepSeekProvider_Complete_NormalizesFinishReason(t *testing.T) {
 		t.Errorf("finish_reason = %q, want length (normalized from model_length)", resp.Choices[0].FinishReason)
 	}
 }
+
+// TestDeepSeekProvider_Complete_ErrorEnvelopeOn200 covers a server behind
+// DEEPSEEK_BASE_URL that fails the generation after answering 200 and reports
+// it in the body. Decoded only as a completion, the envelope was served as a
+// successful answer with no choices.
+func TestDeepSeekProvider_Complete_ErrorEnvelopeOn200(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"error":{"message":"Service is busy","type":"server_error"}}`))
+	}))
+	defer srv.Close()
+
+	p, _ := New("test-key", srv.URL)
+	resp, err := p.Complete(context.Background(), core.Request{
+		Model:    "deepseek-chat",
+		Messages: []core.Message{{Role: "user", Content: "hi"}},
+	})
+	if err == nil {
+		t.Fatalf("Complete() = %+v with no error; an error envelope was served as a successful answer", resp)
+	}
+	if got := core.ParseStatusCode(err); got != http.StatusBadGateway {
+		t.Errorf("status = %d, want 502; err = %v", got, err)
+	}
+	if !strings.Contains(err.Error(), "Service is busy") {
+		t.Errorf("error = %v, want the upstream's message", err)
+	}
+}

@@ -198,6 +198,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   content it could not read did, so the other three denials reached no
   `gateway.guardrail.match` consumer and a policy audited from that signal read
   as though the plugin never acted.
+- A non-streaming chat completion that fails after the upstream answered `200`
+  is now a failure instead of an empty success. OpenRouter documents that
+  response as either a completion or an `{"error":{…}}` envelope, and other
+  OpenAI-compatible servers reached through a `<PROVIDER>_BASE_URL` answer the
+  same way, but the chat decoders read only the completion fields: the envelope
+  decoded as a completion with no choices, so the caller got a `200` with an
+  empty `choices` array, the request was recorded and priced as one the target
+  had served, and no breaker, retry or failover saw a failure. Every
+  OpenAI-compatible provider, `openai` and `deepseek` now read the envelope and
+  fail with the status its `code` names — OpenRouter's codes are HTTP statuses
+  — or `502` when it names none. An `"error"` that is `null` or empty, which
+  some servers write on every healthy response, is still a success.
+- xAI reasoning models are now costed for their reasoning. xAI counts
+  `reasoning_tokens` apart from `completion_tokens` and sums both into
+  `total_tokens`, while the gateway's usage follows OpenAI's convention, in
+  which reasoning is part of the completion and is priced at the output rate.
+  Read as reported, a grok answer that reasoned for thousands of tokens was
+  recorded, priced and charged to a budget as a completion of a few dozen,
+  and `prompt_tokens + completion_tokens` no longer added up to the total. An
+  OpenAI-compatible usage whose total equals prompt plus completion plus
+  reasoning now has its reasoning folded into `completion_tokens`, on streamed
+  and non-streamed responses alike; a usage that already follows the
+  convention is unchanged.
+- A non-streaming tool call from xAI now reports `finish_reason:
+  "tool_calls"`. xAI answers a tool call with an empty `finish_reason`, which
+  passed through unchanged, so a client deciding whether to run tools from the
+  finish reason — the value the gateway normalizes every provider's to so tool
+  use can be detected uniformly — saw a choice that had not finished and never
+  ran the calls it carried. An OpenAI-compatible choice that carries tool calls
+  and states no finish reason now finishes on `tool_calls`.
 - A caller closing a streamed `/v1/responses` or `/v1/*` pass-through response
   no longer counts against the target's circuit breaker. The reverse proxy
   reports a body copy that breaks off by panicking, and the panic unwound

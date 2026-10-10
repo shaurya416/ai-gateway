@@ -402,6 +402,9 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 	if _, err := io.Copy(io.Discard, limited); err != nil {
 		return nil, fmt.Errorf("failed to drain response: %w", err)
 	}
+	if err := core.SuccessBodyError(p.name, httpResp.Header, completion.Error); err != nil {
+		return nil, err
+	}
 
 	return &core.Response{
 		ID:       completion.ID,
@@ -560,6 +563,10 @@ type openAIChatCompletionResponse struct {
 	Model   string        `json:"model"`
 	Choices []core.Choice `json:"choices"`
 	Usage   openAIUsage   `json:"usage"`
+	// Error is the envelope an OpenAI-compatible server behind OPENAI_BASE_URL
+	// returns in place of a completion when it fails after answering 200 — the
+	// non-streaming form of openAIStreamChunk.Error. See core.SuccessBodyError.
+	Error json.RawMessage `json:"error"`
 }
 
 func (p *Provider) chatCompletionsEndpoint() string {

@@ -20,6 +20,14 @@ type ChatResponse struct {
 	Usage   core.Usage    `json:"usage"`
 }
 
+// chatBody is a non-streaming chat response as it arrives: a completion, or an
+// error envelope in its place when the upstream failed after answering 200 —
+// the same split streamFrame decodes on a stream. See core.SuccessBodyError.
+type chatBody struct {
+	ChatResponse
+	Err json.RawMessage `json:"error"`
+}
+
 // APIErrorFromResponse builds a provider error from a non-success response,
 // capturing the upstream Retry-After hint alongside the status. Every
 // OpenAI-compatible provider routes its errors through here, so this one call
@@ -241,14 +249,26 @@ func PostChat(ctx context.Context, p ChatParams, req core.Request) (*core.Respon
 		return nil, APIErrorFromResponse(p.Label, httpResp, respBody)
 	}
 
-	var pResp ChatResponse
-	if err := json.Unmarshal(respBody, &pResp); err != nil {
+	var body chatBody
+	if err := json.Unmarshal(respBody, &body); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
 	}
+	if err := core.SuccessBodyError(p.Label, httpResp.Header, body.Err); err != nil {
+		return nil, err
+	}
+	pResp := body.ChatResponse
 	// Normalize provider-specific finish reasons (e.g. Mistral's model_length)
 	// to the canonical OpenAI vocabulary for every OpenAI-compatible provider.
 	for i := range pResp.Choices {
-		pResp.Choices[i].FinishReason = core.NormalizeFinishReason(pResp.Choices[i].FinishReason)
+		choice := &pResp.Choices[i]
+		choice.FinishReason = core.NormalizeFinishReason(choice.FinishReason)
+		// xAI answers a tool call with an empty finish_reason. A completed
+		// choice always has a reason, and one carrying tool calls with none
+		// stated stopped to make them; left empty, a client waiting for
+		// "tool_calls" never ran the tools it was handed.
+		if choice.FinishReason == "" && len(choice.Message.ToolCalls) > 0 {
+			choice.FinishReason = core.FinishReasonToolCalls
+		}
 	}
 	resp := &core.Response{
 		ID:       pResp.ID,
