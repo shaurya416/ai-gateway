@@ -53,6 +53,10 @@ type Store interface {
 	// could not answer. ValidateKey folds both into false, which is safe only
 	// where false already denies and nobody acts on the reason.
 	Authenticate(ctx context.Context, key string) (*model.APIKey, error)
+	// RotateKey replaces a key's secret and returns the key carrying the new
+	// one. A key that cannot authenticate — revoked, or past its expiry — is
+	// refused with an error wrapping model.ErrKeyRevoked or
+	// model.ErrKeyExpired: a secret minted for it would authenticate nothing.
 	RotateKey(ctx context.Context, id string) (*model.APIKey, error)
 	// Ping reports whether the store is reachable. Readiness probes call it to
 	// gate traffic; it must be cheap and return quickly.

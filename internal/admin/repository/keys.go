@@ -273,13 +273,17 @@ func (s *KeyStore) Delete(_ context.Context, id string) error {
 }
 
 // RotateKey generates a new key string for an existing API key. The returned
-// key carries the new secret; the stored copy does not.
+// key carries the new secret; the stored copy does not. A key that cannot
+// authenticate is refused with model.ErrKeyRevoked or model.ErrKeyExpired.
 func (s *KeyStore) RotateKey(_ context.Context, id string) (*model.APIKey, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	rec, ok := s.byID[id]
 	if !ok {
 		return nil, fmt.Errorf("%w: %s", model.ErrKeyNotFound, id)
+	}
+	if err := model.KeyUnusableReason(rec.apiKey); err != nil {
+		return nil, fmt.Errorf("%w: %s", err, id)
 	}
 
 	newKey, err := generateAPIKeyString()

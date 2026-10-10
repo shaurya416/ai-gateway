@@ -26,6 +26,15 @@ var ErrKeyNotFound = errors.New("key not found")
 // rather than as a rejected credential.
 var ErrInvalidCredential = errors.New("invalid credential")
 
+// ErrKeyRevoked and ErrKeyExpired are returned by Store.RotateKey for a key
+// that cannot authenticate, so a new secret for it would authenticate nothing
+// either. A revoked key stays revoked; an expired one can be rotated once its
+// expiry is extended or cleared.
+var (
+	ErrKeyRevoked = errors.New("key is revoked")
+	ErrKeyExpired = errors.New("key has expired")
+)
+
 // APIKey represents an API key for authenticating requests to the gateway.
 //
 // Key holds the display form (see displayKey) on every value a Store reads
@@ -105,10 +114,20 @@ func ValidateScopes(scopes []string) error {
 // the session liveness re-check in middleware.go call this so the two paths
 // cannot drift on what "usable" means.
 func KeyIsUsable(k *APIKey) bool {
+	return KeyUnusableReason(k) == nil
+}
+
+// KeyUnusableReason is KeyIsUsable naming why: ErrKeyRevoked for a key that is
+// inactive or revoked, ErrKeyExpired for one past its expiry, nil for a key
+// that can authenticate. A nil key reads as revoked.
+func KeyUnusableReason(k *APIKey) error {
 	if k == nil || !k.Active || k.RevokedAt != nil {
-		return false
+		return ErrKeyRevoked
 	}
-	return k.ExpiresAt == nil || !time.Now().After(*k.ExpiresAt)
+	if k.ExpiresAt != nil && time.Now().After(*k.ExpiresAt) {
+		return ErrKeyExpired
+	}
+	return nil
 }
 
 // IsUsableAdmin reports whether k can currently authenticate an admin request:

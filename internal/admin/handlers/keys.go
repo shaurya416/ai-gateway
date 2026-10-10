@@ -36,6 +36,31 @@ const (
 	codeLastAdminKey = "last_admin_key"
 )
 
+// Machine-readable codes for a rotation refused because the key cannot
+// authenticate. Both are 409 Conflict for the reason the lockout refusals are:
+// the request is well-formed, and the key's current state is what rules it out.
+const (
+	codeKeyRevoked = "key_revoked"
+	codeKeyExpired = "key_expired"
+)
+
+// unrotatableKey maps a RotateKey refusal of a key that cannot authenticate to
+// its code and message, and returns "" for any other error.
+//
+// The refusal exists because a secret minted for such a key authenticates
+// nothing: rotating one answered 200 with a credential that failed on first
+// use, and recorded the rotation as a success.
+func unrotatableKey(err error) (code, message string) {
+	switch {
+	case errors.Is(err, model.ErrKeyRevoked):
+		return codeKeyRevoked, "a revoked key cannot be rotated: its new secret would never authenticate; create a new key instead"
+	case errors.Is(err, model.ErrKeyExpired):
+		return codeKeyExpired, "an expired key cannot be rotated: its new secret would not authenticate; extend or clear its expiry first, or create a new key"
+	default:
+		return "", ""
+	}
+}
+
 // codeInvalidScope marks a request naming a scope the gateway does not issue.
 // It is 400, not 409: nothing about the store's state makes the request
 // unsafe, the request itself is malformed. The name matches OAuth 2.0's
@@ -468,6 +493,11 @@ func (h *Handlers) revokeKey(w http.ResponseWriter, r *http.Request) {
 func (h *Handlers) rotateKey(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	key, err := h.Keys.RotateKey(r.Context(), id)
+	if code, message := unrotatableKey(err); code != "" {
+		h.recordAudit(r, "key.rotate", id, model.AuditDenied, "reason", code)
+		writeError(w, http.StatusConflict, message, "invalid_request_error", code)
+		return
+	}
 	if err != nil {
 		h.recordAudit(r, "key.rotate", id, model.AuditError, "error", err.Error())
 		writeKeyStoreError(w, err)

@@ -9,6 +9,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+
+- `POST /admin/keys/{id}/rotate` on a SQL key store no longer reports a
+  rotation as failed after it has happened. The new secret was written first
+  and the key read back afterwards; when that read failed — a dropped database
+  connection between the two statements — the caller was answered `500` and a
+  `key.rotate` error was audited, while the old secret had already stopped
+  authenticating and the new one was never returned. Every client holding the
+  key was locked out, and the operator was told nothing had changed. The key is
+  now read before the secret is replaced, so a failed read changes nothing and
+  a committed rotation always returns its secret.
+- `POST /admin/keys/{id}/rotate` now refuses a revoked key (`409 key_revoked`)
+  and an expired one (`409 key_expired`), with a denied `key.rotate` audit row.
+  Rotation minted a new secret for either and answered `200` with it, audited
+  as a successful rotation, but rotation neither un-revokes a key nor extends
+  its expiry, so the secret did not authenticate — `ferrogw admin keys
+  rotate` printed a credential that failed on first use. The dashboard already
+  declined to offer rotation for these keys; the API now refuses it too. An
+  expired key can be rotated once its expiry is extended or cleared.
+- The config routes of the Admin API no longer write the config store's error
+  into a `500` response. `GET /admin/config/history`, `PUT`/`POST`/`DELETE
+  /admin/config` and `POST /admin/config/rollback/{version}` returned the
+  store's error text as the message, which for an unreachable or misconfigured
+  database quotes its host and port, the user it authenticated as, or the
+  database name — and the history route is served to `read_only` credentials.
+  The response now names the operation that failed (`config persistence
+  failed`, `failed to load config history`, `failed to reset config`) and the
+  store's error is logged, as the key and credential stores already did.
+- `/v1/embeddings` now answers `400` for an `input` no target can embed — an
+  empty array, an array holding anything but strings (token ids included), or
+  a number, boolean or object — before any target is called. Every embeddings
+  adapter but hugging-face's, which forwards it as written, refuses such an
+  input itself, before calling its upstream, with an error that carries no
+  status, so the caller was answered
+  `500 the gateway could not complete the request`, the request was carried to
+  every sibling target, and each refusal counted toward that target's circuit
+  breaker. Two such requests opened a breaker with `failure_threshold: 2`, after
+  which the target refused every request on every surface, chat included, with
+  `503` until the breaker's timeout — a caller's malformed body took the target
+  down for everyone.
 - `/v1/chat/completions` now answers `400`, naming the message and part, for a
   content part it cannot carry: any type other than `text` and `image_url` —
   `file` and `input_audio` included — and an `image_url` part with no URL. A

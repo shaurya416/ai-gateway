@@ -12,6 +12,7 @@ import (
 	"github.com/ferro-labs/ai-gateway/config"
 	"github.com/ferro-labs/ai-gateway/internal/admin/model"
 	"github.com/ferro-labs/ai-gateway/internal/admin/repository"
+	"github.com/ferro-labs/ai-gateway/pkg/logger"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -77,7 +78,7 @@ func (h *Handlers) getConfigHistory(w http.ResponseWriter, r *http.Request) {
 
 	history, _, err := h.configVersions(r.Context())
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error(), "server_error", "internal_error")
+		writeConfigStoreError(w, err, "failed to load config history")
 		return
 	}
 
@@ -197,7 +198,7 @@ func (h *Handlers) deleteConfig(w http.ResponseWriter, r *http.Request) {
 
 	if err := resetter.ResetConfig(r.Context()); err != nil {
 		h.recordAudit(r, auditConfigDelete, auditConfigTarget, model.AuditError, "error", err.Error())
-		writeError(w, http.StatusInternalServerError, err.Error(), "server_error", "internal_error")
+		writeConfigStoreError(w, err, "failed to reset config")
 		return
 	}
 
@@ -230,7 +231,7 @@ func (h *Handlers) rollbackConfig(w http.ResponseWriter, r *http.Request) {
 
 	versions, durable, err := h.configVersions(r.Context())
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error(), "server_error", "internal_error")
+		writeConfigStoreError(w, err, "failed to load config history")
 		return
 	}
 
@@ -314,12 +315,30 @@ func (h *Handlers) appendConfigHistoryLocked(cfg config.Config, rolledBackFrom *
 	return len(h.configHistory)
 }
 
+// writeConfigReloadError answers a config apply that failed. A config the
+// gateway refused is the caller's to fix, so its validation error is the 400's
+// message; a config that could not be persisted is a store failure, reported
+// the way writeConfigStoreError reports one.
 func writeConfigReloadError(w http.ResponseWriter, err error) {
 	if errors.Is(err, repository.ErrConfigPersistence) {
-		writeError(w, http.StatusInternalServerError, err.Error(), "server_error", "internal_error")
+		writeConfigStoreError(w, err, repository.ErrConfigPersistence.Error())
 		return
 	}
 	writeError(w, http.StatusBadRequest, err.Error(), "invalid_request_error", "invalid_config")
+}
+
+// writeConfigStoreError answers a config operation the gateway could not
+// complete with a 500 whose message names the operation, never the store's
+// error.
+//
+// That error quotes the database it reached for — a host and port, the user it
+// authenticated as, the database name — and GET /admin/config/history is served
+// to read_only credentials, so writing it put the database's address in front
+// of every holder of one during an outage. It is logged for the operator, as
+// writeKeyStoreError and writeCredentialStoreError log theirs.
+func writeConfigStoreError(w http.ResponseWriter, err error, message string) {
+	logger.Default().Error("admin config store operation failed", "error", err)
+	writeError(w, http.StatusInternalServerError, message, "server_error", "internal_error")
 }
 
 // configVersions returns the version trail to serve and to roll back to, and

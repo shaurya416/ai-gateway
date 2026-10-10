@@ -384,8 +384,22 @@ func (s *SQLStore) Authenticate(ctx context.Context, key string) (*model.APIKey,
 }
 
 // RotateKey rotates the secret value for an existing API key. The returned key
-// carries the new secret, which the read-back cannot recover.
+// carries the new secret, which no later read can recover. A key that cannot
+// authenticate is refused with model.ErrKeyRevoked or model.ErrKeyExpired.
+//
+// The key is read before the secret is replaced, never after. The new secret
+// exists only in what this returns, so nothing may fail once the write has
+// committed: a read-back that failed answered an error for a rotation that had
+// happened, which retired the old secret and discarded the new one — every
+// client holding the key locked out, and the operator told nothing changed.
 func (s *SQLStore) RotateKey(ctx context.Context, id string) (*model.APIKey, error) {
+	rotated, err := s.Lookup(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if err := model.KeyUnusableReason(rotated); err != nil {
+		return nil, fmt.Errorf("%w: %s", err, id)
+	}
 	newKey, err := generateAPIKeyString()
 	if err != nil {
 		return nil, err
@@ -401,12 +415,9 @@ func (s *SQLStore) RotateKey(ctx context.Context, id string) (*model.APIKey, err
 		return nil, fmt.Errorf("%w: %s", model.ErrKeyNotFound, id)
 	}
 
-	updated, err := s.Lookup(ctx, id)
-	if err != nil {
-		return nil, err
-	}
-	updated.Key = newKey
-	return updated, nil
+	rotated.Key = newKey
+	rotated.RotatedAt = &now
+	return rotated, nil
 }
 
 // Ping verifies the backing database is reachable.
