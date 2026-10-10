@@ -10,6 +10,37 @@ import (
 // FlagFormat is the root persistent flag selecting the output encoding.
 const FlagFormat = "format"
 
+// RegisterFormatFlag adds --format to root as a persistent flag that accepts
+// only the encodings a Printer renders.
+//
+// The value is checked when the flag is parsed, before any command runs. A
+// plain string flag accepted anything and NewPrinter fell back to the table, so
+// `--format yml` handed a script a table with exit 0 — and on a command that
+// mutates, such as `admin keys create`, the mistake surfaced only after the
+// change had been made.
+func RegisterFormatFlag(root *cobra.Command) {
+	value := formatValue(FormatTable)
+	root.PersistentFlags().Var(&value, FlagFormat,
+		"Output format: table, json, or yaml (not supported by the report commands: init, doctor, status)")
+}
+
+// formatValue is the --format flag's value. Type reports "string" so the flag
+// reads back through GetString, as the plain string flag it replaces did.
+type formatValue string
+
+func (f *formatValue) String() string { return string(*f) }
+
+func (f *formatValue) Type() string { return "string" }
+
+func (f *formatValue) Set(s string) error {
+	switch v := strings.ToLower(s); v {
+	case FormatTable, FormatJSON, FormatYAML:
+		*f = formatValue(v)
+		return nil
+	}
+	return fmt.Errorf("want %s, %s or %s", FormatTable, FormatJSON, FormatYAML)
+}
+
 // adminClientFromCmd builds an AdminClient from the gateway-url and api-key
 // persistent flags on the command's root.
 func adminClientFromCmd(cmd *cobra.Command) *AdminClient {

@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/ferro-labs/ai-gateway/config"
@@ -62,7 +63,12 @@ func runDoctor(cmd *cobra.Command, _ []string) error {
 	var configErr error
 	_, _ = fmt.Fprintln(out)
 	_, _ = fmt.Fprintln(out, "  Configuration")
-	cfgPath := os.Getenv("GATEWAY_CONFIG")
+	// GATEWAY_CONFIG and MASTER_KEY are trimmed because serve trims them
+	// (bootstrap.configFilePath and bootstrap.ResolveMasterKey). Read verbatim,
+	// a path an env file left a trailing space on failed here for a file serve
+	// loads, and a whitespace-only key was reported set while serve ran with
+	// none.
+	cfgPath := strings.TrimSpace(os.Getenv("GATEWAY_CONFIG"))
 	if cfgPath == "" {
 		_, _ = fmt.Fprintf(out, "    %s GATEWAY_CONFIG not set (using defaults)\n", Clr(ColorDim, SymDASH))
 	} else {
@@ -89,7 +95,7 @@ func runDoctor(cmd *cobra.Command, _ []string) error {
 	// Master key check.
 	_, _ = fmt.Fprintln(out)
 	_, _ = fmt.Fprintln(out, "  Auth")
-	if os.Getenv("MASTER_KEY") != "" {
+	if strings.TrimSpace(os.Getenv("MASTER_KEY")) != "" {
 		_, _ = fmt.Fprintf(out, "    %s MASTER_KEY is set\n", Clr(ColorGreen, SymOK))
 	} else {
 		_, _ = fmt.Fprintf(out, "    %s MASTER_KEY not set -- run 'ferrogw init' to generate one\n", Clr(ColorYellow, SymWARN))

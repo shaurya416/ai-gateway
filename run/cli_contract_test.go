@@ -162,3 +162,59 @@ func TestMountedCommandsDeclareAnArgumentPolicy(t *testing.T) {
 		}
 	}
 }
+
+// --format names the encoding a script is about to parse. A value no printer
+// renders used to fall back to the table silently and exit 0, so `admin keys
+// list --format yml` handed a YAML consumer a table it read as one scalar, and
+// a typo on a command that mutates — `keys create`, `keys rotate` — was only
+// noticed after the change was made. The value must be refused before any
+// command runs, which is also before any Admin API call.
+func TestUnknownFormatIsRefusedBeforeTheCommandRuns(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[{"id":"k1","name":"ci","scopes":["read_only"]}]`))
+	}))
+	t.Cleanup(srv.Close)
+
+	for _, args := range [][]string{
+		{"admin", "keys", "list", "--format", "yml"},
+		{"admin", "keys", "create", "--name", "ci", "--format", "jsno"},
+		{"version", "--format", "xml"},
+	} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			calls.Store(0)
+			out, served, err := runCLI(t, append(args, "--gateway-url", srv.URL, "--api-key", "k")...)
+
+			if err == nil {
+				t.Fatalf("an unknown --format must fail the command, got exit 0 with:\n%s", out.String())
+			}
+			if !strings.Contains(err.Error(), "--format") {
+				t.Errorf("the error must name the flag it refused: %v", err)
+			}
+			if *served {
+				t.Fatal("the command started the server")
+			}
+			if n := calls.Load(); n != 0 {
+				t.Errorf("the Admin API was called %d time(s) before the format was checked", n)
+			}
+		})
+	}
+}
+
+// The three encodings the printer renders stay accepted, in any letter case,
+// as does the default.
+func TestKnownFormatsAreAccepted(t *testing.T) {
+	for _, format := range []string{"table", "json", "yaml", "JSON", "Yaml"} {
+		t.Run(format, func(t *testing.T) {
+			out, _, err := runCLI(t, "version", "--format", format)
+			if err != nil {
+				t.Fatalf("--format %s: %v\n%s", format, err, out.String())
+			}
+		})
+	}
+	if out, _, err := runCLI(t, "version"); err != nil {
+		t.Fatalf("version with the default format: %v\n%s", err, out.String())
+	}
+}

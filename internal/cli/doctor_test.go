@@ -140,3 +140,56 @@ func TestRunDoctor(t *testing.T) {
 		}
 	})
 }
+
+// doctor answers "will this deployment work", so it has to read the
+// environment the way `serve` reads it. serve trims GATEWAY_CONFIG and
+// MASTER_KEY; doctor read both verbatim. A GATEWAY_CONFIG carrying a trailing
+// space — which an env file keeps — made doctor exit 1 with "configuration is
+// invalid" for a file serve loads, and a whitespace-only MASTER_KEY was
+// reported set while serve runs with no master key at all.
+func TestRunDoctorReadsTheEnvironmentAsServeDoes(t *testing.T) {
+	srv := stubGateway(t, map[string]http.HandlerFunc{
+		"/health": jsonHandler(http.StatusOK, `{"status":"ok"}`),
+	})
+
+	t.Run("a GATEWAY_CONFIG with surrounding whitespace names the file", func(t *testing.T) {
+		cfgPath := filepath.Join(t.TempDir(), "config.yaml")
+		if err := os.WriteFile(cfgPath, []byte("strategy:\n  mode: single\ntargets:\n  - virtual_key: openai\n"), 0o600); err != nil {
+			t.Fatalf("write config: %v", err)
+		}
+		cmd, out := newHandlerCmd(t, srv.URL, "table")
+		t.Setenv("GATEWAY_CONFIG", cfgPath+" \n")
+
+		if err := runDoctor(cmd, nil); err != nil {
+			t.Fatalf("doctor failed a config serve loads: %v\n%s", err, out.String())
+		}
+		if !strings.Contains(out.String(), "strategy=single") {
+			t.Errorf("doctor did not report the config file it was pointed at:\n%s", out.String())
+		}
+	})
+
+	t.Run("a whitespace-only GATEWAY_CONFIG is unset", func(t *testing.T) {
+		cmd, out := newHandlerCmd(t, srv.URL, "table")
+		t.Setenv("GATEWAY_CONFIG", "  ")
+
+		if err := runDoctor(cmd, nil); err != nil {
+			t.Fatalf("serve runs on defaults here; doctor failed: %v\n%s", err, out.String())
+		}
+		if !strings.Contains(out.String(), "GATEWAY_CONFIG not set") {
+			t.Errorf("doctor did not report the defaults serve uses:\n%s", out.String())
+		}
+	})
+
+	t.Run("a whitespace-only MASTER_KEY is not set", func(t *testing.T) {
+		cmd, out := newHandlerCmd(t, srv.URL, "table")
+		t.Setenv("GATEWAY_CONFIG", "")
+		t.Setenv("MASTER_KEY", " \t")
+
+		if err := runDoctor(cmd, nil); err != nil {
+			t.Fatalf("runDoctor: %v", err)
+		}
+		if strings.Contains(out.String(), "MASTER_KEY is set") || !strings.Contains(out.String(), "MASTER_KEY not set") {
+			t.Errorf("doctor reported a master key serve does not have:\n%s", out.String())
+		}
+	})
+}

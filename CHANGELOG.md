@@ -75,6 +75,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   which the target refused every request on every surface, chat included, with
   `503` until the breaker's timeout — a caller's malformed body took the target
   down for everyone.
+- `ferrogw admin config set --file` now sends the file as written. It decoded
+  the file and sent the decoded value re-encoded, which collapses a repeated
+  key to its last occurrence, so a file listing `"plugins"` twice — a guardrail
+  under the first, nothing under the second — was applied without the
+  guardrail and reported `Configuration updated.`, while `ferrogw validate`
+  and `PUT /admin/config` both refuse it. The Admin API now receives the
+  document itself and refuses it, and the command exits non-zero.
+- An unknown `--format` is now refused before the command runs. Any value
+  other than `table`, `json` or `yaml` fell back to the table with exit `0`, so
+  `ferrogw admin keys list --format yml` handed a YAML consumer a table, and a
+  mistyped format on `admin keys create` was noticed only after the key had
+  been created. The flag now fails with `invalid argument "yml" for "--format"
+  flag` and no request is made.
+- `ferrogw doctor` reads `GATEWAY_CONFIG` and `MASTER_KEY` the way `serve`
+  does, with surrounding whitespace trimmed. A config path an env file left a
+  trailing space on made doctor exit `1` with `configuration is invalid` for a
+  file `serve` loads, a whitespace-only `GATEWAY_CONFIG` failed where `serve`
+  uses the defaults, and a whitespace-only `MASTER_KEY` was reported set while
+  `serve` ran with no master key.
 - `GATEWAY_ENV` wrapped in quotes now turns production mode on. A compose
   list entry keeps its quotes, so `GATEWAY_ENV="production"` reached the
   gateway as the quoted string, which matched nothing: the gateway started

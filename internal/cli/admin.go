@@ -211,8 +211,12 @@ func runConfigSet(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return fmt.Errorf("read file: %w", err)
 	}
-	// Decode locally so we send JSON regardless of input format.
-	var body any
+	// The document is checked here, so a file that is not JSON fails before a
+	// request is made, and is then sent as written. Decoding it into a Go value
+	// and re-encoding that was not a no-op: a key the file repeats collapsed to
+	// its last occurrence, so a file `ferrogw validate` and the Admin API both
+	// refuse was applied without whatever its first occurrence held.
+	var body json.RawMessage
 	if err := json.Unmarshal(raw, &body); err != nil {
 		return fmt.Errorf("parse config file: %w (only JSON is accepted by this command; convert YAML first)", err)
 	}

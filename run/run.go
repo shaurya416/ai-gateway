@@ -77,8 +77,7 @@ func newRootCmd(serve func() error) *cobra.Command {
 		cli.StatusCmd, cli.VersionCmd, cli.AdminCmd)
 	rootCmd.PersistentFlags().String("gateway-url", "", "Gateway base URL (env: FERROGW_URL, default: http://localhost:8080)")
 	rootCmd.PersistentFlags().String("api-key", "", "Admin API key (env: FERROGW_API_KEY)")
-	rootCmd.PersistentFlags().String(cli.FlagFormat, cli.FormatTable,
-		"Output format: table, json, or yaml (not supported by the report commands: init, doctor, status)")
+	cli.RegisterFormatFlag(rootCmd)
 	return rootCmd
 }
 
