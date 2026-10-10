@@ -77,6 +77,12 @@ type SessionStore interface {
 	// reports false for an unknown, expired, or idle-expired token without
 	// distinguishing between them.
 	ValidateSession(ctx context.Context, token string) (*model.Session, bool)
+	// AuthenticateSession is ValidateSession for a caller that must not
+	// mistake a store failure for a dead session: a token that does not
+	// resolve to a live session is an error wrapping
+	// model.ErrInvalidCredential, and any other error means the store could
+	// not answer.
+	AuthenticateSession(ctx context.Context, token string) (*model.Session, error)
 	ListSessions(ctx context.Context) ([]*model.Session, error)
 	DeleteSession(ctx context.Context, id string) error
 	// DeleteAllSessions removes every session and returns how many were
@@ -224,30 +230,38 @@ func (s *MemorySessionStore) sweep(now time.Time) {
 }
 
 // ValidateSession resolves token to a live session, refreshing last-seen.
-func (s *MemorySessionStore) ValidateSession(_ context.Context, token string) (*model.Session, bool) {
+func (s *MemorySessionStore) ValidateSession(ctx context.Context, token string) (*model.Session, bool) {
+	sess, err := s.AuthenticateSession(ctx, token)
+	return sess, err == nil
+}
+
+// AuthenticateSession is ValidateSession reporting why a token was refused.
+// The in-memory store cannot fail to answer, so the only error it returns
+// wraps model.ErrInvalidCredential.
+func (s *MemorySessionStore) AuthenticateSession(_ context.Context, token string) (*model.Session, error) {
 	if token == "" {
-		return nil, false
+		return nil, model.ErrInvalidCredential
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	id, ok := s.byHash[hashSessionToken(token)]
 	if !ok {
-		return nil, false
+		return nil, model.ErrInvalidCredential
 	}
 	stored, ok := s.byID[id]
 	if !ok {
-		return nil, false
+		return nil, model.ErrInvalidCredential
 	}
 	now := time.Now().UTC()
 	if !isLive(stored, now) {
-		return nil, false
+		return nil, model.ErrInvalidCredential
 	}
 	if shouldRefreshLastSeen(stored, now) {
 		stored.LastSeenAt = &now
 	}
 
-	return cloneSession(stored), true
+	return cloneSession(stored), nil
 }
 
 // ListSessions returns every currently live session, newest first, with the id

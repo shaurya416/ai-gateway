@@ -30,7 +30,17 @@ const audioMaxRequestBytes = 25 << 20 // 25 MiB
 func Transcriptions(gw *aigateway.Gateway, translate bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		r.Body = http.MaxBytesReader(w, r.Body, audioMaxRequestBytes)
-		if err := r.ParseMultipartForm(transcriptionMultipartMemory); err != nil {
+		err := r.ParseMultipartForm(transcriptionMultipartMemory)
+		// A file part larger than transcriptionMultipartMemory is spilled to a
+		// temporary file. net/http removes those only for the request it
+		// dispatched, and this handler holds a copy of it — every middleware
+		// that adds to the context makes one — so the form parsed here is not
+		// the one the server cleans up. Removed here, on every path: the form
+		// can be set even when an error is returned (a malformed query string).
+		if r.MultipartForm != nil {
+			defer func() { _ = r.MultipartForm.RemoveAll() }()
+		}
+		if err != nil {
 			writeAudioBodyError(w, err, "invalid multipart form")
 			return
 		}
@@ -78,8 +88,31 @@ func Transcriptions(gw *aigateway.Gateway, translate bool) http.HandlerFunc {
 			return
 		}
 
+		if plainTextAudioFormat(req.ResponseFormat) {
+			// The transcript is the whole body for these formats, not a
+			// {"text": …} envelope — Text already holds it verbatim. The media
+			// type is what the SDKs key on: openai-node parses a JSON one into
+			// an object where its types promise a string, and openai-python
+			// hands back the body itself, so an envelope reached the caller as
+			// the subtitle file or transcript it had asked for.
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			_, _ = io.WriteString(w, resp.Text)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(resp)
+	}
+}
+
+// plainTextAudioFormat reports whether response_format asks for the transcript
+// itself rather than a JSON object: text, srt and vtt, the three formats the
+// OpenAI SDKs type as a string result.
+func plainTextAudioFormat(format string) bool {
+	switch format {
+	case "text", "srt", "vtt":
+		return true
+	default:
+		return false
 	}
 }
 

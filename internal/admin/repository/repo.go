@@ -47,6 +47,12 @@ type Store interface {
 	SetExpiration(ctx context.Context, id string, expiresAt *time.Time) error
 	Delete(ctx context.Context, id string) error
 	ValidateKey(ctx context.Context, key string) (*model.APIKey, bool)
+	// Authenticate is ValidateKey for a caller that must not mistake a store
+	// failure for a rejected key: a key that does not authenticate is an error
+	// wrapping model.ErrInvalidCredential, and any other error means the store
+	// could not answer. ValidateKey folds both into false, which is safe only
+	// where false already denies and nobody acts on the reason.
+	Authenticate(ctx context.Context, key string) (*model.APIKey, error)
 	RotateKey(ctx context.Context, id string) (*model.APIKey, error)
 	// Ping reports whether the store is reachable. Readiness probes call it to
 	// gate traffic; it must be cheap and return quickly.

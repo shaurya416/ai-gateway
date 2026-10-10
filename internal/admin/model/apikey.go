@@ -19,6 +19,13 @@ import (
 // (HTTP 500), so a database outage is never reported to callers as a 404.
 var ErrKeyNotFound = errors.New("key not found")
 
+// ErrInvalidCredential is returned by the key and session stores' Authenticate
+// methods for a presented credential that does not authenticate: unknown,
+// revoked, expired, or empty. Any other error from those methods means the
+// store could not answer, which the auth middleware reports as a server fault
+// rather than as a rejected credential.
+var ErrInvalidCredential = errors.New("invalid credential")
+
 // APIKey represents an API key for authenticating requests to the gateway.
 //
 // Key holds the display form (see displayKey) on every value a Store reads
@@ -94,7 +101,7 @@ func ValidateScopes(scopes []string) error {
 }
 
 // KeyIsUsable reports whether k can currently authenticate at all: active, not
-// revoked, and not past its expiry. Both ValidateKey implementations below and
+// revoked, and not past its expiry. Both stores' Authenticate implementations and
 // the session liveness re-check in middleware.go call this so the two paths
 // cannot drift on what "usable" means.
 func KeyIsUsable(k *APIKey) bool {

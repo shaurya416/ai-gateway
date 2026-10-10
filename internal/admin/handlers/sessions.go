@@ -29,8 +29,15 @@ func (h *Handlers) createSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	identity, ok := h.Credentials(r.Context(), strings.TrimPrefix(auth, "Bearer "))
-	if !ok {
+	identity, err := h.Credentials(r.Context(), strings.TrimPrefix(auth, "Bearer "))
+	if err != nil && !errors.Is(err, model.ErrInvalidCredential) {
+		// The key store could not answer, so nothing was learned about the
+		// credential: it is neither a denied sign-in nor a session to mint.
+		h.recordAudit(r, "session.create", "*", model.AuditError, "error", err.Error())
+		writeCredentialStoreError(w, err)
+		return
+	}
+	if err != nil {
 		// The highest-value audit row: a real credential presented and rejected.
 		// A burst of these from one source is a brute-force attempt, and until it
 		// was recorded the only trace was a rate-limiter metric with no actor and

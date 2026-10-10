@@ -237,9 +237,9 @@ func TestAuthMiddlewareWithSessions_SyntheticCredentialBucketsUnderSameID(t *tes
 	const masterKey = "test-master-key"
 
 	validate, _ := NewCredentialValidator(store, masterKey)
-	identity, ok := validate(context.Background(), masterKey)
-	if !ok {
-		t.Fatal("master key failed to validate")
+	identity, err := validate(context.Background(), masterKey)
+	if err != nil {
+		t.Fatalf("master key failed to validate: %v", err)
 	}
 
 	_, token, err := sessions.CreateSession(context.Background(), identity.Name, identity.ID, identity.Scopes, repository.DefaultSessionTTL)
@@ -291,9 +291,9 @@ func TestAuthMiddlewareWithSessions_MasterKeySessionBoundToKeyValue(t *testing.T
 			sessions := repository.NewSessionStore()
 
 			validate, _ := NewCredentialValidator(store, originalMaster)
-			identity, ok := validate(t.Context(), originalMaster)
-			if !ok {
-				t.Fatal("master key failed to validate")
+			identity, err := validate(t.Context(), originalMaster)
+			if err != nil {
+				t.Fatalf("master key failed to validate: %v", err)
 			}
 			_, token, err := sessions.CreateSession(t.Context(), identity.Name, identity.ID, identity.Scopes, repository.DefaultSessionTTL)
 			if err != nil {

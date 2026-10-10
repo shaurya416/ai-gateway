@@ -350,6 +350,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   no image and the target was recorded as having served one. Each now fails
   the call when no usable image decoded, so it counts against the breaker and
   fails over like any other target failure.
+- An upload to `/v1/audio/transcriptions` or `/v1/audio/translations` larger
+  than 10 MiB no longer leaves its file in the temporary directory. The
+  multipart parser spills a file that size to disk, and `net/http` removes the
+  spill only for the request it dispatched — but the handler parses a copy
+  every middleware above it makes, so the server's cleanup never saw the form.
+  Each such request, answered or refused, left up to 25 MiB behind for the life
+  of the process, filling the disk (or, on a `tmpfs`, memory) at whatever rate
+  a caller could send them. The handler now removes the spilled file itself on
+  every path.
+- `/v1/audio/transcriptions` and `/v1/audio/translations` with
+  `response_format` `text`, `srt` or `vtt` now answer with the transcript as
+  the body, as the OpenAI API does. The gateway wrapped it in a
+  `{"text": …}` JSON object instead, and both reference SDKs type those three
+  formats as a plain string: openai-python returned the JSON envelope as the
+  transcript, so a subtitle file written from it was not a subtitle file, and
+  openai-node parsed it into an object where a string was promised — each a
+  `200`. The three formats are now served verbatim as
+  `text/plain; charset=utf-8`; `json`, the default and `verbose_json` are
+  unchanged.
+- A key or session store that cannot be read no longer turns every request into
+  a rejected credential. With a SQL backend, a failed lookup was folded into
+  "not found": a stored API key was answered `401 invalid_api_key` on `/v1/*`
+  and `/admin/*`, a dashboard session `401 invalid_session` — which signs the
+  operator out — and a sign-in was recorded as a denied credential. No OpenAI
+  SDK retries a `401`, so a database restart or failover failed every request
+  for its length and left clients believing their keys had been revoked. A
+  store failure is now answered `503 credential_store_unavailable`, which
+  clients retry, and logged; a credential that is unknown, revoked or expired
+  is still a `401`, and `MASTER_KEY` still authenticates during the outage.
 
 ## [1.5.9] — 2026-09-18
 

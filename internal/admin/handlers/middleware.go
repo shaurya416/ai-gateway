@@ -6,17 +6,19 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 
 	"github.com/ferro-labs/ai-gateway/internal/admin/model"
 	"github.com/ferro-labs/ai-gateway/internal/admin/repository"
 	"github.com/ferro-labs/ai-gateway/internal/redact"
+	"github.com/ferro-labs/ai-gateway/pkg/logger"
 )
 
 // syntheticMasterKeyPrefix begins the credential ID NewCredentialValidator
 // fabricates for the master key. It has no row in the key store, so a session
-// minted from it cannot be re-checked with store.Get — see isSyntheticCredential
+// minted from it cannot be re-checked with store.Lookup — see isSyntheticCredential
 // and the syntheticCredentialLive func NewCredentialValidator returns for what
 // stands in for that check instead.
 //
@@ -60,8 +62,10 @@ func masterCredentialID(masterKey string) string {
 }
 
 // CredentialValidator resolves a presented bearer credential to the identity it
-// authenticates, or reports false.
-type CredentialValidator func(ctx context.Context, presented string) (*model.APIKey, bool)
+// authenticates. A credential that does not authenticate is an error wrapping
+// model.ErrInvalidCredential; any other error means the key store could not
+// answer, and must be reported as that rather than as a rejected credential.
+type CredentialValidator func(ctx context.Context, presented string) (*model.APIKey, error)
 
 // SyntheticCredentialLive reports whether id — a synthetic credential ID
 // isSyntheticCredential recognizes — is still admissible under the same gate
@@ -86,9 +90,9 @@ func NewCredentialValidator(store repository.Store, masterKey string) (Credentia
 		Active: true,
 	}
 
-	validate := func(ctx context.Context, presented string) (*model.APIKey, bool) {
+	validate := func(ctx context.Context, presented string) (*model.APIKey, error) {
 		if presented == "" {
-			return nil, false
+			return nil, model.ErrInvalidCredential
 		}
 
 		// 1. Master key check (always active if set).
@@ -96,11 +100,11 @@ func NewCredentialValidator(store repository.Store, masterKey string) (Credentia
 		// inputs are empty. Without this guard, an unset key plus an empty presented
 		// credential would compare equal, bypassing authentication.
 		if masterKey != "" && subtle.ConstantTimeCompare([]byte(presented), []byte(masterKey)) == 1 {
-			return masterAPIKey, true
+			return masterAPIKey, nil
 		}
 
 		// 2. Key store lookup.
-		return store.ValidateKey(ctx, presented)
+		return store.Authenticate(ctx, presented)
 	}
 
 	// syntheticCredentialLive is the liveness gate for a session minted from
@@ -145,9 +149,13 @@ func AuthMiddlewareWithSessions(store repository.Store, sessions repository.Sess
 			presented := strings.TrimPrefix(auth, "Bearer ")
 
 			if sessions != nil && strings.HasPrefix(presented, model.SessionTokenPrefix) {
-				sess, ok := sessions.ValidateSession(r.Context(), presented)
-				if !ok {
+				sess, err := sessions.AuthenticateSession(r.Context(), presented)
+				if errors.Is(err, model.ErrInvalidCredential) {
 					writeError(w, http.StatusUnauthorized, "session expired or invalid", "authentication_error", "invalid_session")
+					return
+				}
+				if err != nil {
+					writeCredentialStoreError(w, err)
 					return
 				}
 				// A session outlives the key it was minted from by design (up to
@@ -176,12 +184,19 @@ func AuthMiddlewareWithSessions(store repository.Store, sessions repository.Sess
 						return
 					}
 				} else {
-					cred, credOK := store.Get(r.Context(), sess.CredentialID)
-					if !credOK || !model.KeyIsUsable(cred) {
+					// Lookup rather than Get: a key store that could not answer
+					// has not said the source key is gone, and reading it as gone
+					// signed the operator out of the dashboard.
+					cred, err := store.Lookup(r.Context(), sess.CredentialID)
+					if err != nil && !errors.Is(err, model.ErrKeyNotFound) {
+						writeCredentialStoreError(w, err)
+						return
+					}
+					if err != nil || !model.KeyIsUsable(cred) {
 						writeError(w, http.StatusUnauthorized, "session expired or invalid", "authentication_error", "invalid_session")
 						return
 					}
-					scopes = cred.Scopes // store.Get already returns a clone
+					scopes = cred.Scopes // store.Lookup already returns a clone
 				}
 				// A session is presented to the rest of the stack as an APIKey so
 				// no downstream handler needs to know which kind of credential
@@ -214,14 +229,34 @@ func AuthMiddlewareWithSessions(store repository.Store, sessions repository.Sess
 				return
 			}
 
-			apiKey, ok := validate(r.Context(), presented)
-			if !ok {
+			apiKey, err := validate(r.Context(), presented)
+			if errors.Is(err, model.ErrInvalidCredential) {
 				writeError(w, http.StatusUnauthorized, "invalid or revoked API key", "authentication_error", "invalid_api_key")
+				return
+			}
+			if err != nil {
+				writeCredentialStoreError(w, err)
 				return
 			}
 			next.ServeHTTP(w, r.WithContext(model.StoreKeyInContext(r.Context(), apiKey, "")))
 		})
 	}
+}
+
+// writeCredentialStoreError answers a request whose credential could not be
+// checked because the key or session store failed to answer.
+//
+// It is a 503, not the 401 a rejected credential gets. The two call for
+// opposite responses from the caller: a 401 tells it the credential is bad,
+// which no OpenAI SDK retries and which signs the dashboard out, while nothing
+// is known to be wrong with this one — the store will answer again, and every
+// SDK retries a 5xx. The store's error is logged, never written: it can quote a
+// DSN or a host.
+func writeCredentialStoreError(w http.ResponseWriter, err error) {
+	logger.Default().Error("credential store unavailable", "error", err)
+	writeError(w, http.StatusServiceUnavailable,
+		"the gateway could not verify the credential; retry shortly",
+		"server_error", "credential_store_unavailable")
 }
 
 // RequireScope returns a middleware that checks whether the authenticated key

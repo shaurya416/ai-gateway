@@ -344,20 +344,30 @@ func (s *SQLStore) Delete(ctx context.Context, id string) error {
 // authentication — dropping one increment is preferable to returning a 401 on a
 // legitimate request.
 func (s *SQLStore) ValidateKey(ctx context.Context, key string) (*model.APIKey, bool) {
+	apiKey, err := s.Authenticate(ctx, key)
+	return apiKey, err == nil
+}
+
+// Authenticate is ValidateKey reporting why a key was refused. A key that does
+// not authenticate wraps model.ErrInvalidCredential; a query that failed is
+// returned as itself, because a database that cannot be read has not said
+// anything about the key — and answering "invalid or revoked" for it turned an
+// outage into a 401 on every request, which no client retries.
+func (s *SQLStore) Authenticate(ctx context.Context, key string) (*model.APIKey, error) {
 	// The empty string is never a valid key: an "Authorization: Bearer " header
 	// with no value must not match a stored record, however it came to exist.
 	if key == "" {
-		return nil, false
+		return nil, model.ErrInvalidCredential
 	}
 	apiKey, err := s.scanOne(ctx, s.stmtGetByHash, hashKey(key))
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil, false
+		return nil, model.ErrInvalidCredential
 	}
 	if err != nil {
-		return nil, false
+		return nil, fmt.Errorf("authenticate key: %w", err)
 	}
 	if !model.KeyIsUsable(apiKey) {
-		return nil, false
+		return nil, model.ErrInvalidCredential
 	}
 
 	// Auth check passed. Attempt to update usage counters. A failure here is
@@ -370,7 +380,7 @@ func (s *SQLStore) ValidateKey(ctx context.Context, key string) (*model.APIKey, 
 		apiKey.UsageCount++
 		apiKey.LastUsedAt = &now
 	}
-	return apiKey, true
+	return apiKey, nil
 }
 
 // RotateKey rotates the secret value for an existing API key. The returned key

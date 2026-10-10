@@ -302,25 +302,33 @@ func (s *KeyStore) RotateKey(_ context.Context, id string) (*model.APIKey, error
 // ValidateKey looks up a key by its full string and returns it if active. The
 // empty string is never a valid key: an "Authorization: Bearer " header with no
 // value must not match a stored record, however that record came to exist.
-func (s *KeyStore) ValidateKey(_ context.Context, key string) (*model.APIKey, bool) {
+func (s *KeyStore) ValidateKey(ctx context.Context, key string) (*model.APIKey, bool) {
+	k, err := s.Authenticate(ctx, key)
+	return k, err == nil
+}
+
+// Authenticate is ValidateKey reporting why a key was refused. The in-memory
+// store cannot fail to answer, so the only error it returns wraps
+// model.ErrInvalidCredential.
+func (s *KeyStore) Authenticate(_ context.Context, key string) (*model.APIKey, error) {
 	if key == "" {
-		return nil, false
+		return nil, model.ErrInvalidCredential
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	id, ok := s.byHash[hashKey(key)]
 	if !ok {
-		return nil, false
+		return nil, model.ErrInvalidCredential
 	}
 	k := s.byID[id].apiKey
 	if !model.KeyIsUsable(k) {
-		return nil, false
+		return nil, model.ErrInvalidCredential
 	}
 	now := time.Now().UTC()
 	lastUsedAt := now
 	k.LastUsedAt = &lastUsedAt
 	k.UsageCount++
-	return cloneAPIKey(k), true
+	return cloneAPIKey(k), nil
 }
 
 // Ping reports whether the store is reachable. The in-memory KeyStore is always

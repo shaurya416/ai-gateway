@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/ferro-labs/ai-gateway/internal/admin/model"
@@ -18,9 +19,9 @@ func TestCredentialValidator(t *testing.T) {
 	validate, _ := NewCredentialValidator(store, "master-secret")
 
 	t.Run("master key resolves to the master identity", func(t *testing.T) {
-		got, ok := validate(ctx, "master-secret")
-		if !ok {
-			t.Fatal("master key rejected")
+		got, err := validate(ctx, "master-secret")
+		if err != nil {
+			t.Fatalf("master key rejected: %v", err)
 		}
 		if want := masterCredentialID("master-secret"); got.ID != want {
 			t.Fatalf("ID = %q, want %q", got.ID, want)
@@ -31,9 +32,9 @@ func TestCredentialValidator(t *testing.T) {
 	})
 
 	t.Run("stored key resolves with its own scopes", func(t *testing.T) {
-		got, ok := validate(ctx, key.Key)
-		if !ok {
-			t.Fatal("stored key rejected")
+		got, err := validate(ctx, key.Key)
+		if err != nil {
+			t.Fatalf("stored key rejected: %v", err)
 		}
 		if len(got.Scopes) != 1 || got.Scopes[0] != model.ScopeReadOnly {
 			t.Fatalf("scopes = %v, want [read_only]", got.Scopes)
@@ -41,14 +42,14 @@ func TestCredentialValidator(t *testing.T) {
 	})
 
 	t.Run("unknown credential is rejected", func(t *testing.T) {
-		if _, ok := validate(ctx, "nonsense"); ok {
-			t.Fatal("unknown credential accepted")
+		if _, err := validate(ctx, "nonsense"); !errors.Is(err, model.ErrInvalidCredential) {
+			t.Fatalf("unknown credential: err = %v, want ErrInvalidCredential", err)
 		}
 	})
 
 	t.Run("empty credential is rejected", func(t *testing.T) {
-		if _, ok := validate(ctx, ""); ok {
-			t.Fatal("empty credential accepted")
+		if _, err := validate(ctx, ""); !errors.Is(err, model.ErrInvalidCredential) {
+			t.Fatalf("empty credential: err = %v, want ErrInvalidCredential", err)
 		}
 	})
 
@@ -59,9 +60,9 @@ func TestCredentialValidator(t *testing.T) {
 			t.Fatalf("Create: %v", err)
 		}
 		collideValidate, _ := NewCredentialValidator(s, k.Key)
-		got, ok := collideValidate(ctx, k.Key)
-		if !ok {
-			t.Fatal("credential rejected")
+		got, err := collideValidate(ctx, k.Key)
+		if err != nil {
+			t.Fatalf("credential rejected: %v", err)
 		}
 		if want := masterCredentialID(k.Key); got.ID != want {
 			t.Fatalf("ID = %q, want %q: the store was consulted before the master key", got.ID, want)
