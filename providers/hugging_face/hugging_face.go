@@ -85,7 +85,8 @@ func escapeModelPath(model string) (string, error) {
 	parts := strings.Split(model, "/")
 	for i, part := range parts {
 		if part == "" || part == "." || part == ".." {
-			return "", fmt.Errorf("hugging face: invalid model path segment %q", part)
+			return "", core.StatusError(Name, http.StatusBadRequest,
+				fmt.Sprintf("invalid model path segment %q", part))
 		}
 		parts[i] = url.PathEscape(part)
 	}
@@ -244,7 +245,8 @@ func (p *Provider) GenerateImage(ctx context.Context, req core.ImageRequest) (*c
 		return nil, err
 	}
 	if req.N != nil && *req.N != 1 {
-		return nil, fmt.Errorf("hugging face: text-to-image returns one image per request; only n=1 is supported (got %d)", *req.N)
+		return nil, core.StatusError(Name, http.StatusBadRequest,
+			fmt.Sprintf("text-to-image returns one image per request; only n=1 is supported (got %d)", *req.N))
 	}
 	escaped, err := escapeModelPath(req.Model)
 	if err != nil {

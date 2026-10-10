@@ -8,8 +8,9 @@ import (
 )
 
 // bufPool holds reusable bytes.Buffer instances for JSON marshaling on the
-// provider hot path. Using a pool avoids a fresh heap allocation on every
-// request for the serialized request body.
+// provider hot path. Using a pool avoids growing a fresh encoding buffer on
+// every request; the encoded bytes are copied out before the buffer is put
+// back, so nothing outside this file ever holds pooled memory.
 var bufPool = sync.Pool{
 	New: func() any {
 		return bytes.NewBuffer(make([]byte, 0, 2048))
@@ -48,32 +49,29 @@ func MarshalJSON(v any) ([]byte, error) {
 }
 
 // JSONBodyReader encodes v to JSON and returns an io.Reader over the result
-// along with the content length. Call Release when done with the reader to
-// return the buffer to the pool. This avoids the extra copy that MarshalJSON
-// performs, making it ideal for building HTTP request bodies.
+// along with the content length. The reader is a *bytes.Reader, so
+// http.NewRequest sets Content-Length and GetBody from it.
+//
+// The bytes the reader serves belong to that request alone: the pooled buffer
+// is used only to encode, and the result is copied out of it before the buffer
+// goes back to the pool. A request body has to stay intact until the transport
+// is done with it, and that can be after Client.Do has returned — the transport
+// writes the body while it reads the response, and keeps writing when an
+// upstream answers before reading the whole request (an early 401 or 429, or a
+// proxy that flushes its headers first). A reader over the pooled buffer itself
+// was rewritten by the next request's JSON while still on the wire, so one
+// caller's prompt was sent to another caller's upstream.
+//
+// release is retained for callers and has nothing left to return; calling it
+// is harmless.
 func JSONBodyReader(v any) (body io.Reader, contentLen int, release func(), err error) {
-	buf := bufPool.Get().(*bytes.Buffer)
-	buf.Reset()
-
-	enc := json.NewEncoder(buf)
-	enc.SetEscapeHTML(false)
-	if err := enc.Encode(v); err != nil {
-		buf.Reset()
-		bufPool.Put(buf)
+	b, err := MarshalJSON(v)
+	if err != nil {
 		return nil, 0, nil, err
 	}
-
-	// Trim trailing newline from json.Encoder.
-	b := buf.Bytes()
-	if len(b) > 0 && b[len(b)-1] == '\n' {
-		buf.Truncate(buf.Len() - 1)
-	}
-
-	reader := bytes.NewReader(buf.Bytes())
-	n := reader.Len()
-	rel := func() {
-		buf.Reset()
-		bufPool.Put(buf)
-	}
-	return reader, n, rel, nil
+	return bytes.NewReader(b), len(b), releaseNothing, nil
 }
+
+// releaseNothing is the release func JSONBodyReader returns: the body it built
+// owns its bytes, so there is no buffer to give back.
+func releaseNothing() {}

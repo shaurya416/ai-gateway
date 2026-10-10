@@ -76,7 +76,7 @@ func IsJambaModel(model string) bool {
 // with the operator's API key attached.
 func escapeModelSegment(model string) (string, error) {
 	if model == "" || model == "." || model == ".." || strings.ContainsAny(model, `/\`) {
-		return "", fmt.Errorf("ai21: invalid model %q", model)
+		return "", core.StatusError(Name, http.StatusBadRequest, fmt.Sprintf("invalid model %q", model))
 	}
 	return url.PathEscape(model), nil
 }

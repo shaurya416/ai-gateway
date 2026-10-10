@@ -241,8 +241,8 @@ func buildAnthropicRequest(ctx context.Context, req core.Request, stream bool) a
 }
 
 // newMessagesRequest sends a POST to the Anthropic /v1/messages endpoint with the
-// standard authentication and version headers. The returned release frees the
-// pooled request body and must be called by the caller.
+// standard authentication and version headers. The returned release is the one
+// core.JSONBodyReader returned, for the caller to defer.
 func (p *Provider) newMessagesRequest(ctx context.Context, aReq anthropicRequest) (*http.Response, func(), error) {
 	bodyReader, _, release, err := core.JSONBodyReader(aReq)
 	if err != nil {

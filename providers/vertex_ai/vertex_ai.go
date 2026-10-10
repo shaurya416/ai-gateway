@@ -299,7 +299,10 @@ func (p *Provider) doPredict(ctx context.Context, model string, body any, label 
 // Embed sends a text embedding request to Vertex AI's publisher model predict endpoint.
 func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.EmbeddingResponse, error) {
 	if !isVertexAITextEmbeddingModel(req.Model) {
-		return nil, fmt.Errorf("embed: unsupported Vertex AI text embedding model %q", req.Model)
+		// A model this provider serves on another surface: the caller's to fix,
+		// so a 400 rather than the 500 a bare error classifies as.
+		return nil, core.StatusError(Name, http.StatusBadRequest,
+			fmt.Sprintf("embed: unsupported text embedding model %q", req.Model))
 	}
 	if err := core.ValidateEmbeddingEncodingFormat(req.EncodingFormat); err != nil {
 		return nil, err

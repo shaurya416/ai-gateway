@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"slices"
 	"strings"
 
@@ -376,7 +377,10 @@ func bedrockKnownModelFamily(modelID string) bool {
 func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Response, error) {
 	modelID := bedrockModelRoutingID(req.Model)
 	if !bedrockKnownModelFamily(modelID) {
-		return nil, fmt.Errorf("unsupported Bedrock model prefix for model: %s", modelID)
+		// SupportsModel also admits the embedding and image families, which
+		// have no chat dispatch: the caller named a model this surface cannot
+		// serve, a 400 rather than the 500 a bare error classifies as.
+		return nil, core.StatusError(Name, http.StatusBadRequest, "unsupported Bedrock model prefix for model: "+modelID)
 	}
 	if err := core.EnforceUnsupportedParamsList(ctx, p.Name(), modelID, req, bedrockSupportedParams(modelID)...); err != nil {
 		return nil, err

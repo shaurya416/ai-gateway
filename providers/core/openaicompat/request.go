@@ -22,8 +22,8 @@ import (
 // "stream" flag (core.Request.Stream is omitempty, so false is omitted to match
 // the previous per-provider behaviour).
 //
-// The returned release func MUST be called once the caller is done with the
-// reader to return the pooled buffer; it mirrors core.JSONBodyReader.
+// It mirrors core.JSONBodyReader: the reader owns its bytes, so it stays valid
+// for as long as the transport sends it, and release has nothing to return.
 func BuildBody(req core.Request, stream bool) (body io.Reader, contentLen int, release func(), err error) {
 	req.Stream = stream
 	return core.JSONBodyReader(req)

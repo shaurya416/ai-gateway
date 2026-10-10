@@ -106,7 +106,7 @@ func (p *Provider) endpoint() string {
 // reach a different Azure route with the operator's api-key attached.
 func (p *Provider) opEndpoint(deployment, op string) (string, error) {
 	if deployment == "" || deployment == "." || deployment == ".." || strings.ContainsAny(deployment, `/\`) {
-		return "", fmt.Errorf("azure openai: invalid deployment %q", deployment)
+		return "", core.StatusError(Name, http.StatusBadRequest, fmt.Sprintf("invalid deployment %q", deployment))
 	}
 	return fmt.Sprintf("%s/openai/deployments/%s/%s?api-version=%s",
 		p.baseURL, url.PathEscape(deployment), op, p.apiVersion), nil

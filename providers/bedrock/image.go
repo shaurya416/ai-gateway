@@ -3,6 +3,7 @@ package bedrock
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
@@ -82,7 +83,9 @@ func (p *Provider) GenerateImage(ctx context.Context, req core.ImageRequest) (*c
 	case strings.HasPrefix(id, "stability.stable-diffusion-xl"):
 		return p.generateImageStability(ctx, req)
 	default:
-		return nil, fmt.Errorf("unsupported Bedrock image model: %s", req.Model)
+		// A model this provider serves on another surface: a 400, not the 500 a
+		// bare error classifies as.
+		return nil, core.StatusError(Name, http.StatusBadRequest, "unsupported Bedrock image model: "+req.Model)
 	}
 }
 

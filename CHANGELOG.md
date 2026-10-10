@@ -111,6 +111,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   either was configured for. It is now a load error naming the key, reported by
   `ferrogw validate` as well as at startup; an absent, null or empty `store_id`
   still takes the default.
+- A provider request body now stays intact until the transport has finished
+  sending it. Bodies were read straight out of a pooled buffer that went back
+  to the pool when the provider call returned — on a stream, as soon as the
+  response headers arrived — while Go's transport may still be writing the
+  body: it keeps writing when an upstream answers before reading the whole
+  request (an early `401` or `429`, or a proxy that flushes its headers
+  first). The next request then marshaled its JSON into the same memory, so
+  the upstream still receiving the first request was sent the second
+  request's model and prompt — another caller's content, to a provider and
+  account it was never addressed to. Each body now owns its bytes; the pool
+  is kept for encoding only.
+- A provider's own refusal of what the caller sent — before any upstream
+  call — now answers `400` with the reason. Hugging Face image generation
+  with `n` above 1, Cohere embeddings with `dimensions`, `user` or an unknown
+  `input_type`, Vertex AI embeddings on a model that does not embed, Bedrock
+  chat on an embedding or image model and Bedrock image generation on a model
+  that generates none, a malformed Replicate image `size`, and a model or
+  deployment id that cannot be one path segment (Hugging Face, Replicate,
+  AI21, Azure OpenAI) were each refused with a bare error. A bare error
+  carries no status, so the caller got `500` "internal error" with the reason
+  withheld, the target's retry budget was spent asking again, and a pool mode
+  offered the request to the next target as though this one had failed in
+  transit.
 - A credential change, sign-in, config change or log purge whose caller
   disconnects before the response is written now keeps its durable audit row.
   The row was appended on the request context, so once the client had gone a

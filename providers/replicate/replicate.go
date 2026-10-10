@@ -258,11 +258,13 @@ func (p *Provider) resolveModelURL(modelPath string) (url, version string, err e
 func escapeModelPath(model string) (string, error) {
 	parts := strings.Split(model, "/")
 	if len(parts) != 2 {
-		return "", fmt.Errorf("replicate: model must be in owner/name form, got %q", model)
+		return "", core.StatusError(Name, http.StatusBadRequest,
+			fmt.Sprintf("model must be in owner/name form, got %q", model))
 	}
 	for i, part := range parts {
 		if part == "" || part == "." || part == ".." {
-			return "", fmt.Errorf("replicate: invalid model path segment %q", part)
+			return "", core.StatusError(Name, http.StatusBadRequest,
+				fmt.Sprintf("invalid model path segment %q", part))
 		}
 		parts[i] = url.PathEscape(part)
 	}
@@ -414,7 +416,8 @@ func (p *Provider) GenerateImage(ctx context.Context, req core.ImageRequest) (*c
 	if req.Size != "" {
 		var w, h int
 		if n, _ := fmt.Sscanf(req.Size, "%dx%d", &w, &h); n != 2 || w <= 0 || h <= 0 {
-			return nil, fmt.Errorf("invalid size %q: expected WxH format with positive integers (e.g. \"1024x1024\")", req.Size)
+			return nil, core.StatusError(Name, http.StatusBadRequest,
+				fmt.Sprintf("invalid size %q: expected WxH format with positive integers (e.g. \"1024x1024\")", req.Size))
 		}
 		input.Width = w
 		input.Height = h

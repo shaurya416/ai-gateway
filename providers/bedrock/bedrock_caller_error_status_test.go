@@ -95,6 +95,28 @@ func TestCallerErrorsCarry400(t *testing.T) {
 			},
 			wantMsg: "search_documents",
 		},
+		{
+			name: "chat on a model of no chat family",
+			call: func(p *Provider) error {
+				_, err := p.Complete(context.Background(), core.Request{
+					Model:    "cohere.embed-english-v3",
+					Messages: []core.Message{{Role: core.RoleUser, Content: "hi"}},
+				})
+				return err
+			},
+			wantMsg: "cohere.embed-english-v3",
+		},
+		{
+			name: "image generation on a model that generates no images",
+			call: func(p *Provider) error {
+				_, err := p.GenerateImage(context.Background(), core.ImageRequest{
+					Model:  "anthropic.claude-3-5-sonnet-20240620-v1:0",
+					Prompt: "a cat",
+				})
+				return err
+			},
+			wantMsg: "unsupported Bedrock image model",
+		},
 	}
 
 	for _, tt := range tests {

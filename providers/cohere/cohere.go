@@ -610,7 +610,8 @@ func resolveInputType(requested string) (string, error) {
 		return defaultEmbedInputType, nil
 	}
 	if !cohereTextInputTypes[requested] {
-		return "", fmt.Errorf("embed: unsupported input_type %q; want one of search_document, search_query, classification, clustering", requested)
+		return "", core.StatusError(Name, http.StatusBadRequest,
+			fmt.Sprintf("embed: unsupported input_type %q; want one of search_document, search_query, classification, clustering", requested))
 	}
 	return requested, nil
 }
@@ -655,11 +656,14 @@ func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.
 	if err := core.ValidateEmbeddingEncodingFormat(req.EncodingFormat); err != nil {
 		return nil, err
 	}
+	// The caller's own parameters, refused before any call: a 400, not the 500
+	// a bare error classifies as, which retry and failover read as the target
+	// having failed.
 	if req.Dimensions != nil {
-		return nil, fmt.Errorf("embed: dimensions are not supported by Cohere embeddings")
+		return nil, core.StatusError(Name, http.StatusBadRequest, "embed: dimensions are not supported for these embeddings")
 	}
 	if req.User != "" {
-		return nil, fmt.Errorf("embed: user is not supported by Cohere embeddings")
+		return nil, core.StatusError(Name, http.StatusBadRequest, "embed: user is not supported for these embeddings")
 	}
 	inputType, err := resolveInputType(req.InputType)
 	if err != nil {

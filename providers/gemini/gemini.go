@@ -612,9 +612,9 @@ func geminiToolConfigFor(choice any) *geminiToolConfig {
 }
 
 // doJSONRequest marshals body to JSON and performs an HTTP request against the
-// Gemini API. It returns the live response plus a release func the caller must
-// defer to return the pooled request buffer. The label is woven into error
-// messages so callers can distinguish operations.
+// Gemini API. It returns the live response plus the release func
+// core.JSONBodyReader returned, for the caller to defer. The label is woven
+// into error messages so callers can distinguish operations.
 func (p *Provider) doJSONRequest(ctx context.Context, reqURL, label string, body any) (*http.Response, func(), error) {
 	bodyReader, _, release, err := core.JSONBodyReader(body)
 	if err != nil {
