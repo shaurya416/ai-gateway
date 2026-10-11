@@ -330,20 +330,16 @@ func (e *Executor) executeToolCall(ctx context.Context, tc core.ToolCall) core.M
 	span.SetAttributes(attribute.Int64(observability.AttrFerroMCPLatencyMs, int64(latencyMs)))
 
 	if err != nil {
-		// A dead transport means the server process is gone, not that this one
-		// call failed. Withdrawing it here is what stops the next thousand calls
-		// from being routed to a dead client: the registry clears the ready bit,
-		// so AllTools stops advertising its tools and FindToolServer stops
+		// A server that has gone is withdrawn here, which is what stops the next
+		// thousand calls from being routed to it: the registry clears the ready
+		// bit, so AllTools stops advertising its tools and FindToolServer stops
 		// resolving them. Costs exactly one failed call to detect.
 		//
-		// A broken pipe counts as much as a closed transport: it is the shape a
-		// death takes when a descendant still holds the pipes open, so the
-		// transport never noticed and the write failed instead. See
-		// isTransportDead for what deliberately does not qualify, and
-		// withdrawsOnDeadTransport for why an HTTP server never does.
-		if isTransportDead(err) && withdrawsOnDeadTransport(client) {
-			e.registry.markUnready(serverName, client, err)
-		}
+		// What counts as gone depends on the transport. For stdio a closed
+		// transport or a broken pipe is the verdict; for HTTP an unanswered
+		// request is confirmed with a ping first, and a withdrawn HTTP server is
+		// re-admitted once it answers again. See Registry.reportFailedCall.
+		e.registry.reportFailedCall(ctx, serverName, client, err)
 		metricToolCallsTotal.WithLabelValues(serverName, toolName, "error").Inc()
 		// The client and the model get toolErrorContent's fixed string, so this
 		// is where the actual failure is recorded. Warn, not debug: a tool call

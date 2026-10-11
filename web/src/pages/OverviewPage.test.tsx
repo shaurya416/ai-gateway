@@ -220,7 +220,7 @@ describe('OverviewPage — readiness', () => {
     renderPage()
 
     await screen.findByText('Serving traffic')
-    expect(screen.getByText(/an HTTP server that stops answering is not detected/)).toBeInTheDocument()
+    expect(screen.getByText(/one that stops answering while idle keeps reporting ready/)).toBeInTheDocument()
   })
 
   it('spells out that a required server being down stops all traffic', async () => {

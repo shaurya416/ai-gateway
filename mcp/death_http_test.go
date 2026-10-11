@@ -2,13 +2,20 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
+
+	"go.uber.org/goleak"
 )
 
 // roundTripFunc adapts a function to http.RoundTripper.
@@ -16,50 +23,504 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
-// TestHTTPBrokenPipeKeepsServerReady pins the documented boundary of death
-// detection: an HTTP server is never withdrawn after its handshake.
+// revivableTool is the one tool revivableMCPServer advertises.
+const revivableTool = "echo"
+
+// revivableMCPServer is an HTTP MCP server that can stop and come back on the
+// same address — what a restart, a redeploy or a network partition looks like
+// from the gateway's side of the connection.
+type revivableMCPServer struct {
+	t    *testing.T
+	addr string
+
+	mu  sync.Mutex
+	srv *httptest.Server
+
+	// toolStatus, when non-zero, is the HTTP status tools/call is refused with.
+	toolStatus atomic.Int32
+	// toolRPCError answers tools/call with a JSON-RPC error.
+	toolRPCError atomic.Bool
+	// toolIsError answers tools/call with a result that sets isError.
+	toolIsError atomic.Bool
+	// hangInitialize holds initialize open until the client gives up on it;
+	// initializeHeld is signalled once when it starts doing so.
+	hangInitialize atomic.Bool
+	initializeHeld chan struct{}
+	heldOnce       sync.Once
+
+	pings atomic.Int32
+	calls atomic.Int32
+}
+
+// newRevivableMCPServer starts the server on a free loopback port. Callers stop
+// it themselves (stop), so a test can order its teardown ahead of a leak check.
+func newRevivableMCPServer(t *testing.T) *revivableMCPServer {
+	t.Helper()
+	s := &revivableMCPServer{t: t, initializeHeld: make(chan struct{})}
+	s.listen("127.0.0.1:0")
+	return s
+}
+
+func (s *revivableMCPServer) url() string { return "http://" + s.addr + "/mcp" }
+
+// listen serves on addr; the first call records the address it got.
+func (s *revivableMCPServer) listen(addr string) {
+	s.t.Helper()
+	var lc net.ListenConfig
+	l, err := lc.Listen(s.t.Context(), "tcp", addr)
+	if err != nil {
+		s.t.Fatalf("listen on %s: %v", addr, err)
+	}
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(s.serve))
+	_ = srv.Listener.Close()
+	srv.Listener = l
+	srv.Start()
+
+	s.mu.Lock()
+	s.srv = srv
+	if s.addr == "" {
+		s.addr = l.Addr().String()
+	}
+	s.mu.Unlock()
+}
+
+// stop takes the server down: the listener closes, so a new connection is
+// refused, and every open connection is closed with it.
+func (s *revivableMCPServer) stop() {
+	s.mu.Lock()
+	srv := s.srv
+	s.srv = nil
+	s.mu.Unlock()
+	if srv != nil {
+		srv.Close()
+	}
+}
+
+// revive brings the server back on the address it had.
+func (s *revivableMCPServer) revive() { s.listen(s.addr) }
+
+func (s *revivableMCPServer) serve(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodDelete:
+		w.WriteHeader(http.StatusOK)
+		return
+	case http.MethodGet:
+		// No event stream: nothing here sends the client requests.
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	var req JSONRPCRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	answer := func(result any) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(JSONRPCResponse{JSONRPC: "2.0", ID: req.ID, Result: mustMarshal(result)})
+	}
+	switch req.Method {
+	case mcpMethodInitialize:
+		if s.hangInitialize.Load() {
+			s.heldOnce.Do(func() { close(s.initializeHeld) })
+			<-r.Context().Done()
+			return
+		}
+		w.Header().Set("Mcp-Session-Id", "sid-revivable")
+		answer(map[string]any{
+			"protocolVersion": "2025-06-18",
+			"capabilities":    map[string]any{"tools": map[string]any{}},
+			"serverInfo":      map[string]string{"name": "revivable", "version": "1"},
+		})
+	case "notifications/initialized":
+		w.WriteHeader(http.StatusAccepted)
+	case mcpMethodToolsList:
+		answer(map[string]any{"tools": []Tool{{Name: revivableTool, InputSchema: json.RawMessage(`{"type":"object"}`)}}})
+	case mcpMethodPing:
+		s.pings.Add(1)
+		answer(map[string]any{})
+	case mcpMethodToolsCall:
+		s.calls.Add(1)
+		switch {
+		case s.toolStatus.Load() != 0:
+			http.Error(w, "refused", int(s.toolStatus.Load()))
+		case s.toolRPCError.Load():
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"jsonrpc": "2.0", "id": req.ID,
+				"error": map[string]any{"code": -32602, "message": "invalid params"},
+			})
+		case s.toolIsError.Load():
+			answer(map[string]any{"content": []map[string]any{{"type": "text", "text": "bad input"}}, "isError": true})
+		default:
+			answer(map[string]any{"content": []map[string]any{{"type": "text", "text": "ok"}}})
+		}
+	default:
+		http.Error(w, "unknown method", http.StatusBadRequest)
+	}
+}
+
+// readyHTTPRegistry registers s under name with re-admission spaced by delay,
+// and completes its handshake.
+func readyHTTPRegistry(t *testing.T, s *revivableMCPServer, name string, delay time.Duration, timeoutSeconds int) *Registry {
+	t.Helper()
+	reg := NewRegistry(nil)
+	reg.readmitDelay, reg.readmitDelayCap = delay, 2*delay
+	reg.RegisterConfig(ServerConfig{Name: name, URL: s.url(), TimeoutSeconds: timeoutSeconds})
+	reg.InitializeAll(t.Context(), nil)
+	if !reg.IsReady(name) {
+		t.Fatalf("precondition: the server did not complete its handshake: %+v", reg.Status())
+	}
+	return reg
+}
+
+// httpClientOf returns the HTTP client the registry built for name.
+func httpClientOf(t *testing.T, reg *Registry, name string) *Client {
+	t.Helper()
+	reg.mu.RLock()
+	defer reg.mu.RUnlock()
+	c, ok := reg.servers[name].client.(*Client)
+	if !ok {
+		t.Fatalf("server %q is not served by the HTTP client", name)
+	}
+	return c
+}
+
+// TestHTTPServerThatDiesIsWithdrawnAndRestored is the regression test for an
+// HTTP MCP server that stopped answering after its handshake staying ready.
+//
+// Death after the handshake was detected for stdio servers only. An HTTP
+// server that went away kept its tools advertised, so every turn offered the
+// model tools whose every call failed, and a server marked required held
+// /readyz at 200 for an instance that could not serve what it was required for.
+// The withdrawal used to be terminal as well — nothing re-initialized a server
+// once withdrawn — which is why an HTTP server was never withdrawn at all.
+//
+// Now an unanswered call that a ping confirms withdraws the server, and it is
+// re-admitted, tools and gauge included, once it completes a handshake again.
+func TestHTTPServerThatDiesIsWithdrawnAndRestored(t *testing.T) {
+	s := newRevivableMCPServer(t)
+	defer s.stop()
+	const name = "revives"
+	reg := readyHTTPRegistry(t, s, name, 50*time.Millisecond, 2)
+	defer func() { _ = reg.Close() }()
+	exec := NewExecutor(reg, 5, nil)
+
+	s.stop()
+	msg := exec.executeToolCall(t.Context(), toolCallNamed(revivableTool))
+	if !strings.Contains(msg.Content, "error") {
+		t.Fatalf("a call to a server that is down answered %q; want an error payload", msg.Content)
+	}
+
+	if reg.IsReady(name) {
+		t.Fatal("an HTTP server that stopped answering is still ready")
+	}
+	if tools := reg.AllTools(); len(tools) != 0 {
+		t.Errorf("AllTools still advertises %v for a server that is down", tools)
+	}
+	if _, ok := reg.FindToolServer(revivableTool); ok {
+		t.Error("FindToolServer still resolves a tool on a server that is down")
+	}
+	if st := reg.Status(); len(st) != 1 || st[0].Ready || st[0].LastError == "" {
+		t.Errorf("Status() = %+v; want the server unready with the reason recorded", st)
+	}
+	if v, ok := serverUpSeries(t, name); !ok || v != 0 {
+		t.Errorf("gateway_mcp_server_up = %v (present %v); want 0 while the server is down", v, ok)
+	}
+
+	// Re-admission keeps trying while the server stays down, and records why
+	// each attempt failed.
+	time.Sleep(200 * time.Millisecond)
+	if reg.IsReady(name) {
+		t.Fatal("a server that is still down was re-admitted")
+	}
+
+	s.revive()
+	waitUntil(t, 10*time.Second, "the server to be re-admitted once it answers again", func() bool {
+		return reg.IsReady(name)
+	})
+
+	if tools := reg.AllTools(); len(tools) != 1 || tools[0].Name != revivableTool {
+		t.Errorf("AllTools = %v after recovery; want the server's tool advertised again", tools)
+	}
+	if st := reg.Status(); st[0].LastError != "" {
+		t.Errorf("Status() still reports %q for a server that recovered", st[0].LastError)
+	}
+	if v, _ := serverUpSeries(t, name); v != 1 {
+		t.Errorf("gateway_mcp_server_up = %v after recovery; want 1", v)
+	}
+	before := s.calls.Load()
+	if msg := exec.executeToolCall(t.Context(), toolCallNamed(revivableTool)); msg.Content != "ok" {
+		t.Errorf("a call after recovery answered %q; want the tool's result", msg.Content)
+	}
+	if s.calls.Load() != before+1 {
+		t.Error("the call after recovery never reached the server")
+	}
+}
+
+// TestHTTPAnsweredToolErrorsDoNotWithdraw pins what is not evidence. A server
+// that answered — with an HTTP error status, a JSON-RPC error, or a result that
+// sets isError — is there to answer, so none of these withdraws it, and none is
+// even worth a confirming ping.
+func TestHTTPAnsweredToolErrorsDoNotWithdraw(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		arm  func(*revivableMCPServer)
+	}{
+		{"http 400", func(s *revivableMCPServer) { s.toolStatus.Store(http.StatusBadRequest) }},
+		{"http 403", func(s *revivableMCPServer) { s.toolStatus.Store(http.StatusForbidden) }},
+		{"http 500", func(s *revivableMCPServer) { s.toolStatus.Store(http.StatusInternalServerError) }},
+		{"json-rpc error", func(s *revivableMCPServer) { s.toolRPCError.Store(true) }},
+		{"tool isError result", func(s *revivableMCPServer) { s.toolIsError.Store(true) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newRevivableMCPServer(t)
+			defer s.stop()
+			reg := readyHTTPRegistry(t, s, "answers", 10*time.Millisecond, 2)
+			defer func() { _ = reg.Close() }()
+			exec := NewExecutor(reg, 5, nil)
+
+			tc.arm(s)
+			exec.executeToolCall(t.Context(), toolCallNamed(revivableTool))
+			exec.executeToolCall(t.Context(), toolCallNamed(revivableTool))
+
+			if !reg.IsReady("answers") {
+				t.Fatalf("a server that answered the call was withdrawn: %+v", reg.Status())
+			}
+			if len(reg.AllTools()) != 1 {
+				t.Errorf("AllTools = %v; want the tool still advertised", reg.AllTools())
+			}
+			if got := s.calls.Load(); got != 2 {
+				t.Errorf("the server received %d calls; want both sent", got)
+			}
+			if got := s.pings.Load(); got != 0 {
+				t.Errorf("the server was pinged %d times; an answered call is not evidence it has gone", got)
+			}
+		})
+	}
+}
+
+// TestHTTPBrokenPipeKeepsServerReady pins the case confirmation exists for: an
+// unanswered call to a server that is still there.
 //
 // net/http reports a connection the server reset mid-upload — a server
 // restarting, or a proxy refusing a large body — as a write that failed with
-// EPIPE in a share of cases, depending on which of its loops sees the reset
-// first, and as ECONNRESET in the rest. EPIPE is conclusive for a stdio pipe,
-// so the executor withdrew the HTTP server on it: its tools stopped being
-// advertised and, with nothing ever re-initializing an HTTP server, stayed
-// withdrawn until the next configuration reload, though the next request would
-// have opened a new connection and been served.
+// EPIPE in a share of cases. EPIPE is conclusive for a stdio pipe, and reading
+// it the same way for HTTP withdrew a server whose next request, on a new
+// connection, would have been served. The ping that confirms the failure is
+// that next request: the server answers it, and stays ready.
 func TestHTTPBrokenPipeKeepsServerReady(t *testing.T) {
-	var sent atomic.Int32
-	c := NewClient("http://mcp.invalid/mcp", nil, 5*time.Second)
-	c.httpClient.Transport = roundTripFunc(func(*http.Request) (*http.Response, error) {
-		sent.Add(1)
-		// The shape net/http returns for that reset: the socket write failed.
-		return nil, &net.OpError{Op: "write", Net: "tcp", Err: os.NewSyscallError("write", syscall.EPIPE)}
+	s := newRevivableMCPServer(t)
+	defer s.stop()
+	reg := readyHTTPRegistry(t, s, "remote", 10*time.Millisecond, 5)
+	defer func() { _ = reg.Close() }()
+
+	// Fail the next request the way net/http reports that reset, then serve
+	// normally.
+	c := httpClientOf(t, reg, "remote")
+	base := c.httpClient.Transport
+	var armed atomic.Bool
+	c.httpClient.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if armed.CompareAndSwap(true, false) {
+			return nil, &net.OpError{Op: "write", Net: "tcp", Err: os.NewSyscallError("write", syscall.EPIPE)}
+		}
+		return base.RoundTrip(r)
 	})
 
 	// The failure must be one the stdio rule reads as a dead transport, or this
 	// test proves nothing about it.
-	if _, err := c.CallTool(context.Background(), "t1", nil); !isTransportDead(err) {
-		t.Fatalf("precondition: CallTool error %v is not a dead-transport error", err)
+	armed.Store(true)
+	if _, err := c.CallTool(t.Context(), revivableTool, nil); !isTransportDead(err) || !isUnreachable(err) {
+		t.Fatalf("precondition: CallTool error %v is not an unanswered broken pipe", err)
 	}
 
-	reg := registryWith(map[string]mcpClient{"remote": c})
-	reg.mu.Lock()
-	reg.servers["remote"].tools = []Tool{{Name: "t1"}}
-	reg.toolMap["t1"] = "remote"
-	reg.mu.Unlock()
-
 	exec := NewExecutor(reg, 5, nil)
-	before := sent.Load()
-	exec.executeToolCall(context.Background(), toolCallNamed("t1"))
+	armed.Store(true)
+	exec.executeToolCall(t.Context(), toolCallNamed(revivableTool))
 
 	if !reg.IsReady("remote") {
-		t.Fatal("one broken connection withdrew an HTTP server")
+		t.Fatalf("one broken connection withdrew an HTTP server that was answering: %+v", reg.Status())
+	}
+	if got := s.pings.Load(); got != 1 {
+		t.Errorf("the server was pinged %d times; want the failure confirmed once", got)
 	}
 	if len(reg.AllTools()) != 1 {
 		t.Errorf("AllTools = %v after one broken connection; want the server's tool still advertised", reg.AllTools())
 	}
-	exec.executeToolCall(context.Background(), toolCallNamed("t1"))
-	if got := sent.Load() - before; got != 2 {
-		t.Errorf("the server was sent %d calls; want the call after the broken connection sent as well", got)
+	before := s.calls.Load()
+	exec.executeToolCall(t.Context(), toolCallNamed(revivableTool))
+	if s.calls.Load() != before+1 {
+		t.Error("the call after the broken connection was not sent to the server")
+	}
+}
+
+// TestHTTPCallerCancellationIsNotEvidence covers a request the caller abandoned:
+// the call goes unanswered because the client hung up, which says nothing about
+// the server, so it is not confirmed and does not withdraw anything.
+func TestHTTPCallerCancellationIsNotEvidence(t *testing.T) {
+	s := newRevivableMCPServer(t)
+	defer s.stop()
+	reg := readyHTTPRegistry(t, s, "remote", 10*time.Millisecond, 5)
+	defer func() { _ = reg.Close() }()
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	NewExecutor(reg, 5, nil).executeToolCall(ctx, toolCallNamed(revivableTool))
+
+	if !reg.IsReady("remote") {
+		t.Fatalf("a call the caller cancelled withdrew the server: %+v", reg.Status())
+	}
+	if got := s.pings.Load(); got != 0 {
+		t.Errorf("the server was pinged %d times over a call the caller cancelled", got)
+	}
+}
+
+// TestIsUnreachableOnlyForUnansweredRequests pins the classification at the
+// client, where the distinction is made: a request with no answer is
+// unreachable, and anything the server sent back is not.
+func TestIsUnreachableOnlyForUnansweredRequests(t *testing.T) {
+	s := newRevivableMCPServer(t)
+	c := NewClient(s.url(), nil, 2*time.Second)
+	defer func() { _ = c.Close() }()
+	if _, err := c.Initialize(t.Context()); err != nil {
+		t.Fatalf("initialize: %v", err)
+	}
+
+	s.toolStatus.Store(http.StatusUnauthorized)
+	if _, err := c.CallTool(t.Context(), revivableTool, nil); err == nil || isUnreachable(err) {
+		t.Errorf("an HTTP 401 answer classified as unreachable (err %v)", err)
+	}
+	s.toolStatus.Store(0)
+	s.toolRPCError.Store(true)
+	if _, err := c.CallTool(t.Context(), revivableTool, nil); err == nil || isUnreachable(err) {
+		t.Errorf("a JSON-RPC error answer classified as unreachable (err %v)", err)
+	}
+	if err := c.Ping(t.Context()); err != nil {
+		t.Errorf("ping to a live server: %v", err)
+	}
+
+	s.stop()
+	if _, err := c.CallTool(t.Context(), revivableTool, nil); !isUnreachable(err) {
+		t.Errorf("a call to a closed port classified as answered (err %v)", err)
+	}
+	if err := c.Ping(t.Context()); !isUnreachable(err) {
+		t.Errorf("a ping to a closed port classified as answered (err %v)", err)
+	}
+
+	// The resolver's answer is stubbed: what a lookup of a real name returns
+	// depends on the machine running the test.
+	dnsFail := NewClient("http://mcp.invalid/mcp", nil, 2*time.Second)
+	dnsFail.httpClient.Transport = roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return nil, &net.OpError{Op: "dial", Net: "tcp", Err: &net.DNSError{Err: "no such host", Name: "mcp.invalid", IsNotFound: true}}
+	})
+	if _, err := dnsFail.CallTool(t.Context(), revivableTool, nil); !isUnreachable(err) {
+		t.Errorf("a call to a host that does not resolve classified as answered (err %v)", err)
+	}
+
+	// The wrap keeps the chain beneath it: a deadline is still a deadline.
+	wrapped := &unreachableError{context.DeadlineExceeded}
+	if !errors.Is(wrapped, context.DeadlineExceeded) {
+		t.Error("unreachableError hid the error it wraps from errors.Is")
+	}
+}
+
+// TestRegistryCloseStopsReadmission covers teardown while a withdrawn server is
+// still down: the re-admission loop must end with the registry, leaving no
+// goroutine behind.
+func TestRegistryCloseStopsReadmission(t *testing.T) {
+	ignore := goleak.IgnoreCurrent()
+
+	s := newRevivableMCPServer(t)
+	reg := readyHTTPRegistry(t, s, "gone", 10*time.Millisecond, 2)
+	s.stop()
+	NewExecutor(reg, 5, nil).executeToolCall(t.Context(), toolCallNamed(revivableTool))
+	if reg.IsReady("gone") {
+		t.Fatal("precondition: the server was not withdrawn")
+	}
+	// Let several attempts fail first, so the loop is mid-backoff.
+	time.Sleep(100 * time.Millisecond)
+
+	start := time.Now()
+	if err := reg.Close(); err != nil {
+		t.Logf("close: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Errorf("Close took %s with a re-admission loop running; want it cut short", elapsed)
+	}
+	goleak.VerifyNone(t, ignore)
+}
+
+// TestRegistryCloseCancelsAReadmissionHandshake covers teardown while a
+// re-admission handshake is in flight against a server that accepts the
+// connection and never answers. Close must cancel it rather than wait out the
+// handshake's own timeout, and leave nothing running.
+func TestRegistryCloseCancelsAReadmissionHandshake(t *testing.T) {
+	ignore := goleak.IgnoreCurrent()
+
+	s := newRevivableMCPServer(t)
+	reg := readyHTTPRegistry(t, s, "wedged", 10*time.Millisecond, 30)
+	s.stop()
+	NewExecutor(reg, 5, nil).executeToolCall(t.Context(), toolCallNamed(revivableTool))
+	if reg.IsReady("wedged") {
+		t.Fatal("precondition: the server was not withdrawn")
+	}
+
+	s.hangInitialize.Store(true)
+	s.revive()
+	select {
+	case <-s.initializeHeld:
+	case <-time.After(10 * time.Second):
+		t.Fatal("no re-admission handshake reached the server")
+	}
+
+	start := time.Now()
+	if err := reg.Close(); err != nil {
+		t.Logf("close: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 3*time.Second {
+		t.Errorf("Close took %s with a handshake in flight; want it cancelled", elapsed)
+	}
+	if reg.IsReady("wedged") {
+		t.Error("a handshake cancelled by Close re-admitted the server")
+	}
+	s.stop()
+	goleak.VerifyNone(t, ignore)
+}
+
+// TestReadmissionEndsWhenTheServerIsReplaced covers a reload that replaces a
+// withdrawn server under the same name: the loop serving the old transport
+// ends, and never touches the replacement.
+func TestReadmissionEndsWhenTheServerIsReplaced(t *testing.T) {
+	s := newRevivableMCPServer(t)
+	defer s.stop()
+	reg := readyHTTPRegistry(t, s, "svc", 10*time.Millisecond, 2)
+	defer func() { _ = reg.Close() }()
+	old := httpClientOf(t, reg, "svc")
+
+	s.stop()
+	NewExecutor(reg, 5, nil).executeToolCall(t.Context(), toolCallNamed(revivableTool))
+	if reg.IsReady("svc") {
+		t.Fatal("precondition: the server was not withdrawn")
+	}
+
+	// Replace it with a server that points nowhere, so only the old loop could
+	// ever mark the name ready.
+	reg.RegisterConfig(ServerConfig{Name: "svc", URL: "http://127.0.0.1:1/mcp", TimeoutSeconds: 1})
+	s.revive()
+
+	done := make(chan struct{})
+	go func() {
+		reg.readmitting.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the re-admission loop for a replaced transport is still running")
+	}
+	if reg.IsReady("svc") {
+		t.Error("the old transport's re-admission marked the replacement ready")
+	}
+	if httpClientOf(t, reg, "svc") == old {
+		t.Error("precondition: re-registration should have installed a new client")
 	}
 }

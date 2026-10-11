@@ -69,7 +69,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-
+- An HTTP MCP server that stops answering is now withdrawn, and a `required`
+  one takes `/readyz` to `503`. Death after the handshake was detected for stdio
+  servers only: an HTTP server that went away — a crash, a redeploy, a network
+  partition — kept reporting ready and kept its tools advertised, so every turn
+  offered the model tools whose every call failed, and `/readyz` answered `200`
+  for an instance that could not serve what it was configured to require. HTTP
+  failures were not treated as death because nothing re-initialized a withdrawn
+  server, so one reset connection would have taken away the tools of a server
+  that answered the next request, until the next configuration reload. Now a
+  tool call that goes unanswered — connection refused or reset, a host that
+  does not resolve, a timeout — is confirmed with a ping, and the server is
+  withdrawn only when the ping goes unanswered too. A server that answered, with
+  an HTTP error status, a JSON-RPC error or an `isError` result, is never
+  withdrawn, and a call the caller cancelled is not evidence. A withdrawn HTTP
+  server is re-admitted without a reload: the handshake is retried after 5s,
+  the wait doubling to at most 2 minutes, and the first one that succeeds
+  restores its tools, its `gateway_mcp_server_up` gauge and its readiness.
+  Detection follows traffic — an idle server that goes away is noticed by the
+  next call to it — and a server that never completed its first handshake still
+  takes a reload.
 - Reading the config through the Admin API no longer writes to the running
   config. `GET /admin/config` and `GET /admin/config/history` redact a copy of
   it, but the copy shared the gateway's own retry, circuit-breaker and sticky

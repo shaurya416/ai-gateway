@@ -28,9 +28,10 @@ type mcpClient interface {
 // ping mandatory for servers, so a transport that can issue one can distinguish
 // a server that has genuinely gone from one that merely looks that way.
 //
-// Optional rather than part of mcpClient: only the stdio transport has a death
-// signal to confirm, and widening the interface would oblige every adapter to
-// carry a method nothing calls on it.
+// Optional rather than part of mcpClient: only a transport with a death signal
+// to confirm needs one — the stdio transport's closed error stream, and the HTTP
+// transport's unanswered request — and widening the interface would oblige every
+// adapter to carry a method nothing calls on it.
 type pinger interface {
 	Ping(ctx context.Context) error
 }
@@ -45,30 +46,28 @@ type pinger interface {
 // syscall error instead.
 //
 // Nothing else belongs here. A timeout, a refused connection, or a malformed
-// frame can all resolve on their own, and withdrawing a server is terminal
-// until the next configuration reload.
+// frame can all resolve on their own, and withdrawing a stdio server is
+// terminal until the next configuration reload.
 //
 // Both readings are about a stdio pipe. An HTTP client's error can carry EPIPE
-// too, and means less there — see withdrawsOnDeadTransport.
+// too, and means less there — see isNetworkServer.
 func isTransportDead(err error) bool {
 	return errors.Is(err, transport.ErrTransportClosed) ||
 		errors.Is(err, syscall.EPIPE) ||
 		errors.Is(err, io.ErrClosedPipe)
 }
 
-// withdrawsOnDeadTransport reports whether a dead transport is grounds for
-// withdrawing the server behind it.
+// isNetworkServer reports whether c reaches its server over the network rather
+// than owning it as a subprocess.
 //
-// It is for stdio, whose pipes are the server process: once they break, the
-// process has gone. It is not for the HTTP transport. net/http reports a
-// connection the server reset mid-upload — a server restarting, or a proxy
-// refusing a large body — as a write that failed with EPIPE in a share of
-// cases, and that connection is all it speaks for: the next request opens
-// another. Nothing re-initializes a withdrawn server, so withdrawing on it took
-// the server's tools away until the next configuration reload and, for a
-// required server, held /readyz at 503 while the server was answering again.
-// Death after the handshake is detected for stdio servers only.
-func withdrawsOnDeadTransport(c mcpClient) bool {
-	_, isHTTP := c.(*Client)
-	return !isHTTP
+// The two differ in what proves a death and in what can follow one. A stdio
+// server's pipes are the process: once they break it has gone, and nothing
+// short of a configuration reload starts another. An HTTP server outlives any
+// one connection — net/http reports a connection the server reset mid-upload as
+// a broken pipe in a share of cases, though the next request opens another — so
+// a failed request is only a reason to ask (Registry.confirmUnreachable), and a
+// server that has gone can come back (Registry.readmit).
+func isNetworkServer(c mcpClient) bool {
+	_, ok := c.(*Client)
+	return ok
 }

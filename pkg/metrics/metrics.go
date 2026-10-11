@@ -140,8 +140,9 @@ var (
 	// MCPServerInitFailures counts MCP servers whose initialize handshake or
 	// tool discovery failed. A failure is logged and skipped so one unreachable
 	// server cannot stop the gateway, which makes this counter the only
-	// machine-readable signal that a configured MCP server never came up.
-	// Alert on any non-zero value.
+	// machine-readable signal that a configured MCP server never came up. Each
+	// failed attempt to re-admit an HTTP server that stopped answering counts
+	// too. Alert on any non-zero value.
 	MCPServerInitFailures = promauto.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "gateway_mcp_server_init_failures_total",
@@ -153,7 +154,9 @@ var (
 	// MCPServerUp tracks per-MCP-server availability as a gauge:
 	// 0 = not ready (never initialized, or its transport has since died),
 	// 1 = ready and advertising tools. A server that drops from 1 to 0 without
-	// a config change has lost its transport — for stdio, its subprocess died.
+	// a config change has lost its transport — for stdio, its subprocess died;
+	// for HTTP, it stopped answering, and it returns to 1 once it completes a
+	// handshake again.
 	MCPServerUp = promauto.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "gateway_mcp_server_up",

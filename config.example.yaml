@@ -525,11 +525,12 @@ mcp_servers:
     # a required server that is down 503s /readyz and takes the instance out
     # of rotation, stopping all traffic including requests that use no tools.
     #
-    # Unready means the initialize handshake has not completed. An HTTP server
-    # that answered the handshake and later became unreachable keeps reporting
-    # ready and its calls fail per request; only a stdio server's death is
-    # detected after the fact. So `required: true` here does not take the
-    # instance out of rotation when this server goes down mid-run.
+    # Unready means the initialize handshake has not completed, or the server
+    # was lost after it. An HTTP server is lost when a tool call to it and a
+    # confirming ping both go unanswered, and is re-admitted on its own once it
+    # answers a handshake again (retried after 5s, backing off to 2 minutes).
+    # Detection follows traffic: an idle server that goes away keeps reporting
+    # ready until a call to it fails.
     required: false
 
   # Web-search tool server.

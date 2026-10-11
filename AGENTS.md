@@ -449,25 +449,49 @@ existing config behaves exactly as it did before the field existed.
 | absent / `false` | reported in the body | `200 ready` |
 | `true` | reported in the body | `503 not_ready`, reason `required mcp server unavailable` |
 
-"Unready" is narrower than "unreachable" — read the two paragraphs below before
+"Unready" is narrower than "unreachable" — read the paragraphs below before
 setting `required: true` on an HTTP server.
 
 A server is unready when it has not completed the initialize handshake. That
 covers a server whose transport could not be built at all — an unresolvable
 `${VAR}` in its `headers` or `env` — which is reported unready rather than
 omitted from the body. A server that completed the handshake and later lost its
-transport also becomes unready, but only for the transports named below.
+transport also becomes unready, detected per transport as described below.
 
-Death **after** a successful handshake is detected for **stdio servers only**. A
-stdio server whose subprocess exits is noticed two ways — the process closing
-its error stream, confirmed with a ping before anything is withdrawn, and a tool
-call failing with a closed transport or a broken pipe — and its tools are then
-withdrawn from the model, so it stops being advertised and stops resolving.
+A **stdio** server whose subprocess exits is noticed two ways — the process
+closing its error stream, confirmed with a ping before anything is withdrawn,
+and a tool call failing with a closed transport or a broken pipe — and its tools
+are then withdrawn from the model, so it stops being advertised and stops
+resolving. It stays withdrawn until the next configuration reload: an exited
+process is not restarted.
 
-An HTTP server that becomes unreachable after a successful handshake is **not
-currently detected**: it continues to report ready and its tools stay
-advertised, and calls to it fail per request. Do not rely on `required: true`
-to take an instance out of rotation when an HTTP MCP server goes down.
+An **HTTP** server is withdrawn when a tool call to it goes unanswered and the
+ping sent to confirm it goes unanswered too. Unanswered means no HTTP response
+arrived — the connection was refused or reset, the host did not resolve, a
+timeout elapsed — on a request the caller had not cancelled. A server that
+answers anything, a `4xx`, a `5xx`, a JSON-RPC error or a tool result with
+`isError`, is not withdrawn, and neither is one that fails a call and then
+answers the ping: one reset connection is not a dead server. A withdrawn HTTP
+server is re-admitted on its own: the handshake is retried 5s after the
+withdrawal, the wait doubling after each failure up to 2 minutes, and the first
+handshake that succeeds restores its tools, its `gateway_mcp_server_up` gauge
+and its readiness, with no reload. Each failed attempt is recorded as the
+server's last error and counted in `gateway_mcp_server_init_failures_total`.
+Retrying stops when a reload replaces the server or the gateway shuts down.
+
+Know the limits of the HTTP case before relying on `required: true` for one:
+
+- **Detection follows traffic.** Nothing probes an idle HTTP server, so one that
+  goes away while no tool call reaches it keeps reporting ready until a call
+  fails.
+- **A reverse proxy answers for the server behind it.** A `502`, `503` or `504`
+  from a proxy whose backend is down is an answer, so that server is not
+  withdrawn and its calls fail per request.
+- **Recovery is not instant.** A server that comes back stays withdrawn until
+  the next attempt, up to the 2-minute cap after a long outage — for a required
+  server, `/readyz` answers `503` for that long.
+- **Only a lost server is retried.** A server that never completed its *first*
+  handshake is not re-admitted; that still takes a reload.
 
 Set `required: true` only for a server the deployment genuinely cannot serve
 without. A required server that is down takes the instance out of rotation and

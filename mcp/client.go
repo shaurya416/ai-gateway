@@ -248,9 +248,42 @@ func (c *Client) CallTool(ctx context.Context, name string, arguments json.RawMe
 	return &result, nil
 }
 
+// Ping asks the server whether it is still there, with the ping request MCP
+// obliges every server to answer. Any answer, an error included, proves the
+// server is reachable; only an error that satisfies isUnreachable says it is
+// not.
+func (c *Client) Ping(ctx context.Context) error {
+	if _, err := c.call(ctx, mcpMethodPing, nil); err != nil {
+		return fmt.Errorf("mcp ping: %w", err)
+	}
+	return nil
+}
+
 // errSessionExpired reports a 404 to a request that carried a session ID: the
 // server has terminated that session and no longer recognises it.
 var errSessionExpired = errors.New("mcp server no longer recognises the session")
+
+// unreachableError marks a request the server never answered: it could not be
+// delivered — the connection was refused or reset, the host did not resolve, a
+// deadline elapsed first — or the connection broke before the answer was read
+// in full. Anything the server sent back, an HTTP error status or a JSON-RPC
+// error included, is an answer and is never wrapped in one.
+//
+// The message and the chain beneath it are the wrapped error's own, so
+// errors.Is still finds a deadline or a syscall error through it.
+type unreachableError struct{ err error }
+
+func (e *unreachableError) Error() string { return e.err.Error() }
+func (e *unreachableError) Unwrap() error { return e.err }
+
+// isUnreachable reports whether err records a request the server never
+// answered. It is the only failure the HTTP transport offers as evidence that a
+// server has gone, and it is evidence rather than proof: see
+// Registry.confirmUnreachable.
+func isUnreachable(err error) bool {
+	var u *unreachableError
+	return errors.As(err, &u)
+}
 
 // call sends a JSON-RPC 2.0 request and returns the decoded response.
 // It sets all required headers including the session ID once established.
@@ -335,7 +368,7 @@ func (c *Client) send(ctx context.Context, method string, params any, sid string
 
 	httpResp, err := c.httpClient.Do(httpReq)
 	if err != nil {
-		return nil, fmt.Errorf("mcp http do: %w", err)
+		return nil, fmt.Errorf("mcp http do: %w", &unreachableError{err})
 	}
 	defer func() { _ = httpResp.Body.Close() }()
 
@@ -413,7 +446,7 @@ var errResponseTooLarge = errors.New("mcp response exceeds the size limit")
 func readJSONResponse(body io.Reader) (*JSONRPCResponse, error) {
 	respBody, err := io.ReadAll(body)
 	if err != nil {
-		return nil, fmt.Errorf("mcp read body: %w", err)
+		return nil, fmt.Errorf("mcp read body: %w", &unreachableError{err})
 	}
 	if len(respBody) > maxResponseBodyBytes {
 		return nil, errResponseTooLarge
@@ -504,7 +537,7 @@ func readSSEResponse(body io.Reader, onRequest func(data string)) (*JSONRPCRespo
 			break
 		}
 		if err != nil {
-			return nil, fmt.Errorf("mcp read body: %w", err)
+			return nil, fmt.Errorf("mcp read body: %w", &unreachableError{err})
 		}
 	}
 	// The spec discards an event that no blank line terminated. Dispatch it

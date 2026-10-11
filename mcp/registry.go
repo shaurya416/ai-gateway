@@ -21,6 +21,11 @@ import (
 // because its transport died rather than because a call or handshake failed.
 var errTransportExited = errors.New("mcp: server transport exited")
 
+// errServerUnreachable is the cause recorded when an HTTP server is marked
+// unready because a tool call and the ping sent to confirm it both went
+// unanswered.
+var errServerUnreachable = errors.New("mcp: server unreachable")
+
 const (
 	// transportProbeInterval is how often a stdio server whose stderr reached
 	// EOF is re-probed while it keeps answering. It runs only for a server that
@@ -36,6 +41,19 @@ const (
 	// defaultToolCallTimeout is the per-tool-call timeout applied when a server
 	// config specifies no (or an invalid) TimeoutSeconds.
 	defaultToolCallTimeout = 30 * time.Second
+
+	// readmitFirstDelay is how long an HTTP server withdrawn as unreachable is
+	// left before the first attempt to re-admit it: the ping that withdrew it
+	// has only just gone unanswered. Each attempt that fails doubles the wait,
+	// up to readmitMaxDelay, so a server that stays down costs one handshake
+	// attempt every two minutes.
+	readmitFirstDelay = 5 * time.Second
+	readmitMaxDelay   = 2 * time.Minute
+
+	// readmitHandshakeTimeout bounds one re-admission attempt — initialize and
+	// tool discovery together — as the gateway bounds the first handshake. Each
+	// request inside it is bounded by the server's own timeout as well.
+	readmitHandshakeTimeout = 60 * time.Second
 )
 
 // Registry manages registered MCP servers and the tools they expose.
@@ -74,6 +92,17 @@ type Registry struct {
 	// one already in flight is cut short rather than run to its timeout.
 	stopCtx  context.Context
 	stopFunc context.CancelFunc
+
+	// readmitting tracks the goroutines trying to bring withdrawn HTTP servers
+	// back (see readmit). Each is added under mu while its entry still holds the
+	// client it serves, and closeClients detaches every client under mu before
+	// it waits, so none can be added once that wait has begun.
+	readmitting sync.WaitGroup
+	// readmitDelay and readmitDelayCap are the first wait between re-admission
+	// attempts and the most it doubles to. NewRegistry sets them to
+	// readmitFirstDelay and readmitMaxDelay.
+	readmitDelay    time.Duration
+	readmitDelayCap time.Duration
 }
 
 // serverEntry holds the live state for one registered MCP server.
@@ -82,7 +111,8 @@ type serverEntry struct {
 	client       mcpClient
 	tools        []Tool
 	ready        bool  // true once Initialize + ListTools have succeeded
-	initializing bool  // true while initServer goroutine is running for this entry
+	initializing bool  // true while a handshake (initServer or readmit) is running for this entry
+	confirming   bool  // true while a ping is confirming that the server is unreachable
 	initErr      error // last initialization error; nil when ready
 }
 
@@ -93,12 +123,14 @@ func NewRegistry(log *logger.Logger) *Registry {
 	}
 	stopCtx, stopFunc := context.WithCancel(context.Background())
 	return &Registry{
-		log:         log,
-		servers:     make(map[string]*serverEntry),
-		toolMap:     make(map[string]string),
-		serverIndex: make(map[string]int),
-		stopCtx:     stopCtx,
-		stopFunc:    stopFunc,
+		log:             log,
+		servers:         make(map[string]*serverEntry),
+		toolMap:         make(map[string]string),
+		serverIndex:     make(map[string]int),
+		stopCtx:         stopCtx,
+		stopFunc:        stopFunc,
+		readmitDelay:    readmitFirstDelay,
+		readmitDelayCap: readmitMaxDelay,
 	}
 }
 
@@ -337,10 +369,12 @@ func (r *Registry) probeState(name string, client mcpClient) (holds, ready bool)
 // already spawned a healthy replacement under the same name and permanently
 // mark the replacement down.
 //
-// Recovery is deliberately not attempted here. Re-registering the server
-// through RegisterConfig and re-running InitializeAll already rebuilds the
-// transport and re-indexes its tools; nothing further is needed to bring a
-// server back, and restart-with-backoff is not part of this change.
+// What follows depends on the transport. A stdio server is not restarted: its
+// process has gone, and re-registering it through RegisterConfig and
+// InitializeAll — what a configuration reload does — is how it comes back. An
+// HTTP server is a process the gateway does not own, and it can answer again
+// without anyone touching the gateway, so withdrawing one starts readmit, which
+// restores its tools once it completes a handshake again.
 func (r *Registry) markUnready(name string, client mcpClient, cause error) {
 	r.mu.Lock()
 	entry, ok := r.servers[name]
@@ -352,11 +386,170 @@ func (r *Registry) markUnready(name string, client mcpClient, cause error) {
 	entry.ready = false
 	entry.initErr = cause
 	r.reindexToolsLocked(name, entry.tools)
+	// Added here, under mu and while the entry still holds client, which is
+	// what keeps it ahead of closeClients' wait (see readmitting).
+	readmit := isNetworkServer(client)
+	if readmit {
+		r.readmitting.Add(1)
+	}
 	r.mu.Unlock()
 
 	r.setServerUp(name, 0)
 	r.log.Warn("mcp: server is no longer available; its tools are withdrawn",
 		"server", name, "error", cause)
+	if readmit {
+		go r.readmit(name, client)
+	}
+}
+
+// reportFailedCall weighs a failed tool call as evidence that the server behind
+// client has gone, and withdraws the server when the evidence holds. ctx is the
+// request the call was made for.
+//
+// For stdio the failure is the verdict: a closed transport or a broken pipe
+// means the process is gone (isTransportDead). For HTTP it is never more than a
+// reason to ask. A request that went unanswered — refused, reset, unresolvable,
+// timed out — is passed to confirmUnreachable; one the server answered, whatever
+// it answered, says the server is there, and is not evidence at all.
+//
+// The request's own cancellation or deadline speaks for the caller, not the
+// server: a client that hung up mid-call leaves an unanswered request behind
+// through no fault of the server, so it is not passed on.
+func (r *Registry) reportFailedCall(ctx context.Context, name string, client mcpClient, err error) {
+	if isNetworkServer(client) {
+		if isUnreachable(err) && ctx.Err() == nil {
+			r.confirmUnreachable(name, client)
+		}
+		return
+	}
+	if isTransportDead(err) {
+		r.markUnready(name, client, err)
+	}
+}
+
+// confirmUnreachable decides whether an HTTP server whose tool call went
+// unanswered has gone, and withdraws it when it has.
+//
+// One unanswered request is not proof. A server that reset a connection — a
+// restart behind a load balancer, a proxy refusing a large body — answers the
+// next request on a new one, and a slow tool times out on a server that is
+// otherwise answering. So the server is asked once more, with the ping MCP
+// obliges it to answer. Any answer — an error status or a JSON-RPC error
+// included — means it is there, and it is left alone. Only a ping that also goes
+// unanswered withdraws it, and withdrawal starts readmit.
+//
+// One confirmation runs per server at a time. Calls that fail while one is in
+// flight leave the verdict to it rather than each pinging a server that is
+// already being asked.
+//
+// The ping is bounded by transportProbeTimeout and parented on stopCtx, so
+// teardown cuts it short; a ping cut short that way is not evidence either.
+func (r *Registry) confirmUnreachable(name string, client mcpClient) {
+	probe, ok := client.(pinger)
+	if !ok {
+		return
+	}
+
+	r.mu.Lock()
+	entry, held := r.servers[name]
+	if !held || entry.client != client || !entry.ready || entry.confirming {
+		r.mu.Unlock()
+		return
+	}
+	entry.confirming = true
+	r.mu.Unlock()
+	defer func() {
+		r.mu.Lock()
+		entry.confirming = false
+		r.mu.Unlock()
+	}()
+
+	ctx, cancel := context.WithTimeout(r.stopCtx, transportProbeTimeout)
+	err := probe.Ping(ctx)
+	cancel()
+	if !isUnreachable(err) || r.stopCtx.Err() != nil {
+		return
+	}
+	r.markUnready(name, client, fmt.Errorf("%w: %w", errServerUnreachable, err))
+}
+
+// readmit brings back an HTTP server withdrawn by confirmUnreachable, once it
+// completes a handshake again.
+//
+// The handshake is the same one the server passed at startup — initialize, then
+// tool discovery and the allowed_tools filter — run against the same client, so
+// a server that returns with a different tool list is re-indexed as it now is,
+// and its gauge, readiness and tools are restored together. Attempts are spaced
+// readmitDelay apart, doubling after each failure up to readmitDelayCap; each
+// failure is recorded as the server's last error and counted as an
+// initialization failure, which is what an operator watching it sees.
+//
+// It ends when the server is ready again, when its entry no longer holds client
+// — a reload replaced it, or teardown detached it — or when the registry is
+// torn down, which cancels a handshake in flight rather than waiting it out.
+// closeClients waits for it before closing any client, so no attempt overlaps
+// the client's own Close and none outlives the registry.
+func (r *Registry) readmit(name string, client mcpClient) {
+	defer r.readmitting.Done()
+
+	delay, delayCap := r.readmitDelay, r.readmitDelayCap
+	if delay <= 0 {
+		delay = readmitFirstDelay
+	}
+	if delayCap <= 0 {
+		delayCap = readmitMaxDelay
+	}
+	delayCap = max(delayCap, delay)
+
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	for {
+		select {
+		case <-r.stopCtx.Done():
+			return
+		case <-timer.C:
+		}
+
+		entry, claimed, over := r.claimReadmission(name, client)
+		if over {
+			return
+		}
+		if claimed {
+			ctx, cancel := context.WithTimeout(r.stopCtx, readmitHandshakeTimeout)
+			err := r.initEntry(ctx, name, entry, client)
+			cancel()
+			if err == nil {
+				r.log.Info("mcp: server is answering again; its tools are restored", "server", name)
+				return
+			}
+			if r.stopCtx.Err() != nil {
+				return
+			}
+			delay = min(delay*2, delayCap)
+			r.log.Debug("mcp: server is still unreachable; will try again",
+				"server", name, "retry_in", delay, "error", err)
+		}
+		timer.Reset(delay)
+	}
+}
+
+// claimReadmission decides, under mu, whether readmit may run a handshake for
+// the named server now. over reports that it never will: the entry no longer
+// holds client, or it is ready again. Otherwise claimed reports whether this
+// attempt owns the handshake — false while another one is already running, in
+// which case the attempt is skipped rather than run beside it.
+func (r *Registry) claimReadmission(name string, client mcpClient) (entry *serverEntry, claimed, over bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	entry, ok := r.servers[name]
+	if !ok || entry.client != client || entry.ready {
+		return nil, false, true
+	}
+	if entry.initializing {
+		return nil, false, false
+	}
+	entry.initializing = true
+	return entry, true, false
 }
 
 // reindexToolsLocked re-points each tool name the named server held at the
@@ -457,9 +650,33 @@ func (r *Registry) InitializeAll(ctx context.Context, logErr func(name string, e
 // initServer performs the Initialize + ListTools handshake for a single server
 // and indexes its tools. It applies the AllowedTools filter if configured.
 func (r *Registry) initServer(ctx context.Context, name string) error {
+	// Capture the client under the lock and use that copy for the whole
+	// handshake. A concurrent Close detaches entry.client, so re-reading the
+	// field across the unlocked I/O below would nil-deref mid-initialisation.
+	r.mu.RLock()
+	entry, ok := r.servers[name]
+	var client mcpClient
+	if ok {
+		client = entry.client
+	}
+	r.mu.RUnlock()
+	return r.initEntry(ctx, name, entry, client)
+}
+
+// initEntry runs the handshake for entry — nil when no server is registered
+// under name — over client, the transport the caller captured from it, and
+// publishes the result to entry. The caller has set entry.initializing.
+//
+// Nothing is published unless entry is still the one registered under name and
+// still holds client when the handshake ends. A reload that replaced the entry
+// mid-handshake, or a teardown that detached its client, has made the result
+// stale: publishing it would mark a retired server ready, or index the old
+// transport's tools under the replacement's name.
+func (r *Registry) initEntry(ctx context.Context, name string, entry *serverEntry, client mcpClient) error {
 	// Startup-path span. Nothing above opens one — initialization runs in a
 	// background goroutine with no request to parent it — so this is the root
-	// of the trace for one server's cold start.
+	// of the trace for one server's cold start, or for one attempt to re-admit
+	// it.
 	ctx, span := mcpTracer().Start(ctx, "mcp.init_server",
 		trace.WithSpanKind(trace.SpanKindClient),
 		trace.WithAttributes(attribute.String(observability.AttrFerroMCPServer, name)),
@@ -477,17 +694,7 @@ func (r *Registry) initServer(ctx context.Context, name string) error {
 		}
 	}()
 
-	// Capture the client under the lock and use that copy for the whole
-	// handshake. A concurrent Close detaches entry.client, so re-reading the
-	// field across the unlocked I/O below would nil-deref mid-initialisation.
-	r.mu.RLock()
-	entry, ok := r.servers[name]
-	var client mcpClient
-	if ok {
-		client = entry.client
-	}
-	r.mu.RUnlock()
-	if !ok {
+	if entry == nil {
 		initErr = fmt.Errorf("mcp: server %q not registered", name)
 		return initErr
 	}
@@ -579,6 +786,17 @@ func (r *Registry) initServer(ctx context.Context, name string) error {
 	}
 
 	r.mu.Lock()
+	if r.servers[name] != entry || entry.client != client {
+		// Replaced or detached while the handshake ran. The flag is cleared only
+		// on an entry that is still registered: a replacement's flag belongs to
+		// its own handshake.
+		if r.servers[name] == entry {
+			entry.initializing = false
+		}
+		r.mu.Unlock()
+		initErr = fmt.Errorf("mcp: server %q was closed or replaced during initialization", name)
+		return initErr
+	}
 	// Remove stale toolMap entries from any previous indexing of this server.
 	// This handles re-registration — old tool→server mappings that are no
 	// longer valid must not linger in the map.
@@ -828,6 +1046,12 @@ func (r *Registry) closeClients() error {
 		names = append(names, name)
 	}
 	r.mu.Unlock()
+
+	// Every re-admission goroutine was added before the detach above, and
+	// stopFunc has already cancelled its timer and any handshake it had in
+	// flight, so this returns promptly. Waiting before the clients are closed
+	// keeps a handshake from running against a client while it closes.
+	r.readmitting.Wait()
 
 	// Drop the series rather than zero it, and only while this registry still
 	// owns the label. A reload has already built the replacement by the time a

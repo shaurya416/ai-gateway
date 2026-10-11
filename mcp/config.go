@@ -78,11 +78,14 @@ type ServerConfig struct {
 	// and an orchestrator takes the instance out of rotation.
 	//
 	// A server is unready when it never completed the initialize handshake,
-	// which includes one whose transport could not be built at all. Death after
-	// a successful handshake is detected for stdio servers only: an HTTP server
-	// that becomes unreachable keeps reporting ready and keeps its tools
-	// advertised, so Required cannot be relied on to withdraw an instance when
-	// one goes down.
+	// which includes one whose transport could not be built at all, or when it
+	// was lost after one. A stdio server is lost when its subprocess exits, and
+	// stays lost until the next configuration reload. An HTTP server is lost when
+	// a tool call to it and the ping confirming it both go unanswered, and is
+	// re-admitted once it completes a handshake again. HTTP detection follows
+	// traffic: an idle server that goes away keeps reporting ready until a call
+	// to it fails, and one behind a reverse proxy that answers for it while it
+	// is down is not detected at all.
 	//
 	// Defaults to false: an unset or absent Required never affects /readyz, so
 	// upgrading does not change readiness behaviour for any existing config.

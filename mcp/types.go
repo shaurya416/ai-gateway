@@ -14,6 +14,7 @@ const (
 	mcpMethodInitialize = "initialize"
 	mcpMethodToolsList  = "tools/list"
 	mcpMethodToolsCall  = "tools/call"
+	mcpMethodPing       = "ping"
 )
 
 // ─── JSON-RPC 2.0 ────────────────────────────────────────────────────────────

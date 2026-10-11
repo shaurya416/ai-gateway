@@ -182,12 +182,13 @@ function ReadinessPanel({ readiness, servers }: { readiness: Readiness | null; s
           </ul>
           {/*
            * Said plainly because the pills above cannot say it: readiness is
-           * measured at the handshake, and only a stdio server's death is
-           * noticed afterwards. An operator who reads "Ready" as "answering
-           * right now" will trust a dead HTTP server through an incident.
+           * measured at the handshake and revised only on evidence — a stdio
+           * server's exit, or a tool call to an HTTP server going unanswered.
+           * An operator who reads "Ready" as "answering right now" will trust
+           * an idle, dead HTTP server through an incident.
            */}
           <p className="text-xs text-muted-foreground">
-            Ready means the server completed its handshake. A subprocess server that later exits is withdrawn; an HTTP server that stops answering is not detected and keeps reporting ready.
+            Ready means the server completed its handshake. A subprocess server that later exits is withdrawn; an HTTP server is withdrawn once a tool call to it goes unanswered, so one that stops answering while idle keeps reporting ready.
           </p>
         </div>
       ) : null}
