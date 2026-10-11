@@ -56,7 +56,7 @@ Everything below is available today.
 
 ### Guardrails & plugins
 
-- Built-in: word-filter, max-token, response-cache, request-logger, rate-limit, budget
+- Built-in: word-filter, max-token, regex-guard, pii-redact, secret-scan, prompt-shield, schema-guard, rate-limit, budget, response-cache, request-logger — the catalog `GET /admin/plugins/catalog` serves
 - Staged middleware (before / after / on-error) with an explicit deny-versus-fail policy
 
 ### MCP (Model Context Protocol)
