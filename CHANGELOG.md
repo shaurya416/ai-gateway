@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- The `make test-integration-containers` target is gone. It was kept as an
+  alias for `make test-integration-postgres` and marked for removal in 1.1.0;
+  call `make test-integration-postgres` (or `make test-integration`) instead.
+
 ### Fixed
 
 

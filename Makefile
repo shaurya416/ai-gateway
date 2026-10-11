@@ -23,7 +23,7 @@ GATEWAY_PACKAGES = $(shell go list . ./cmd/... ./config/... ./internal/... ./mcp
 # copied in here before the Go build rather than read from web/dist.
 EMBED_DIR := internal/webui/dist
 
-.PHONY: fmt-check build run test test-coverage test-integration test-integration-postgres test-integration-containers test-integration-live test-integration-all test-e2e-strategies test-e2e-plugins bench fmt vet lint lint-fix clean deps web-deps web-build web-embed web-test web-check web-e2e web-clean precommit all snapshot release-check release-dry-run docker-build up up-prod down up-fullstack up-fullstack-live down-fullstack
+.PHONY: fmt-check build run test test-coverage test-integration test-integration-postgres test-integration-live test-integration-all test-e2e-strategies test-e2e-plugins bench fmt vet lint lint-fix clean deps web-deps web-build web-embed web-test web-check web-e2e web-clean precommit all snapshot release-check release-dry-run docker-build up up-prod down up-fullstack up-fullstack-live down-fullstack
 
 build: web-embed
 	@mkdir -p bin
@@ -86,9 +86,6 @@ test-integration:
 
 test-integration-postgres:
 	go test -v -tags=integration -race -timeout 120s ./test/integration/...
-
-# Backward-compatible alias for test-integration-postgres (deprecated — remove in v1.1.0).
-test-integration-containers: test-integration-postgres
 
 test-integration-live:
 	go test -v -tags=live -race -timeout 300s ./test/live/...
