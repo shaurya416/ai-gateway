@@ -50,7 +50,7 @@ func (p *Provider) Rerank(ctx context.Context, req core.RerankRequest) (*core.Re
 	}
 	defer release()
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/v2/rerank", bodyReader)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/rerank", bodyReader)
 	if err != nil {
 		return nil, fmt.Errorf("cohere: failed to create rerank request: %w", err)
 	}

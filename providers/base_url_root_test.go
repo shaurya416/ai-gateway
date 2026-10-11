@@ -218,6 +218,7 @@ func TestBareHostBaseURLAdoptsVersionSegment(t *testing.T) {
 		"anthropic":    "/v1",     // https://api.anthropic.com/v1
 		"cerebras":     "/v1",     // https://api.cerebras.ai/v1
 		"cloudflare":   "/v1",     // https://api.cloudflare.com/client/v4/accounts/%s/ai/v1
+		"cohere":       "/v2",     // https://api.cohere.com/v2
 		"deepinfra":    "",        // https://api.deepinfra.com/v1/openai — no trailing version segment
 		"deepseek":     "/v1",     // https://api.deepseek.com/v1
 		"fireworks":    "/v1",     // https://api.fireworks.ai/inference/v1

@@ -453,16 +453,18 @@ func TestPassThroughPathAssemblyAcrossRootShapes(t *testing.T) {
 	}
 }
 
-// TestPassThroughHonoursHostRootProviders pins what the three documented
+// TestPassThroughHonoursHostRootProviders pins what the two documented
 // host-root providers — the ones whose configured base is deliberately NOT an
 // API root, listed in providers.hostRootProviders() — get from the rule above,
 // built through their own constructors rather than through a stub.
 //
-// Two of them never reach path assembly: cohere and azure-foundry are
-// NonOpenAIWireProvider and are refused 501 first. Ollama is the one that does,
-// and it is the case the rule above delegates to the provider: OLLAMA_HOST is a
-// server root, so ollama resolves the OpenAI-compatible surface in New and
-// reports that as its API root.
+// azure-foundry never reaches path assembly: it is a NonOpenAIWireProvider and
+// is refused 501 first. So is cohere, whose base is an API root (/v2) but whose
+// upstream is not OpenAI-shaped, so a pass-through still never forwards to it.
+// Ollama is the one that does reach path assembly, and it is the case the rule
+// above delegates to the provider: OLLAMA_HOST is a server root, so ollama
+// resolves the OpenAI-compatible surface in New and reports that as its API
+// root.
 //
 // Perplexity is here as the other half of the same rule. Its base is host-shaped
 // too, and reads identically, but it really is an API root — so it must get the

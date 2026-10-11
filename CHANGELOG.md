@@ -65,6 +65,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `search_document` as before, `user` and a non-float `encoding_format` are
   still refused with `400`, and a `200` holding fewer float vectors than
   inputs is still a failed call.
+- **Breaking:** `COHERE_BASE_URL` is now the API root, version segment
+  included — `https://api.cohere.com/v2` — the same rule every other
+  `<PROVIDER>_BASE_URL` follows. It named the host and each surface appended
+  its own `/v2/...`, so it was the one variable written without its version
+  segment: a proxy root written the way every other provider's is,
+  `https://proxy.example.com/cohere/v2`, reached `/cohere/v2/v2/chat`, a path
+  Cohere does not serve. Chat, embeddings and rerank now append only `/chat`,
+  `/embed` and `/rerank` to the configured root. With the variable unset nothing changes,
+  and a bare host still works: `https://api.cohere.com`, or any value with no
+  path, resolves to `/v2` as before. **Action required only if** the value
+  carries a path: add the `/v2`, so `https://proxy.example.com/cohere` becomes
+  `https://proxy.example.com/cohere/v2`. A value carrying a query string or
+  fragment is now refused at startup, as it already is for every other
+  provider. The `/v1/*` pass-through and `/v1/responses` still refuse Cohere
+  with `501`, so no pass-through URL changes.
 
 ### Removed
 

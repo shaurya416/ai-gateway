@@ -739,11 +739,11 @@ for `base_url`.
 Omitting the version segment is the one mistake with a net under it: a base
 carrying **no path at all** is not an API root, so it resolves to the segment
 the provider's own default root ends in — `/v1` for an OpenAI-wire provider,
-`/v1beta` for gemini. `http://host:9901` and `http://host:9901/v1` are
-therefore the same thing. The net does not extend to a base that carries any
-path: `https://host/openai` is the operator's own root and is taken as written,
-so a proxy mounted at `/openai/v1` and one that really does serve the API at
-`/openai` are both expressible.
+`/v1beta` for gemini, `/v2` for cohere. `http://host:9901` and
+`http://host:9901/v1` are therefore the same thing. The net does not extend to
+a base that carries any path: `https://host/openai` is the operator's own root
+and is taken as written, so a proxy mounted at `/openai/v1` and one that really
+does serve the API at `/openai` are both expressible.
 
 Userinfo travels with the host, so
 `https://user:pass@proxy.example.com` reaches the proxy authenticated — the
@@ -760,13 +760,12 @@ request-time code re-reads it. That is what makes the rule hold across surfaces
 rather than per endpoint: chat, streaming, embeddings, images, model discovery
 and the `/v1/*` pass-through all build from the same string.
 
-Three providers are deliberately outside the rule, because the value they are
-configured with is not an API root. All three are listed in
+Two providers are deliberately outside the rule, because the value they are
+configured with is not an API root. Both are listed in
 `hostRootProviders()` (`providers/base_url_convention_test.go`) with the reason:
 
 | Provider | Why | Write the base as |
 |----------|-----|-------------------|
-| `cohere` | Every surface the gateway uses sits on `/v2` — `/v2/chat`, `/v2/embed`, `/v2/rerank` — so one root exists, but `COHERE_BASE_URL` has always named the host, and making it the API root changes what an operator behind a path-mounted proxy writes | the host, `https://api.cohere.com` |
 | `ollama` | `OLLAMA_HOST` is Ollama's own variable for the *server* root, and one server mounts two — the OpenAI-compatible surface at `/v1` and the native API at `/api` | the server URL, `http://localhost:11434` |
 | `azure-foundry` | `AZURE_FOUNDRY_ENDPOINT` is the Azure resource host the portal shows, and the surface path under it is Azure's fixed shape, not a mount point. The GA OpenAI-compatible route is `/openai/v1`, so the version segment sits mid-path behind a vendor prefix | the resource host, `https://<resource>.services.ai.azure.com` |
 

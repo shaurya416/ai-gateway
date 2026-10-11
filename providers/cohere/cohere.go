@@ -15,7 +15,10 @@ import (
 // Name is the canonical provider identifier.
 const Name = "cohere"
 
-const defaultBaseURL = "https://api.cohere.com"
+// defaultBaseURL is Cohere's v2 API root. Chat, embeddings and rerank all hang
+// directly beneath it, so COHERE_BASE_URL is an API root like every other
+// provider's.
+const defaultBaseURL = "https://api.cohere.com/v2"
 
 // Provider implements the Cohere API client.
 type Provider struct {
@@ -37,13 +40,10 @@ var (
 
 // New creates a new Cohere provider.
 func New(apiKey, baseURL string) (*Provider, error) {
-	baseURL = strings.TrimSpace(baseURL)
-	if baseURL == "" {
-		baseURL = defaultBaseURL
-	} else if err := core.ValidateBaseURL(Name, baseURL); err != nil {
+	baseURL, err := core.ResolveAPIRoot(Name, baseURL, defaultBaseURL)
+	if err != nil {
 		return nil, err
 	}
-	baseURL = strings.TrimRight(baseURL, "/")
 	return &Provider{
 		name:       Name,
 		apiKey:     apiKey,
@@ -267,7 +267,7 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 	}
 	defer release()
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/v2/chat", bodyReader)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/chat", bodyReader)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
@@ -430,7 +430,7 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 	}
 	defer release()
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/v2/chat", bodyReader)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/chat", bodyReader)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
@@ -697,7 +697,7 @@ func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.
 	}
 	defer release()
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/v2/embed", bodyReader)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/embed", bodyReader)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create embed request: %w", err)
 	}

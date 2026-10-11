@@ -849,8 +849,12 @@ func TestCompleteStream_SurfacesUsage(t *testing.T) {
 }
 
 func TestNew_RejectsInvalidBaseURL(t *testing.T) {
-	if _, err := New("k", "://bad"); err == nil {
-		t.Fatal("New accepted an invalid base URL")
+	// A query string or fragment cannot survive an operation path being
+	// appended to the root, so it is refused at construction like a bad scheme.
+	for _, base := range []string{"://bad", "https://api.cohere.com/v2?a=b", "https://api.cohere.com/v2#frag"} {
+		if _, err := New("k", base); err == nil {
+			t.Errorf("New accepted the invalid base URL %q", base)
+		}
 	}
 }
 
