@@ -102,6 +102,11 @@ func (l *LeastLatency) SelectTargets(req providers.Request) ([]string, error) {
 	return appendRemainingTargetKeys(keys, l.targets), nil
 }
 
+// Reachable returns every target key: the whole pool follows the ranked head.
+func (l *LeastLatency) Reachable() []string {
+	return appendRemainingTargetKeys(nil, l.targets)
+}
+
 // upstreamModel is the model the target is actually asked for: the model_map
 // translation when one exists, otherwise the visible name.
 func upstreamModel(t Target, model string) string {

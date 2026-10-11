@@ -155,6 +155,11 @@ func (c *CostOptimized) SelectTargets(req providers.Request) ([]string, error) {
 	return appendRemainingTargetKeys(keys, c.targets), nil
 }
 
+// Reachable returns every target key: the whole pool follows the ranked head.
+func (c *CostOptimized) Reachable() []string {
+	return appendRemainingTargetKeys(nil, c.targets)
+}
+
 func newUnpricedStrategy(config ...string) unpricedStrategy {
 	if len(config) == 0 {
 		return unpricedStrategyFallback

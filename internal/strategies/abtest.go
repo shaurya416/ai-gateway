@@ -143,3 +143,16 @@ func (ab *ABTest) SelectTargets(req providers.Request) ([]string, error) {
 	keys = appendUniqueKey(keys, v.Target.VirtualKey)
 	return appendRemainingTargetKeys(keys, ab.targets), nil
 }
+
+// Reachable returns every variant target the draw can pick — a variant
+// weighted zero never leads — and the routing targets that follow the drawn
+// variant.
+func (ab *ABTest) Reachable() []string {
+	keys := make([]string, 0, len(ab.variants)+len(ab.targets))
+	for _, v := range ab.variants {
+		if positiveWeight(v.Weight) > 0 {
+			keys = appendUniqueKey(keys, v.Target.VirtualKey)
+		}
+	}
+	return appendRemainingTargetKeys(keys, ab.targets)
+}

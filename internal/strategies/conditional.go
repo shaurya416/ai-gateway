@@ -61,6 +61,17 @@ func (c *Conditional) SelectTargets(req providers.Request) ([]string, error) {
 	return targetKeys(c.matchChain(req)), nil
 }
 
+// Reachable returns the targets some rule's chain names and the no-match
+// fallback — the only keys SelectTargets returns. A configured target no rule
+// names is never selected.
+func (c *Conditional) Reachable() []string {
+	keys := make([]string, 0, len(c.rules)+1)
+	for _, rule := range c.rules {
+		keys = appendRemainingTargetKeys(keys, rule.Targets)
+	}
+	return appendUniqueKey(keys, c.fallback.VirtualKey)
+}
+
 func (c *Conditional) matchChain(req providers.Request) []Target {
 	for _, rule := range c.rules {
 		if c.matches(rule, req) {

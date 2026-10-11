@@ -399,11 +399,21 @@ lists — so the two sets can be disjoint, and a config whose targets name no
 registered provider fails 100% of traffic while every provider in the process is
 healthy.
 
+Readiness counts only the targets the configured strategy can **select**, and
+it asks the strategy itself (`strategies.Strategy.Reachable`) rather than a copy
+of its rules: under `single`, the first target alone; under `conditional` and
+`content-based`, the targets the rules' `target_key` / `target_keys` name plus
+the no-match fallback (the first target); under the pool modes (`fallback`,
+`load-balance`, `least-latency`, `cost-optimized`, `ab-test`), every target. A
+healthy target the strategy never selects serves nothing, so it cannot hold an
+instance in rotation — under `single`, a broken first target is `503` however
+healthy the second is.
+
 | Targets routable | Startup | `/readyz` |
 |------------------|---------|-----------|
 | all | silent | `200 ready` |
-| some | `WARN`, naming the unroutable ones | `200 ready`; `targets[]` in the body marks them `routable: false` |
-| none | `ERROR`, naming them | `503 not_ready`, reason `no routable targets` |
+| some, at least one the strategy can select | `WARN`, naming the unroutable ones | `200 ready`; `targets[]` in the body marks them `routable: false` |
+| none the strategy can select | `ERROR`, naming them | `503 not_ready`, reason `no routable targets` |
 
 Startup **warns, it does not exit**. A provider is registered only when its
 credential is present, so a target naming a provider whose key has not rolled out
@@ -413,10 +423,6 @@ Readiness is the reversible lever instead, and it gates only on the total case:
 one unroutable target among several is degraded — fallback and load-balance skip
 it — and pulling an instance that still answers most requests out of rotation
 makes the outage worse.
-
-Known ceiling: routability does not ask the strategy which targets it would
-actually select. Under `mode: single` only the first target is ever used, so a
-config with a broken first target and a healthy second still reports ready.
 
 `ferrogw validate` catches the typo before any of this: every `virtual_key`, and
 every enabled plugin's name and stage, must resolve against what the binary knows
@@ -1208,6 +1214,10 @@ fails otherwise.
 ## Adding a New Strategy
 
 1. Create `internal/strategies/<name>.go` implementing `strategies.Strategy`.
+   `Reachable` must name exactly the keys `SelectTargets` can return for some
+   request — readiness counts only those — and the strategy belongs in
+   `strategyCases` (`internal/strategies/unroutable_model_test.go`), where
+   `TestReachableIsExactlyWhatSelectTargetsReturns` holds the two in step.
 2. Handle the new `StrategyMode` constant in `buildStrategy` (`gateway_strategy.go`).
 3. **Handle it in `validateStrategy` (`config/load.go`) too.** Strategies are
    built lazily on the first request that needs one, so anything

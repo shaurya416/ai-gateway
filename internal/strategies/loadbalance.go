@@ -65,3 +65,10 @@ func (lb *LoadBalance) SelectTargets(req providers.Request) ([]string, error) {
 	}
 	return keys, nil
 }
+
+// Reachable returns every target key. A weight of zero takes a target out of
+// the draw for the head, not out of the rotation behind it, so it can still
+// serve a request the head failed.
+func (lb *LoadBalance) Reachable() []string {
+	return appendRemainingTargetKeys(nil, lb.targets)
+}

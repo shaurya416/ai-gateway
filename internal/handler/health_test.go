@@ -545,3 +545,116 @@ func TestReadyzReportsPartiallyRoutableTargetsWithoutGating(t *testing.T) {
 		}
 	}
 }
+
+// TestReadyzCountsOnlyTargetsTheStrategyCanReach is the regression test for an
+// instance that stayed in rotation while failing every request: readiness
+// counted every configured target, so under `mode: single` a healthy second
+// target held the instance ready although the strategy only ever routes to the
+// first. A target counts toward readiness only when the configured strategy can
+// select it, and the "at least one" threshold is unchanged among those.
+func TestReadyzCountsOnlyTargetsTheStrategyCanReach(t *testing.T) {
+	tests := []struct {
+		name       string
+		strategy   config.StrategyConfig
+		registered []string
+		wantCode   int
+		// wantRoutable is checked on a ready response only; a 503 carries no body
+		// beyond its reason.
+		wantRoutable map[string]bool
+	}{
+		{
+			name:       "single with a dead first target is not ready",
+			strategy:   config.StrategyConfig{Mode: config.ModeSingle},
+			registered: []string{"secondary"},
+			wantCode:   http.StatusServiceUnavailable,
+		},
+		{
+			name:         "single with a healthy first target is ready",
+			strategy:     config.StrategyConfig{Mode: config.ModeSingle},
+			registered:   []string{"primary"},
+			wantCode:     http.StatusOK,
+			wantRoutable: map[string]bool{"primary": true, "secondary": false},
+		},
+		{
+			name:         "fallback with one dead target of two is ready",
+			strategy:     config.StrategyConfig{Mode: config.ModeFallback},
+			registered:   []string{"secondary"},
+			wantCode:     http.StatusOK,
+			wantRoutable: map[string]bool{"primary": false, "secondary": true},
+		},
+		{
+			name: "conditional whose only named target is dead is not ready",
+			strategy: config.StrategyConfig{Mode: config.ModeConditional, Conditions: []config.Condition{
+				{Key: config.ConditionKeyModel, Value: "health-model", TargetKey: "primary"},
+			}},
+			registered: []string{"secondary"},
+			wantCode:   http.StatusServiceUnavailable,
+		},
+		{
+			name: "conditional rule naming a healthy target is ready though the fallback is dead",
+			strategy: config.StrategyConfig{Mode: config.ModeConditional, Conditions: []config.Condition{
+				{Key: config.ConditionKeyModel, Value: "health-model", TargetKey: "secondary"},
+			}},
+			registered:   []string{"secondary"},
+			wantCode:     http.StatusOK,
+			wantRoutable: map[string]bool{"primary": false, "secondary": true},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gw, err := newTestGateway(t, config.Config{
+				Strategy: tt.strategy,
+				Targets:  []config.Target{{VirtualKey: "primary"}, {VirtualKey: "secondary"}},
+			})
+			if err != nil {
+				t.Fatalf("New gateway: %v", err)
+			}
+			for _, name := range tt.registered {
+				gw.RegisterProviderAs(name, healthProvider{})
+			}
+
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/readyz", nil)
+			w := httptest.NewRecorder()
+			Readyz(gw, fakePinger{}).ServeHTTP(w, req)
+
+			if w.Code != tt.wantCode {
+				t.Fatalf("status code = %d, want %d: %s", w.Code, tt.wantCode, w.Body.String())
+			}
+			var payload struct {
+				Status  string `json:"status"`
+				Reason  string `json:"reason"`
+				Targets []struct {
+					Name     string `json:"name"`
+					Routable bool   `json:"routable"`
+				} `json:"targets"`
+			}
+			if err := json.NewDecoder(w.Body).Decode(&payload); err != nil {
+				t.Fatalf("decode readyz response: %v", err)
+			}
+			if tt.wantCode != http.StatusOK {
+				if payload.Status != "not_ready" || payload.Reason != "no routable targets" {
+					t.Fatalf("body = %+v, want not_ready with reason %q", payload, "no routable targets")
+				}
+				return
+			}
+			if payload.Status != "ready" {
+				t.Fatalf("status = %q, want %q", payload.Status, "ready")
+			}
+			got := map[string]bool{}
+			for _, tr := range payload.Targets {
+				got[tr.Name] = tr.Routable
+			}
+			for name, want := range tt.wantRoutable {
+				routable, ok := got[name]
+				if !ok {
+					t.Errorf("target %q missing from readyz body: %+v", name, payload.Targets)
+					continue
+				}
+				if routable != want {
+					t.Errorf("target %q routable = %v, want %v", name, routable, want)
+				}
+			}
+		})
+	}
+}

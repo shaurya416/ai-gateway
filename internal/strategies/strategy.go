@@ -56,6 +56,20 @@ type Strategy interface {
 	// it. Only CostOptimized returns an error: in skip mode when no priced
 	// provider supports the model. All other strategies return a nil error.
 	SelectTargets(req providers.Request) ([]string, error)
+
+	// Reachable returns every target key SelectTargets can return for some
+	// request, without duplicates; the order carries no meaning. It answers
+	// for the configuration rather than for one request: `single` names its
+	// one target, a rule mode the targets its rules and its fallback name, and
+	// a pool mode its whole pool.
+	//
+	// Readiness asks it, because "can this instance serve anything" is a
+	// question about every request the strategy could be handed. It must cover
+	// every SelectTargets answer — a key missing here is a target readiness
+	// ignores while traffic still reaches it — and name nothing more, or a
+	// target routing never selects holds the instance in rotation while every
+	// request fails. The returned slice must not be modified.
+	Reachable() []string
 }
 
 // ProviderLookup resolves a provider name to a Provider instance.

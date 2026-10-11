@@ -25,11 +25,14 @@ import (
 func TestWarnUnroutableTargets(t *testing.T) {
 	tests := []struct {
 		name       string
+		mode       config.StrategyMode
 		targets    []string
 		registered []string
 		wantLevel  string
 		wantNames  []string
 		wantSilent bool
+		// wantMessage, when set, must appear in the log line.
+		wantMessage string
 	}{
 		{
 			name:       "every target resolves logs nothing",
@@ -51,6 +54,25 @@ func TestWarnUnroutableTargets(t *testing.T) {
 			wantLevel:  "ERROR",
 			wantNames:  []string{"typo-provider"},
 		},
+		{
+			// The second target resolves, but single never selects it, so the
+			// instance serves nothing — the same total failure as above.
+			name:        "single whose only selectable target is unroutable is an error",
+			mode:        config.ModeSingle,
+			targets:     []string{"typo-provider", "a"},
+			registered:  []string{"a"},
+			wantLevel:   "ERROR",
+			wantNames:   []string{"typo-provider"},
+			wantMessage: "no target the routing strategy can select resolves to a registered provider",
+		},
+		{
+			name:       "single whose selected target resolves only warns",
+			mode:       config.ModeSingle,
+			targets:    []string{"a", "typo-provider"},
+			registered: []string{"a"},
+			wantLevel:  "WARN",
+			wantNames:  []string{"typo-provider"},
+		},
 	}
 
 	for _, tt := range tests {
@@ -59,8 +81,12 @@ func TestWarnUnroutableTargets(t *testing.T) {
 			for _, name := range tt.targets {
 				targets = append(targets, config.Target{VirtualKey: name})
 			}
+			mode := tt.mode
+			if mode == "" {
+				mode = config.ModeFallback
+			}
 			gw, err := aigateway.New(config.Config{
-				Strategy: config.StrategyConfig{Mode: config.ModeFallback},
+				Strategy: config.StrategyConfig{Mode: mode},
 				Targets:  targets,
 			})
 			if err != nil {
@@ -91,6 +117,9 @@ func TestWarnUnroutableTargets(t *testing.T) {
 			}
 			if !strings.Contains(got, `"level":"`+tt.wantLevel+`"`) {
 				t.Errorf("log level %q missing from: %s", tt.wantLevel, got)
+			}
+			if tt.wantMessage != "" && !strings.Contains(got, tt.wantMessage) {
+				t.Errorf("message %q missing from: %s", tt.wantMessage, got)
 			}
 			for _, name := range tt.wantNames {
 				if !strings.Contains(got, name) {

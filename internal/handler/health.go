@@ -130,9 +130,10 @@ func (c *readyzCache) get(ctx context.Context) readyzSnapshot {
 
 // Readyz handles GET /readyz. It reports whether the gateway can serve traffic:
 // config must be loaded, every pinger must be reachable within
-// readyzPingTimeout, and at least one provider must have a non-open circuit. It
-// returns 200 with the readiness snapshot when ready, otherwise 503 with a
-// reason naming the failed check.
+// readyzPingTimeout, and at least one target the routing strategy can select
+// must be routable — registered, with a circuit that is not open. It returns
+// 200 with the readiness snapshot when ready, otherwise 503 with a reason
+// naming the failed check.
 //
 // Every request is answered — a readiness probe is never refused for volume.
 // The backing-store pings behind the answer are consulted at most once per
@@ -192,9 +193,9 @@ func evaluateReadiness(ctx context.Context, gw *aigateway.Gateway, pingers []Pin
 	readiness := gw.Readiness()
 	if !readiness.Ready {
 		// Not "no providers": the process can hold a set of perfectly healthy
-		// providers and still serve nothing, because no configured target names
-		// any of them. Routability is what decides whether a request can
-		// succeed.
+		// providers and still serve nothing, because no target the strategy
+		// can select names any of them. Routability is what decides whether a
+		// request can succeed.
 		return readyzSnapshot{reason: "no routable targets"}
 	}
 

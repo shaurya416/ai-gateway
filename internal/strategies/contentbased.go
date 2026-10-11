@@ -81,6 +81,16 @@ func (c *ContentBased) SelectTargets(req providers.Request) ([]string, error) {
 	return []string{c.fallback.VirtualKey}, nil
 }
 
+// Reachable returns the targets some rule's chain names and the no-match
+// fallback, as Conditional.Reachable does.
+func (c *ContentBased) Reachable() []string {
+	keys := make([]string, 0, len(c.rules)+1)
+	for _, rule := range c.rules {
+		keys = appendRemainingTargetKeys(keys, rule.Targets)
+	}
+	return appendUniqueKey(keys, c.fallback.VirtualKey)
+}
+
 func (c *ContentBased) matches(rule ContentRule, req providers.Request) bool {
 	switch rule.Type {
 	case PromptContains:

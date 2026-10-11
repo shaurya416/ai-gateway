@@ -159,3 +159,8 @@ func WaitBeforeRetry(ctx context.Context, attempt, initialBackoffMs int, prevErr
 func (f *Fallback) SelectTargets(_ providers.Request) ([]string, error) {
 	return f.keys, nil
 }
+
+// Reachable returns every target key: the whole declared order is walked.
+func (f *Fallback) Reachable() []string {
+	return f.keys
+}

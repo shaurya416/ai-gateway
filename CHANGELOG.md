@@ -24,7 +24,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-
+- `/readyz` no longer reports ready on the strength of a target the routing
+  strategy never selects. Readiness counted every configured target, so under
+  `mode: single` a first target that could not serve — its credential absent,
+  or its circuit open — left the instance `200 ready` as long as the second
+  target was healthy, although `single` routes only to the first and every
+  request failed; `conditional` and `content-based` did the same with a healthy
+  target no rule names. Readiness now counts only the targets the strategy can
+  select — the first target under `single`, the rules' targets and the no-match
+  fallback under `conditional` and `content-based`, every target under the pool
+  modes — so such an instance answers `503 not_ready` with reason
+  `no routable targets`, and startup logs an error naming the unroutable
+  target. One unroutable target among several the strategy can select still
+  answers `200 ready` and is marked `routable: false` in the body. An embedder
+  reads which targets count from `TargetReadiness.Reachable`.
 - Reading the config through the Admin API no longer writes to the running
   config. `GET /admin/config` and `GET /admin/config/history` redact a copy of
   it, but the copy shared the gateway's own retry, circuit-breaker and sticky

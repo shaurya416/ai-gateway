@@ -1,6 +1,8 @@
 package aigateway
 
 import (
+	"slices"
+
 	"github.com/ferro-labs/ai-gateway/pkg/circuitbreaker"
 	"github.com/ferro-labs/ai-gateway/pkg/metrics"
 )
@@ -15,9 +17,9 @@ const (
 // Readiness is a point-in-time snapshot of whether the gateway can serve
 // traffic, together with each registered provider's circuit-breaker state.
 type Readiness struct {
-	// Ready reports whether at least one configured target is routable: a
-	// provider is registered under that target's name and its circuit is not
-	// open.
+	// Ready reports whether at least one target the configured strategy can
+	// select is routable: a provider is registered under that target's name and
+	// its circuit is not open.
 	//
 	// It is measured over *targets*, not over registered providers, because the
 	// two sets can be disjoint. Registration is driven by which credentials the
@@ -34,17 +36,20 @@ type Readiness struct {
 	// router can select exists, so every request fails and the instance must
 	// leave rotation.
 	//
-	// Known ceiling: a target counts as routable whether or not the configured
-	// strategy would ever select it. Under `mode: single` only the first target
-	// is ever used, so a config with a broken first target and a healthy second
-	// still reports ready. Ask the strategy which targets it would select if
-	// that case starts to bite.
+	// Only targets the strategy can select are counted, because a routable
+	// target routing never uses serves nothing. Under `mode: single` that is the
+	// first target alone, so a broken first target is not ready however healthy
+	// the second is; under `conditional` and `content-based` it is the targets
+	// the rules and the fallback name; a pool mode selects its whole pool. The
+	// strategy answers this itself (strategies.Strategy.Reachable) rather than
+	// a copy of its rules being kept here.
 	Ready bool
 	// Providers holds one entry per registered provider, in registration order.
 	Providers []ProviderReadiness
 	// Targets holds one entry per configured target, in config order. Ready is
-	// derived from it, and it is reported in full so an operator can see *which*
-	// target is unroutable rather than only that one is.
+	// derived from it — true when some entry is both Reachable and Routable —
+	// and it is reported in full so an operator can see *which* target is
+	// unroutable rather than only that one is.
 	Targets []TargetReadiness
 	// MCPServers holds one entry per registered MCP server, in registration
 	// order. Empty when no MCP servers are configured.
@@ -86,6 +91,10 @@ type TargetReadiness struct {
 	// under this name" — a typo in virtual_key, or a credential this deployment
 	// does not hold — and "registered, but its circuit is open".
 	Routable bool
+	// Reachable reports whether the configured strategy can select this target
+	// for some request. A target it never selects does not count toward Ready,
+	// however healthy it is.
+	Reachable bool
 }
 
 // MCPServerReadiness reports a single MCP server's availability.
@@ -107,13 +116,14 @@ type MCPServerReadiness struct {
 
 // Readiness returns a snapshot of provider availability derived from each
 // provider's circuit-breaker state, plus whether each configured target resolves
-// to one of those providers. Reading circuit state is non-consuming: it does not
-// admit or spend a half-open probe. A provider without a configured circuit
-// breaker counts as available ("closed"). The gateway is ready when at least one
-// configured target is routable — see Readiness.Ready for why the threshold sits
-// there and why it is measured over targets rather than over registrations.
+// to one of those providers and whether the strategy can select it. Reading
+// circuit state is non-consuming: it does not admit or spend a half-open probe.
+// A provider without a configured circuit breaker counts as available
+// ("closed"). The gateway is ready when at least one target the strategy can
+// select is routable — see Readiness.Ready for why the threshold sits there and
+// why it is measured over targets rather than over registrations.
 func (g *Gateway) Readiness() Readiness {
-	g.mu.RLock()
+	reachable := g.rlockReachable()
 	defer g.mu.RUnlock()
 
 	circuits := make(map[string]string, len(g.providerNames))
@@ -132,10 +142,39 @@ func (g *Gateway) Readiness() Readiness {
 	for _, t := range g.config.Targets {
 		circuit, registered := circuits[t.VirtualKey]
 		routable := registered && circuit != circuitOpen
-		ready = ready || routable
-		targets = append(targets, TargetReadiness{Name: t.VirtualKey, Routable: routable})
+		reach := slices.Contains(reachable, t.VirtualKey)
+		ready = ready || (routable && reach)
+		targets = append(targets, TargetReadiness{Name: t.VirtualKey, Routable: routable, Reachable: reach})
 	}
 	return Readiness{Ready: ready, Providers: provs, Targets: targets, MCPServers: g.mcpReadiness()}
+}
+
+// rlockReachable read-locks g.mu and returns the target keys the chat strategy
+// can select for some request; the caller releases the lock. Chat's strategy is
+// the one asked because every rule applies there; another surface drops the
+// rules on chat-only predicates and so reaches a subset of it.
+//
+// It is the strategy the next request routes through, built the way that
+// request would build it. A config validated at load cannot fail to build (see
+// buildStrategy); if one somehow does, nothing is reachable, because every
+// routed request answers that same error.
+//
+// Building takes the write lock, so the strategy is built before the read lock
+// is taken, and a reload can land in between. The answer is used only when the
+// strategy is still the installed one, so it always describes the config the
+// caller reads under the same lock.
+func (g *Gateway) rlockReachable() []string {
+	for {
+		s, err := g.getStrategy()
+		g.mu.RLock()
+		if err != nil {
+			return nil
+		}
+		if installed, ok := g.strategies[""]; ok && installed == s {
+			return s.Reachable()
+		}
+		g.mu.RUnlock()
+	}
 }
 
 // mcpReadiness projects the MCP registry's status snapshot onto the readiness

@@ -30,3 +30,9 @@ func NewSingle(target Target) *Single {
 func (s *Single) SelectTargets(_ providers.Request) ([]string, error) {
 	return s.keys, nil
 }
+
+// Reachable returns the single configured target key: the only one this mode
+// ever selects, whatever else the config lists.
+func (s *Single) Reachable() []string {
+	return s.keys
+}

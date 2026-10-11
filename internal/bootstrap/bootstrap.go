@@ -730,14 +730,21 @@ func BuildGateway(ctx context.Context, cfg *config.Config, registry *providers.R
 //
 // Warning is not the whole answer, only the part that belongs at startup. An
 // unroutable target also shows up in Gateway.Readiness, so /readyz reports it,
-// and takes the instance out of rotation when *no* target resolves. That is the
-// signal an orchestrator watches; this line is what an operator greps for.
+// and takes the instance out of rotation when no target the strategy can select
+// resolves. That is the signal an orchestrator watches; this line is what an
+// operator greps for, and it is an error in exactly the case readiness fails:
+// under `mode: single` a healthy second target does not rescue a first that
+// resolves to nothing, because the strategy never selects the second.
 func warnUnroutableTargets(gw *aigateway.Gateway) {
 	readiness := gw.Readiness()
 	unroutable := make([]string, 0, len(readiness.Targets))
+	var selectable []string
 	for _, t := range readiness.Targets {
 		if !t.Routable {
 			unroutable = append(unroutable, t.Name)
+			if t.Reachable {
+				selectable = append(selectable, t.Name)
+			}
 		}
 	}
 	if len(unroutable) == 0 {
@@ -747,6 +754,12 @@ func warnUnroutableTargets(gw *aigateway.Gateway) {
 		logger.Default().Error(
 			"no configured target resolves to a registered provider; every request will fail with a routing error",
 			"targets", strings.Join(unroutable, ","))
+		return
+	}
+	if !readiness.Ready {
+		logger.Default().Error(
+			"no target the routing strategy can select resolves to a registered provider; every request will fail with a routing error",
+			"targets", strings.Join(selectable, ","))
 		return
 	}
 	logger.Default().Warn(
