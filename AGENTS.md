@@ -766,7 +766,7 @@ configured with is not an API root. All three are listed in
 
 | Provider | Why | Write the base as |
 |----------|-----|-------------------|
-| `cohere` | The two surfaces the gateway uses sit on different versions: chat on `/v2/chat`, embeddings on `/v1/embed`. Cohere *does* serve `/v2/embed`, so one root is reachable — but moving embeddings onto it is a response-schema migration, not a URL edit | the host, `https://api.cohere.com` |
+| `cohere` | Every surface the gateway uses sits on `/v2` — `/v2/chat`, `/v2/embed`, `/v2/rerank` — so one root exists, but `COHERE_BASE_URL` has always named the host, and making it the API root changes what an operator behind a path-mounted proxy writes | the host, `https://api.cohere.com` |
 | `ollama` | `OLLAMA_HOST` is Ollama's own variable for the *server* root, and one server mounts two — the OpenAI-compatible surface at `/v1` and the native API at `/api` | the server URL, `http://localhost:11434` |
 | `azure-foundry` | `AZURE_FOUNDRY_ENDPOINT` is the Azure resource host the portal shows, and the surface path under it is Azure's fixed shape, not a mount point. The GA OpenAI-compatible route is `/openai/v1`, so the version segment sits mid-path behind a vendor prefix | the resource host, `https://<resource>.services.ai.azure.com` |
 

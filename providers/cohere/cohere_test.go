@@ -7,7 +7,9 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -309,6 +311,17 @@ func TestCohereProvider_Complete_ForwardsToolResultAndDecodesFinalAnswer(t *test
 	}
 }
 
+// cohereEmbedWire is the v2 /embed request body as it leaves the process,
+// decoded independently of the provider's own request type so the tests pin the
+// wire format rather than a Go struct.
+type cohereEmbedWire struct {
+	Model           string   `json:"model"`
+	InputType       string   `json:"input_type"`
+	Texts           []string `json:"texts"`
+	EmbeddingTypes  []string `json:"embedding_types"`
+	OutputDimension *int     `json:"output_dimension"`
+}
+
 func TestCohereProvider_Embed_StringInput_MockHTTP(t *testing.T) {
 	const apiKey = "test-key"
 	seenRequest := false
@@ -318,14 +331,14 @@ func TestCohereProvider_Embed_StringInput_MockHTTP(t *testing.T) {
 		if r.Method != http.MethodPost {
 			t.Errorf("method = %q, want POST", r.Method)
 		}
-		if r.URL.Path != "/v1/embed" {
-			t.Errorf("request path = %q, want /v1/embed", r.URL.Path)
+		if r.URL.Path != "/v2/embed" {
+			t.Errorf("request path = %q, want /v2/embed", r.URL.Path)
 		}
 		if got := r.Header.Get("Authorization"); got != "Bearer "+apiKey {
 			t.Errorf("Authorization = %q, want Bearer %s", got, apiKey)
 		}
 
-		var got cohereEmbedRequest
+		var got cohereEmbedWire
 		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
 			t.Errorf("failed to decode request: %v", err)
 		}
@@ -338,10 +351,13 @@ func TestCohereProvider_Embed_StringInput_MockHTTP(t *testing.T) {
 		if got.InputType != "search_document" {
 			t.Errorf("input_type = %q, want search_document", got.InputType)
 		}
+		if !reflect.DeepEqual(got.EmbeddingTypes, []string{"float"}) {
+			t.Errorf("embedding_types = %#v, want [float]", got.EmbeddingTypes)
+		}
 
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		_, _ = io.WriteString(w, `{"id":"embed-1","embeddings":[[0.1,0.2]],"texts":["hello"],"meta":{"billed_units":{"input_tokens":3}}}`)
+		_, _ = io.WriteString(w, `{"id":"embed-1","embeddings":{"float":[[0.1,0.2]]},"texts":["hello"],"meta":{"api_version":{"version":"2"},"billed_units":{"input_tokens":3}}}`)
 	}))
 	defer srv.Close()
 
@@ -379,15 +395,23 @@ func TestCohereProvider_Embed_StringInput_MockHTTP(t *testing.T) {
 	}
 }
 
-func TestCohereProvider_Embed_StringSliceInput_MockHTTP(t *testing.T) {
+// TestCohereProvider_Embed_DecodesV2NativePayload serves the v2 /embed response
+// in the shape Cohere's API reference documents (testdata/embed.response.json):
+// embeddings keyed by type, usage under meta.billed_units. Every float vector
+// must reach the caller in input order, with the billed tokens as usage.
+func TestCohereProvider_Embed_DecodesV2NativePayload(t *testing.T) {
+	payload, err := os.ReadFile("testdata/embed.response.json")
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
 	var gotTexts []string
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/embed" {
-			t.Errorf("request path = %q, want /v1/embed", r.URL.Path)
+		if r.URL.Path != "/v2/embed" {
+			t.Errorf("request path = %q, want /v2/embed", r.URL.Path)
 		}
 
-		var got cohereEmbedRequest
+		var got cohereEmbedWire
 		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
 			t.Errorf("failed to decode request: %v", err)
 		}
@@ -398,31 +422,86 @@ func TestCohereProvider_Embed_StringSliceInput_MockHTTP(t *testing.T) {
 
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		_, _ = io.WriteString(w, `{"id":"embed-2","embeddings":[[0.1,0.2],[0.3,0.4]],"texts":["hello","there"],"meta":{"billed_units":{"input_tokens":5}}}`)
+		_, _ = w.Write(payload)
 	}))
 	defer srv.Close()
 
 	p, _ := New("test-key", srv.URL)
 	resp, err := p.Embed(context.Background(), core.EmbeddingRequest{
 		Model: "embed-multilingual-v3.0",
-		Input: []string{"hello", "there"},
+		Input: []string{"hello", "goodbye"},
 	})
 	if err != nil {
 		t.Fatalf("Embed() error: %v", err)
 	}
-	if !reflect.DeepEqual(gotTexts, []string{"hello", "there"}) {
-		t.Errorf("texts = %#v, want [hello there]", gotTexts)
+	if !reflect.DeepEqual(gotTexts, []string{"hello", "goodbye"}) {
+		t.Errorf("texts = %#v, want [hello goodbye]", gotTexts)
 	}
-	if len(resp.Data) != 2 {
-		t.Fatalf("Data length = %d, want 2", len(resp.Data))
+	want := [][]float64{
+		{0.016296387, -0.008354187, -0.04699707, -0.07104492},
+		{0.04663086, -0.023239136, 0.008163452, -0.03945923},
+	}
+	if len(resp.Data) != len(want) {
+		t.Fatalf("Data length = %d, want %d", len(resp.Data), len(want))
 	}
 	for i := range resp.Data {
 		if resp.Data[i].Index != i {
 			t.Errorf("Data[%d].Index = %d, want %d", i, resp.Data[i].Index, i)
 		}
+		if !reflect.DeepEqual(resp.Data[i].Embedding, want[i]) {
+			t.Errorf("Data[%d].Embedding = %v, want %v", i, resp.Data[i].Embedding, want[i])
+		}
 	}
-	if resp.Usage.PromptTokens != 5 || resp.Usage.TotalTokens != 5 {
-		t.Errorf("Usage = %+v, want prompt_tokens=5 total_tokens=5", resp.Usage)
+	if resp.Usage.PromptTokens != 2 || resp.Usage.TotalTokens != 2 {
+		t.Errorf("Usage = %+v, want prompt_tokens=2 total_tokens=2", resp.Usage)
+	}
+}
+
+// TestCohereProvider_Embed_DimensionsTravelAsOutputDimension pins that an
+// OpenAI dimensions value reaches Cohere's v2 /embed as output_dimension, and
+// that a request without one sends no output_dimension at all, leaving the
+// model's native size in force.
+func TestCohereProvider_Embed_DimensionsTravelAsOutputDimension(t *testing.T) {
+	dims := 256
+	cases := []struct {
+		name string
+		dims *int
+		want *int
+	}{
+		{"set", &dims, &dims},
+		{"unset", nil, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var raw map[string]json.RawMessage
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
+					t.Errorf("failed to decode request: %v", err)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, `{"id":"embed-1","embeddings":{"float":[[0.1,0.2]]},"texts":["hello"],"meta":{"billed_units":{"input_tokens":1}}}`)
+			}))
+			defer srv.Close()
+
+			p, _ := New("test-key", srv.URL)
+			if _, err := p.Embed(context.Background(), core.EmbeddingRequest{
+				Model:      "embed-v4.0",
+				Input:      "hello",
+				Dimensions: tc.dims,
+			}); err != nil {
+				t.Fatalf("Embed() error: %v", err)
+			}
+			if _, ok := raw["dimensions"]; ok {
+				t.Errorf("request carried OpenAI's dimensions field; Cohere's v2 /embed names it output_dimension")
+			}
+			got, present := raw["output_dimension"]
+			switch {
+			case tc.want == nil && present:
+				t.Errorf("output_dimension = %s, want it absent when the caller set no dimensions", got)
+			case tc.want != nil && string(got) != strconv.Itoa(*tc.want):
+				t.Errorf("output_dimension = %q, want %d", got, *tc.want)
+			}
+		})
 	}
 }
 
@@ -503,7 +582,6 @@ func TestCohereProvider_Embed_UnsupportedOptionalFields(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	dimensions := 256
 	p, _ := New("test-key", srv.URL)
 	tests := []struct {
 		name    string
@@ -518,15 +596,6 @@ func TestCohereProvider_Embed_UnsupportedOptionalFields(t *testing.T) {
 				EncodingFormat: "base64",
 			},
 			wantErr: "unsupported encoding_format",
-		},
-		{
-			name: "dimensions",
-			req: core.EmbeddingRequest{
-				Model:      "embed-english-v3.0",
-				Input:      "hello",
-				Dimensions: &dimensions,
-			},
-			wantErr: "dimensions are not supported",
 		},
 		{
 			name: "user",

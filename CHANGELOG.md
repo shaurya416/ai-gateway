@@ -52,6 +52,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   HTTP client returns a redirect as an `*APIError` instead of following it, so
   the API key is never sent to a location the caller did not name.
 
+### Changed
+
+- Cohere embeddings now honour `dimensions`, and are served by Cohere's v2
+  Embed API. A request carrying `dimensions` was refused with `400` before any
+  upstream call, so the output size `embed-v4.0` and newer models let a caller
+  choose was out of reach through the gateway, and embeddings were sent to
+  Cohere's legacy `/v1/embed` while chat and rerank already used v2.
+  Embeddings now go to `/v2/embed`, asking for float vectors explicitly, and
+  `dimensions` travels as Cohere's `output_dimension`, leaving it to Cohere to
+  accept or refuse for the model named. `input_type` defaults to
+  `search_document` as before, `user` and a non-float `encoding_format` are
+  still refused with `400`, and a `200` holding fewer float vectors than
+  inputs is still a failed call.
+
 ### Removed
 
 - **Breaking:** `OLLAMA_MODELS` is no longer read. It was renamed
@@ -575,8 +589,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   upstream call. The feature-extraction task has no output-size setting, so
   the field was ignored and the model's native vector was served under a
   `200` — a size the caller did not ask for, and one the index it was
-  requested for will reject or silently mismatch. Cohere and Bedrock already
-  refuse a `dimensions` they cannot serve.
+  requested for will reject or silently mismatch. Bedrock already refuses a
+  `dimensions` it cannot serve.
 - A conversation replayed to Anthropic with a tool call whose arguments are
   not valid JSON — the partial object a model leaves when it is cut off
   mid-call, which OpenAI accepts back unchanged — is now sent, with that
@@ -615,7 +629,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is kept for encoding only.
 - A provider's own refusal of what the caller sent — before any upstream
   call — now answers `400` with the reason. Hugging Face image generation
-  with `n` above 1, Cohere embeddings with `dimensions`, `user` or an unknown
+  with `n` above 1, Cohere embeddings with `user` or an unknown
   `input_type`, Vertex AI embeddings on a model that does not embed, Bedrock
   chat on an embedding or image model and Bedrock image generation on a model
   that generates none, a malformed Replicate image `size`, and a model or

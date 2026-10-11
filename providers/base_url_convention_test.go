@@ -148,10 +148,9 @@ func TestBaseURLIsResolvedOnlyAtConstruction(t *testing.T) {
 // and not the operator's to choose.
 func hostRootProviders() map[string]string {
 	return map[string]string{
-		"cohere": "The two surfaces the gateway uses sit on different versions of Cohere's API: chat on " +
-			"/v2/chat and embeddings on /v1/embed. There is therefore no one root to store, even though " +
-			"Cohere does serve /v2/embed — moving embeddings onto it is a response-schema migration, not a " +
-			"URL edit, so until that is done COHERE_BASE_URL stays the host.",
+		"cohere": "Every surface the gateway uses sits on Cohere's v2 API (/v2/chat, /v2/embed, /v2/rerank), " +
+			"so one root exists, but COHERE_BASE_URL has always named the host. Making it the API root changes " +
+			"what an operator behind a path-mounted proxy writes, so until that is done it stays the host.",
 		"ollama": "OLLAMA_HOST is Ollama's own variable for the server root, not an API root, and one " +
 			"Ollama server mounts two of them: the OpenAI-compatible surface at /v1 and the native API at /api.",
 		"azure_foundry": "AZURE_FOUNDRY_ENDPOINT is the Azure resource host, the value the portal shows, and " +

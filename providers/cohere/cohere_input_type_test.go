@@ -22,7 +22,7 @@ func captureEmbedInputType(t *testing.T, reqInputType string) (string, error) {
 		b, _ := io.ReadAll(r.Body)
 		_ = json.Unmarshal(b, &captured)
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, `{"id":"x","embeddings":[[0.1,0.2]],"texts":["hi"],"meta":{"billed_units":{"input_tokens":1}}}`)
+		_, _ = io.WriteString(w, `{"id":"x","embeddings":{"float":[[0.1,0.2]]},"texts":["hi"],"meta":{"billed_units":{"input_tokens":1}}}`)
 	}))
 	defer srv.Close()
 

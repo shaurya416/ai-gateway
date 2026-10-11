@@ -582,11 +582,20 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 	return ch, nil
 }
 
+// cohereEmbedRequest is the v2 /embed body. embedding_types is sent rather
+// than left to its ["float"] default so the one type this path decodes is the
+// one the request names.
 type cohereEmbedRequest struct {
-	Texts     []string `json:"texts"`
-	Model     string   `json:"model"`
-	InputType string   `json:"input_type"`
+	Model           string   `json:"model"`
+	InputType       string   `json:"input_type"`
+	Texts           []string `json:"texts"`
+	EmbeddingTypes  []string `json:"embedding_types"`
+	OutputDimension *int     `json:"output_dimension,omitempty"`
 }
+
+// cohereEmbeddingTypeFloat is the only embedding type this path requests and
+// decodes: OpenAI's float vectors.
+const cohereEmbeddingTypeFloat = "float"
 
 // defaultEmbedInputType is Cohere's document-indexing distribution, used when
 // the caller does not specify an input_type.
@@ -616,18 +625,23 @@ func resolveInputType(requested string) (string, error) {
 	return requested, nil
 }
 
+// cohereEmbedResponse is the v2 /embed answer. Its embeddings are an object
+// keyed by type, not v1's bare array; only the float list is read, since that
+// is the only type requested.
 type cohereEmbedResponse struct {
-	ID         string      `json:"id"`
-	Embeddings [][]float64 `json:"embeddings"`
-	Texts      []string    `json:"texts"`
-	Meta       struct {
+	ID         string `json:"id"`
+	Embeddings struct {
+		Float [][]float64 `json:"float"`
+	} `json:"embeddings"`
+	Texts []string `json:"texts"`
+	Meta  struct {
 		BilledUnits struct {
 			InputTokens int `json:"input_tokens"`
 		} `json:"billed_units"`
 	} `json:"meta"`
 }
 
-// Embed sends an embedding request to Cohere's /v1/embed endpoint.
+// Embed sends an embedding request to Cohere's v2 /embed endpoint.
 func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.EmbeddingResponse, error) {
 	var texts []string
 	switch v := req.Input.(type) {
@@ -658,10 +672,9 @@ func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.
 	}
 	// The caller's own parameters, refused before any call: a 400, not the 500
 	// a bare error classifies as, which retry and failover read as the target
-	// having failed.
-	if req.Dimensions != nil {
-		return nil, core.StatusError(Name, http.StatusBadRequest, "embed: dimensions are not supported for these embeddings")
-	}
+	// having failed. dimensions is not among them: v2 /embed takes it as
+	// output_dimension, and a model that has no such setting is Cohere's to
+	// refuse.
 	if req.User != "" {
 		return nil, core.StatusError(Name, http.StatusBadRequest, "embed: user is not supported for these embeddings")
 	}
@@ -671,9 +684,11 @@ func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.
 	}
 
 	cohReq := cohereEmbedRequest{
-		Texts:     texts,
-		Model:     req.Model,
-		InputType: inputType,
+		Model:           req.Model,
+		InputType:       inputType,
+		Texts:           texts,
+		EmbeddingTypes:  []string{cohereEmbeddingTypeFloat},
+		OutputDimension: req.Dimensions,
 	}
 
 	bodyReader, _, release, err := core.JSONBodyReader(cohReq)
@@ -682,7 +697,7 @@ func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.
 	}
 	defer release()
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/v1/embed", bodyReader)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/v2/embed", bodyReader)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create embed request: %w", err)
 	}
@@ -708,12 +723,15 @@ func (p *Provider) Embed(ctx context.Context, req core.EmbeddingRequest) (*core.
 	if err := json.Unmarshal(respBody, &cohResp); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal embed response: %w", err)
 	}
-	if len(cohResp.Embeddings) < len(texts) {
-		return nil, fmt.Errorf("cohere embed response carried %d embeddings for %d inputs", len(cohResp.Embeddings), len(texts))
+	// A missing embeddings.float decodes to no vectors, so it fails here as
+	// the short answer it is.
+	vectors := cohResp.Embeddings.Float
+	if len(vectors) < len(texts) {
+		return nil, fmt.Errorf("cohere embed response carried %d embeddings for %d inputs", len(vectors), len(texts))
 	}
 
-	data := make([]core.Embedding, len(cohResp.Embeddings))
-	for i, emb := range cohResp.Embeddings {
+	data := make([]core.Embedding, len(vectors))
+	for i, emb := range vectors {
 		data[i] = core.Embedding{
 			Object:    "embedding",
 			Embedding: emb,

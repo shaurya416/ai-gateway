@@ -35,7 +35,6 @@ func TestCallerRefusalsCarry400(t *testing.T) {
 	defer srv.Close()
 
 	two := 2
-	dims := 256
 	tests := []struct {
 		name    string
 		call    func(t *testing.T) error
@@ -60,16 +59,6 @@ func TestCallerRefusalsCarry400(t *testing.T) {
 				return err
 			},
 			wantMsg: "invalid model path segment",
-		},
-		{
-			name: "cohere embeddings with dimensions",
-			call: func(t *testing.T) error {
-				p, err := coherepkg.New(testAPIKey, srv.URL)
-				noErr(t, err)
-				_, err = p.Embed(context.Background(), core.EmbeddingRequest{Model: "embed-english-v3.0", Input: "hi", Dimensions: &dims})
-				return err
-			},
-			wantMsg: "dimensions",
 		},
 		{
 			name: "cohere embeddings with user",
