@@ -78,6 +78,10 @@ type Executor struct {
 	registry     *Registry
 	maxCallDepth int
 	auditFn      AuditFn // optional; nil disables audit logging
+
+	// offered names the tools one request was offered; see WithOfferedTools.
+	// nil on an executor that serves no particular request.
+	offered map[string]struct{}
 }
 
 // NewExecutor creates an Executor backed by the given Registry.
@@ -89,6 +93,30 @@ func NewExecutor(registry *Registry, maxCallDepth int, auditFn AuditFn) *Executo
 		maxCallDepth = 5
 	}
 	return &Executor{registry: registry, maxCallDepth: maxCallDepth, auditFn: auditFn}
+}
+
+// WithOfferedTools returns an executor for one request whose model was offered
+// tools, which keeps owning each of them for as long as that request's loop
+// runs.
+//
+// A request is offered its MCP tools once, when it starts, and the model goes on
+// holding them for every turn. The registry's answer to "who owns this tool" can
+// change underneath it: a server that goes away mid-loop is withdrawn by the
+// first call that finds it gone, and the model commonly asks for the tool again.
+// Deciding ownership from the registry alone then stopped the loop on that turn
+// and handed the client a tool_calls response naming a tool the gateway
+// injected and the client never declared. Owning every offered tool instead
+// answers that call with an error the model can read, and the loop goes on.
+//
+// The returned executor shares e's registry, depth limit and audit hook. It is
+// safe to use concurrently, though it serves one request.
+func (e *Executor) WithOfferedTools(tools []Tool) *Executor {
+	scoped := *e
+	scoped.offered = make(map[string]struct{}, len(tools))
+	for _, t := range tools {
+		scoped.offered[t.Name] = struct{}{}
+	}
+	return &scoped
 }
 
 // callAuditFn dispatches the audit callback asynchronously in its own goroutine
@@ -140,7 +168,9 @@ func (e *Executor) ShouldContinueLoop(resp *core.Response, depth int) bool {
 // exactly the ones it can answer.
 //
 // It runs from the predicate because that is the last point at which the
-// executor is handed the response it is about to abandon.
+// executor is handed the response it is about to abandon. It asks the same
+// ownership question the loop does (ownsAll), so a call to an offered tool whose
+// server has since been withdrawn is dropped here too.
 func (e *Executor) dropUnrunnableToolCalls(resp *core.Response, depth int) {
 	for i := range resp.Choices {
 		calls := resp.Choices[i].Message.ToolCalls
@@ -226,10 +256,14 @@ func (e *Executor) resolvableChoice(resp *core.Response) (core.Choice, bool) {
 	return core.Choice{}, false
 }
 
-// ownsAll reports whether every call in the turn belongs to a ready MCP server.
+// ownsAll reports whether every call in the turn is the gateway's to answer:
+// each names a tool this request was offered (WithOfferedTools) or one a ready
+// MCP server exposes. A call to an offered tool whose server has gone is still
+// owned — executeToolCall answers it with an error — because the client never
+// declared that tool and cannot answer it.
 func (e *Executor) ownsAll(calls []core.ToolCall) bool {
 	for _, tc := range calls {
-		if !e.registry.Owns(tc.Function.Name) {
+		if _, offered := e.offered[tc.Function.Name]; !offered && !e.registry.Owns(tc.Function.Name) {
 			return false
 		}
 	}

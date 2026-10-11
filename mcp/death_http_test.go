@@ -16,6 +16,8 @@ import (
 	"time"
 
 	"go.uber.org/goleak"
+
+	"github.com/ferro-labs/ai-gateway/providers/core"
 )
 
 // roundTripFunc adapts a function to http.RoundTripper.
@@ -42,6 +44,9 @@ type revivableMCPServer struct {
 	toolRPCError atomic.Bool
 	// toolIsError answers tools/call with a result that sets isError.
 	toolIsError atomic.Bool
+	// wedged holds every tools/call and ping open until the client gives up on
+	// it: a server that accepts connections and answers nothing.
+	wedged atomic.Bool
 	// hangInitialize holds initialize open until the client gives up on it;
 	// initializeHeld is signalled once when it starts doing so.
 	hangInitialize atomic.Bool
@@ -137,10 +142,16 @@ func (s *revivableMCPServer) serve(w http.ResponseWriter, r *http.Request) {
 		answer(map[string]any{"tools": []Tool{{Name: revivableTool, InputSchema: json.RawMessage(`{"type":"object"}`)}}})
 	case mcpMethodPing:
 		s.pings.Add(1)
+		if s.wedged.Load() {
+			<-r.Context().Done()
+			return
+		}
 		answer(map[string]any{})
 	case mcpMethodToolsCall:
 		s.calls.Add(1)
 		switch {
+		case s.wedged.Load():
+			<-r.Context().Done()
 		case s.toolStatus.Load() != 0:
 			http.Error(w, "refused", int(s.toolStatus.Load()))
 		case s.toolRPCError.Load():
@@ -254,6 +265,54 @@ func TestHTTPServerThatDiesIsWithdrawnAndRestored(t *testing.T) {
 	}
 	if s.calls.Load() != before+1 {
 		t.Error("the call after recovery never reached the server")
+	}
+}
+
+// TestOfferedToolsStayOwnedAfterTheirServerIsWithdrawn pins the executor half of
+// a server withdrawn mid-loop. The request was offered the tool, so the model
+// may ask for it again; the loop must keep answering that call rather than hand
+// it to a client that never declared the tool — at every depth, the limit
+// included. Ownership widens only to what was offered: a caller's own tool is
+// still the caller's.
+func TestOfferedToolsStayOwnedAfterTheirServerIsWithdrawn(t *testing.T) {
+	s := newRevivableMCPServer(t)
+	reg := readyHTTPRegistry(t, s, "gone", time.Hour, 2)
+	defer func() { _ = reg.Close() }()
+	shared := NewExecutor(reg, 3, nil)
+	exec := shared.WithOfferedTools(reg.AllTools())
+
+	s.stop()
+	exec.executeToolCall(t.Context(), toolCallNamed(revivableTool))
+	if reg.IsReady("gone") {
+		t.Fatal("precondition: the server was not withdrawn")
+	}
+
+	if !exec.ShouldContinueLoop(toolCallResponse(revivableTool), 1) {
+		t.Fatal("the loop stopped on a call to a tool the request was offered; the client would be handed a tool it never declared")
+	}
+	extra, err := exec.ResolvePendingToolCalls(t.Context(), toolCallResponse(revivableTool))
+	if err != nil {
+		t.Fatalf("ResolvePendingToolCalls: %v", err)
+	}
+	assertProtocolComplete(t, extra)
+	if len(extra) != 2 || !strings.Contains(extra[1].Content, "error") {
+		t.Errorf("the call to a withdrawn server's tool was answered with %+v; want one error result the model can read", extra)
+	}
+
+	atLimit := toolCallResponse(revivableTool)
+	atLimit.Choices[0].FinishReason = core.FinishReasonToolCalls
+	if exec.ShouldContinueLoop(atLimit, 3) {
+		t.Fatal("the loop continued past the depth limit")
+	}
+	if len(atLimit.Choices[0].Message.ToolCalls) != 0 || atLimit.Choices[0].FinishReason != core.FinishReasonLength {
+		t.Errorf("at the depth limit the client was handed %+v; want the offered tool's call dropped and the answer marked truncated", atLimit.Choices[0])
+	}
+
+	if exec.ShouldContinueLoop(toolCallResponse("caller_tool"), 1) {
+		t.Error("an executor scoped to its offered tools claimed a tool it was never offered")
+	}
+	if shared.ShouldContinueLoop(toolCallResponse(revivableTool), 1) {
+		t.Error("the shared executor owns a withdrawn server's tool; only a request it was offered to should")
 	}
 }
 
@@ -374,6 +433,51 @@ func TestHTTPCallerCancellationIsNotEvidence(t *testing.T) {
 	}
 }
 
+// TestHTTPRequestDeadlineIsEvidence is the regression test for a request's own
+// deadline shielding a hung server from withdrawal.
+//
+// A server that accepts connections and never answers fails each call when a
+// deadline runs out — the server's per-call timeout, or the request's, whichever
+// is shorter. The request's deadline was read as the caller having given up, so
+// with a request deadline at or below the per-call timeout — the gateway's
+// request_timeout and the default 30s per-call timeout, say — no call was ever
+// confirmed and the server stayed ready for good. A deadline elapsing while the
+// server keeps silent is evidence like any other unanswered request; only a
+// caller that hung up is not.
+//
+// Confirming it must not hold the request past its deadline either: the ping
+// waits on the same silent server, so it carries on after the call returns.
+func TestHTTPRequestDeadlineIsEvidence(t *testing.T) {
+	s := newRevivableMCPServer(t)
+	defer s.stop()
+	const name = "wedged"
+	// Re-admission an hour out: this test is about withdrawal alone.
+	reg := readyHTTPRegistry(t, s, name, time.Hour, 2)
+	defer func() { _ = reg.Close() }()
+	s.wedged.Store(true)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	msg := NewExecutor(reg, 5, nil).executeToolCall(ctx, toolCallNamed(revivableTool))
+	elapsed := time.Since(start)
+	if !strings.Contains(msg.Content, "error") {
+		t.Fatalf("a call to a wedged server answered %q; want an error payload", msg.Content)
+	}
+	// The ping waits up to the server's 2s timeout; the call must not wait with it.
+	if elapsed > time.Second {
+		t.Errorf("the call took %s on a 100ms request deadline; the confirming ping held it past its deadline", elapsed)
+	}
+
+	waitUntil(t, 10*time.Second, "the wedged server to be withdrawn", func() bool { return !reg.IsReady(name) })
+	if got := s.pings.Load(); got != 1 {
+		t.Errorf("the server was pinged %d times; want the failed call confirmed once", got)
+	}
+	if st := reg.Status(); len(st) != 1 || !strings.Contains(st[0].LastError, errServerUnreachable.Error()) {
+		t.Errorf("Status() = %+v; want the server withdrawn as unreachable", st)
+	}
+}
+
 // TestIsUnreachableOnlyForUnansweredRequests pins the classification at the
 // client, where the distinction is made: a request with no answer is
 // unreachable, and anything the server sent back is not.
@@ -426,25 +530,35 @@ func TestIsUnreachableOnlyForUnansweredRequests(t *testing.T) {
 // TestRegistryCloseStopsReadmission covers teardown while a withdrawn server is
 // still down: the re-admission loop must end with the registry, leaving no
 // goroutine behind.
+//
+// The wait between attempts is an hour, far longer than the bound on Close, so
+// only teardown cancelling that wait can end it in time. With a wait of a few
+// milliseconds a loop that ignored teardown during its backoff still ended
+// within one tick — its next attempt found the client detached — and this test
+// passed, while in production the same loop held Close for the whole backoff,
+// up to two minutes, well past Gateway.Close's shutdown budget.
 func TestRegistryCloseStopsReadmission(t *testing.T) {
 	ignore := goleak.IgnoreCurrent()
 
 	s := newRevivableMCPServer(t)
-	reg := readyHTTPRegistry(t, s, "gone", 10*time.Millisecond, 2)
+	reg := readyHTTPRegistry(t, s, "gone", time.Hour, 2)
 	s.stop()
 	NewExecutor(reg, 5, nil).executeToolCall(t.Context(), toolCallNamed(revivableTool))
 	if reg.IsReady("gone") {
 		t.Fatal("precondition: the server was not withdrawn")
 	}
-	// Let several attempts fail first, so the loop is mid-backoff.
-	time.Sleep(100 * time.Millisecond)
 
-	start := time.Now()
-	if err := reg.Close(); err != nil {
-		t.Logf("close: %v", err)
-	}
-	if elapsed := time.Since(start); elapsed > 2*time.Second {
-		t.Errorf("Close took %s with a re-admission loop running; want it cut short", elapsed)
+	closed := make(chan struct{})
+	go func() {
+		defer close(closed)
+		if err := reg.Close(); err != nil {
+			t.Logf("close: %v", err)
+		}
+	}()
+	select {
+	case <-closed:
+	case <-time.After(time.Second):
+		t.Fatal("Close is still waiting after 1s with a re-admission loop in its backoff; want the wait cut short")
 	}
 	goleak.VerifyNone(t, ignore)
 }

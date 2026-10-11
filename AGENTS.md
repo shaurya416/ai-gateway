@@ -467,17 +467,25 @@ process is not restarted.
 
 An **HTTP** server is withdrawn when a tool call to it goes unanswered and the
 ping sent to confirm it goes unanswered too. Unanswered means no HTTP response
-arrived — the connection was refused or reset, the host did not resolve, a
-timeout elapsed — on a request the caller had not cancelled. A server that
-answers anything, a `4xx`, a `5xx`, a JSON-RPC error or a tool result with
-`isError`, is not withdrawn, and neither is one that fails a call and then
-answers the ping: one reset connection is not a dead server. A withdrawn HTTP
-server is re-admitted on its own: the handshake is retried 5s after the
-withdrawal, the wait doubling after each failure up to 2 minutes, and the first
-handshake that succeeds restores its tools, its `gateway_mcp_server_up` gauge
-and its readiness, with no reload. Each failed attempt is recorded as the
-server's last error and counted in `gateway_mcp_server_init_failures_total`.
-Retrying stops when a reload replaces the server or the gateway shuts down.
+arrived — the connection was refused or reset, the host did not resolve, or a
+timeout elapsed first, whether the server's own `timeout_seconds` or the
+request's deadline (`request_timeout` included) ran out. Only a call whose
+caller hung up is not evidence. A server that answers anything, a `4xx`, a
+`5xx`, a JSON-RPC error or a tool result with `isError`, is not withdrawn, and
+neither is one that fails a call and then answers the ping: one reset connection
+is not a dead server. The ping never holds a request past its own deadline: a
+request that runs out of time while the ping waits gets its error at that
+deadline, and the verdict applies to the requests that follow. A server
+withdrawn partway through an agentic loop does not end the loop: every tool the
+request was offered stays the gateway's to answer, so a later call to one gets
+an error result the model can read, and the client is never handed a call to a
+tool it did not declare. A withdrawn HTTP server is re-admitted on its own: the
+handshake is retried 5s after the withdrawal, the wait doubling after each
+failure up to 2 minutes, and the first handshake that succeeds restores its
+tools, its `gateway_mcp_server_up` gauge and its readiness, with no reload. Each
+failed attempt is recorded as the server's last error and counted in
+`gateway_mcp_server_init_failures_total`. Retrying stops when a reload replaces
+the server or the gateway shuts down.
 
 Know the limits of the HTTP case before relying on `required: true` for one:
 
@@ -491,7 +499,9 @@ Know the limits of the HTTP case before relying on `required: true` for one:
   the next attempt, up to the 2-minute cap after a long outage — for a required
   server, `/readyz` answers `503` for that long.
 - **Only a lost server is retried.** A server that never completed its *first*
-  handshake is not re-admitted; that still takes a reload.
+  handshake is not re-admitted; that still takes a reload. A `required` server
+  that is down when the gateway starts therefore holds `/readyz` at `503` until
+  a reload, even after it comes up.
 
 Set `required: true` only for a server the deployment genuinely cannot serve
 without. A required server that is down takes the instance out of rotation and

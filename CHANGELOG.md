@@ -69,8 +69,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- An HTTP MCP server that stops answering is now withdrawn, and a `required`
-  one takes `/readyz` to `503`. Death after the handshake was detected for stdio
+- An HTTP MCP server that stops answering is now withdrawn, and a `required` one
+  takes `/readyz` to `503`. Death after the handshake was detected for stdio
   servers only: an HTTP server that went away — a crash, a redeploy, a network
   partition — kept reporting ready and kept its tools advertised, so every turn
   offered the model tools whose every call failed, and `/readyz` answered `200`
@@ -78,17 +78,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   failures were not treated as death because nothing re-initialized a withdrawn
   server, so one reset connection would have taken away the tools of a server
   that answered the next request, until the next configuration reload. Now a
-  tool call that goes unanswered — connection refused or reset, a host that
-  does not resolve, a timeout — is confirmed with a ping, and the server is
-  withdrawn only when the ping goes unanswered too. A server that answered, with
-  an HTTP error status, a JSON-RPC error or an `isError` result, is never
-  withdrawn, and a call the caller cancelled is not evidence. A withdrawn HTTP
-  server is re-admitted without a reload: the handshake is retried after 5s,
-  the wait doubling to at most 2 minutes, and the first one that succeeds
-  restores its tools, its `gateway_mcp_server_up` gauge and its readiness.
-  Detection follows traffic — an idle server that goes away is noticed by the
-  next call to it — and a server that never completed its first handshake still
-  takes a reload.
+  tool call that goes unanswered — connection refused or reset, a host that does
+  not resolve, a timeout — is confirmed with a ping, and the server is withdrawn
+  only when the ping goes unanswered too. A server that answered, with an HTTP
+  error status, a JSON-RPC error or an `isError` result, is never withdrawn. A
+  call whose caller hung up is not evidence; one that ran out of time is,
+  whether the server's `timeout_seconds` or the request's own `request_timeout`
+  ended it, and the confirming ping never holds the request past that deadline.
+  A withdrawn HTTP server is re-admitted without a reload: the handshake is
+  retried after 5s, the wait doubling to at most 2 minutes, and the first one
+  that succeeds restores its tools, its `gateway_mcp_server_up` gauge and its
+  readiness. Detection follows traffic — an idle server that goes away is
+  noticed by the next call to it — and a server that never completed its first
+  handshake still takes a reload.
+- An MCP server withdrawn partway through an agentic loop no longer hands the
+  client a tool call it cannot answer. A request is offered its MCP tools once,
+  when it starts, and the model commonly calls a tool again after a call to it
+  failed; but the loop decided which calls were the gateway's by asking whether
+  a ready server exposed the tool, and the call that found the server gone had
+  just withdrawn it. So the loop stopped and returned the model's turn as it
+  stood — `finish_reason: tool_calls`, naming a tool the gateway injected, with
+  its arguments — to a client that never declared it. The depth limit asked the
+  same question and let the same turn through. Every tool a request was offered
+  now stays the gateway's to answer until its loop ends: a call to one whose
+  server has gone gets an error result the model can read, and at the depth
+  limit it is dropped and the answer marked truncated. The tools the client
+  declares itself are unaffected.
 - Reading the config through the Admin API no longer writes to the running
   config. `GET /admin/config` and `GET /admin/config/history` redact a copy of
   it, but the copy shared the gateway's own retry, circuit-breaker and sticky

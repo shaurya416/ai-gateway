@@ -94,10 +94,13 @@ type Registry struct {
 	stopFunc context.CancelFunc
 
 	// readmitting tracks the goroutines trying to bring withdrawn HTTP servers
-	// back (see readmit). Each is added under mu while its entry still holds the
-	// client it serves, and closeClients detaches every client under mu before
-	// it waits, so none can be added once that wait has begun.
-	readmitting sync.WaitGroup
+	// back (see readmit), and confirmations the ones pinging an HTTP server to
+	// decide whether to withdraw it (see confirmUnreachable). Each is added under
+	// mu while its entry still holds the client it serves, and closeClients
+	// detaches every client under mu before it waits, so none can be added once
+	// that wait has begun.
+	readmitting   sync.WaitGroup
+	confirmations sync.WaitGroup
 	// readmitDelay and readmitDelayCap are the first wait between re-admission
 	// attempts and the most it doubles to. NewRegistry sets them to
 	// readmitFirstDelay and readmitMaxDelay.
@@ -412,13 +415,19 @@ func (r *Registry) markUnready(name string, client mcpClient, cause error) {
 // timed out — is passed to confirmUnreachable; one the server answered, whatever
 // it answered, says the server is there, and is not evidence at all.
 //
-// The request's own cancellation or deadline speaks for the caller, not the
-// server: a client that hung up mid-call leaves an unanswered request behind
-// through no fault of the server, so it is not passed on.
+// A request the caller cancelled is not passed on: a client that hung up
+// mid-call leaves an unanswered request behind through no fault of the server.
+// The request's deadline is different. It elapsing while the server kept silent
+// is the server not answering in time, whoever set the deadline — and it is
+// what ends every call to a hung server once the gateway's request_timeout is
+// at or below the server's per-call timeout, since a tool call starts only after
+// a model turn has spent part of the request. Excluding it left such a server
+// ready for good. The ping that follows decides on its own, so a server that is
+// merely slow answers it and stays.
 func (r *Registry) reportFailedCall(ctx context.Context, name string, client mcpClient, err error) {
 	if isNetworkServer(client) {
-		if isUnreachable(err) && ctx.Err() == nil {
-			r.confirmUnreachable(name, client)
+		if isUnreachable(err) && !errors.Is(ctx.Err(), context.Canceled) {
+			r.confirmUnreachable(ctx, name, client)
 		}
 		return
 	}
@@ -444,7 +453,13 @@ func (r *Registry) reportFailedCall(ctx context.Context, name string, client mcp
 //
 // The ping is bounded by transportProbeTimeout and parented on stopCtx, so
 // teardown cuts it short; a ping cut short that way is not evidence either.
-func (r *Registry) confirmUnreachable(name string, client mcpClient) {
+//
+// It runs in its own goroutine, and the caller waits for the verdict only while
+// ctx, the request the failed call was made for, is still live. A ping to a
+// silent server waits out its own timeout, and a request whose deadline has
+// passed — or passes meanwhile — must not wait with it: its caller is owed the
+// failure now, and the verdict is for the requests that follow.
+func (r *Registry) confirmUnreachable(ctx context.Context, name string, client mcpClient) {
 	probe, ok := client.(pinger)
 	if !ok {
 		return
@@ -457,20 +472,34 @@ func (r *Registry) confirmUnreachable(name string, client mcpClient) {
 		return
 	}
 	entry.confirming = true
+	// Added here, under mu and while the entry still holds client, which is
+	// what keeps it ahead of closeClients' wait (see confirmations).
+	r.confirmations.Add(1)
 	r.mu.Unlock()
-	defer func() {
-		r.mu.Lock()
-		entry.confirming = false
-		r.mu.Unlock()
+
+	done := make(chan struct{})
+	go func() {
+		defer r.confirmations.Done()
+		defer close(done)
+		defer func() {
+			r.mu.Lock()
+			entry.confirming = false
+			r.mu.Unlock()
+		}()
+
+		pingCtx, cancel := context.WithTimeout(r.stopCtx, transportProbeTimeout)
+		err := probe.Ping(pingCtx)
+		cancel()
+		if !isUnreachable(err) || r.stopCtx.Err() != nil {
+			return
+		}
+		r.markUnready(name, client, fmt.Errorf("%w: %w", errServerUnreachable, err))
 	}()
 
-	ctx, cancel := context.WithTimeout(r.stopCtx, transportProbeTimeout)
-	err := probe.Ping(ctx)
-	cancel()
-	if !isUnreachable(err) || r.stopCtx.Err() != nil {
-		return
+	select {
+	case <-done:
+	case <-ctx.Done():
 	}
-	r.markUnready(name, client, fmt.Errorf("%w: %w", errServerUnreachable, err))
 }
 
 // readmit brings back an HTTP server withdrawn by confirmUnreachable, once it
@@ -1047,10 +1076,12 @@ func (r *Registry) closeClients() error {
 	}
 	r.mu.Unlock()
 
-	// Every re-admission goroutine was added before the detach above, and
-	// stopFunc has already cancelled its timer and any handshake it had in
-	// flight, so this returns promptly. Waiting before the clients are closed
-	// keeps a handshake from running against a client while it closes.
+	// Every confirmation and re-admission goroutine was added before the detach
+	// above, and stopFunc has already cancelled its ping, its timer and any
+	// handshake it had in flight, so this returns promptly. Waiting before the
+	// clients are closed keeps a ping or a handshake from running against a
+	// client while it closes.
+	r.confirmations.Wait()
 	r.readmitting.Wait()
 
 	// Drop the series rather than zero it, and only while this registry still

@@ -78,18 +78,22 @@ transport could not be built), or the server was lost after it:
 - A **stdio** server is lost when its subprocess exits, and stays lost until the
   next configuration reload.
 - An **HTTP** server is lost when a tool call to it goes unanswered — connection
-  refused or reset, a host that does not resolve, a timeout — and a confirming
-  ping goes unanswered too. A server that answers anything, an error status or an
+  refused or reset, a host that does not resolve, a timeout, the request's own
+  `request_timeout` included — and a confirming ping goes unanswered too. Only a
+  call whose caller hung up is not evidence, and the ping never holds a request
+  past its deadline. A server that answers anything, an error status or an
   `isError` result included, is not lost. A lost HTTP server is re-admitted on its
   own: the handshake is retried after 5s, the wait doubling to at most 2 minutes,
   and the first one that succeeds restores its tools and its readiness.
 
 HTTP detection follows traffic: an idle server that goes away keeps reporting
 ready until a call to it fails, and a server behind a reverse proxy that answers
-`502`/`503` on its behalf is not detected at all. Turn `required` on only for a
-server the deployment genuinely cannot serve without: a required server that is
-down stops **all** traffic through the instance, including requests that use no
-tools.
+`502`/`503` on its behalf is not detected at all. Only a lost server is retried:
+one that never completed its *first* handshake — down when the gateway started —
+stays unready until a reload, even after it comes up. Turn `required` on only
+for a server the deployment genuinely cannot serve without: a required server
+that is down stops **all** traffic through the instance, including requests that
+use no tools.
 
 ## Quick check
 

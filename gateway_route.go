@@ -368,7 +368,10 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 		var loopDuration time.Duration
 		var loopTarget routedTarget
 		var loopUsage core.Usage
-		resp, loopUsage, loopDuration, loopTarget, err = g.runMCPLoop(ctx, mcpExecutorSnapshot, plugins, pctx, s, &provReq, resp, target)
+		// Scoped to the tools this request was offered, so a server withdrawn
+		// mid-loop does not hand the client a call to a tool it never declared.
+		loopExecutor := mcpExecutorSnapshot.WithOfferedTools(mcpTools)
+		resp, loopUsage, loopDuration, loopTarget, err = g.runMCPLoop(ctx, loopExecutor, plugins, pctx, s, &provReq, resp, target)
 		providerDuration += loopDuration
 		if err != nil {
 			// The turns that completed before the failure spent real tokens, so
