@@ -33,6 +33,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rejected, failed, dropped and abandoned events. An unknown event, a literal
   `secret`, a non-`http(s)` URL, or an `error_rate` block that does not match the
   event list is refused at load and by `ferrogw validate`.
+- An official Go client, `github.com/ferro-labs/ai-gateway/client`, that
+  imports nothing outside the standard library. `client.New(baseURL, apiKey,
+  ...)` calls chat completions, streamed chat completions, embeddings,
+  `GET /v1/models` and `GET /v1/capabilities`. Every result and every error
+  carries the `X-Gateway-Provider` / `-Target` / `-Model` / `-Attempts`
+  routing attribution and the `X-Request-ID` to quote to an operator. A non-2xx
+  answer is an `*APIError` holding the status, the gateway's error `type` and
+  `code`, the raw body and the `Retry-After` wait, so a `429` says how long to
+  back off. A stream parses the full server-sent-event grammar (comments,
+  multi-line `data:`, CR/LF/CRLF line endings), ends cleanly on `[DONE]`,
+  reports a connection cut before `[DONE]` as `ErrStreamTruncated` and an
+  in-stream gateway error as `*StreamError`, starts no goroutines, and is
+  released by cancelling its context. `WithRoutingMetadata` and
+  `EncodeRoutingMetadata` build the `X-Gateway-Metadata` header and refuse,
+  before a request is sent, what the gateway would answer `400` to: more than
+  32 entries, a non-scalar value, or an encoded value over 4 KiB. The default
+  HTTP client returns a redirect as an `*APIError` instead of following it, so
+  the API key is never sent to a location the caller did not name.
 
 ### Removed
 

@@ -481,6 +481,7 @@ OpenAI SDK works unchanged: point `base_url` at `http://your-gateway:8080/v1`.
 |:----|:--------|:-----------|
 | Python | `pip install ferrolabs` | [ferro-labs/ferrolabs-python-sdk](https://github.com/ferro-labs/ferrolabs-python-sdk) |
 | TypeScript | `npm install ferrolabs` | [ferro-labs/ferrolabs-typescript-sdk](https://github.com/ferro-labs/ferrolabs-typescript-sdk) |
+| Go | `go get github.com/ferro-labs/ai-gateway/client` | [`client/`](client/) in this repository |
 
 <details>
 <summary><strong>Python</strong></summary>
@@ -516,6 +517,31 @@ const response = await client.chat.completions.create({
   model: "gpt-4o",
   messages: [{ role: "user", content: "Hello" }],
 });
+```
+
+</details>
+
+<details>
+<summary><strong>Go</strong></summary>
+
+The Go client imports only the standard library, and exposes the gateway's
+routing attribution headers and error envelope on every response.
+
+```go
+import "github.com/ferro-labs/ai-gateway/client"
+
+c, err := client.New("http://localhost:8080", "your-ferro-api-key")
+if err != nil {
+    return err
+}
+resp, err := c.ChatCompletion(ctx, client.ChatCompletionRequest{
+    Model:    "gpt-4o",
+    Messages: []client.Message{client.UserMessage("Hello")},
+})
+if err != nil {
+    return err
+}
+fmt.Println(resp.Choices[0].Message.Content, resp.Meta.Attribution.Target)
 ```
 
 </details>

@@ -35,6 +35,7 @@
 - **Strategy validation at load (v1.4.0)** — every strategy is validated by `config.ValidateConfig`, so an invalid one is a `ferrogw validate` / startup error rather than a request-time 500. Unknown `conditions[].key` and `content_conditions[].type` values are load errors; `weight: 0` means zero traffic, a negative or non-finite (`.nan`, `.inf`) weight is an error, and an all-zero weight set is an error.
 - **Request identity (v1.5.4)** — `observability.RequestIdentity` (end-user id, session id, request metadata) is set on the request context by `internal/otel.Middleware` from `X-User-ID`, `X-Session-ID` and the W3C `baggage` entries `user.id` / `session.id`, or by an embedder through `observability.ContextWithRequestIdentity`; the gateway overlays the OpenAI body `user`. It is recorded as `enduser.id` / `session.id` / `ferro.request.metadata.<key>` on the request span, on `RequestAttrs`, `Event` and `RoutingAttempt`, and as `user_id` / `session_id` on request-log rows. `observability.tracing.attempt_spans` opens one `gateway.routing.attempt` CLIENT span per routing attempt through the optional `observability.AttemptSpanProvider`; `observability.tracing.propagate_passthrough` (default true) injects `traceparent` on `/v1/*` pass-through forwards and on the fixed-target forwards (`/v1/responses` create and its id sub-routes, `/v1/files`, `/v1/batches`). Nothing is inferred and no identity is a body field other than `user`.
 - **Webhook notifications (Unreleased)** — `notifications.webhooks[]` posts `circuit.opened` / `circuit.half_open` / `circuit.closed` (from a state-change hook on each target's breaker, `circuitbreaker.SetStateChangeHook`), `budget.exceeded` (the budget plugin's first refusal of a key, through `plugin.LimitReporter`), and `error_rate.high` (a sliding-window tracker fed from every routing attempt in `attemptTarget`), each once per transition. `internal/notify` owns delivery: a bounded drop-oldest queue and one worker per webhook, HMAC-SHA256 signing, bounded retries on 5xx/transport errors only, and a grace-bounded drain inside `Gateway.Close`. See [Webhook notifications](#webhook-notifications-notificationswebhooks).
+- **Go client (Unreleased)** — `client/` (`github.com/ferro-labs/ai-gateway/client`) is the official Go client for the gateway's HTTP API: chat (unary and streamed), embeddings, `/v1/models`, `/v1/capabilities`. Its non-test files import the standard library only — `TestPackageImportsOnlyStandardLibrary` holds that — so it defines its own wire types rather than reusing `providers/core`. Every result and error exposes the attribution headers; see [Go client](#go-client).
 
 ---
 
@@ -75,6 +76,7 @@ make up             # local dev environment (docker compose, builds from source)
 
 ```sh
 ai-gateway/
+├── client/               # Official Go client — standard library only (see Go client)
 ├── cmd/
 │   └── ferrogw/          # HTTP server + CLI entry point (Cobra subcommands)
 │       └── main.go       # Server setup, provider registration, router, Cobra root
@@ -1013,6 +1015,48 @@ at most 32 scalar values within 4 KiB, is the single header conditional
 routing may read (`key: metadata`, `field: <entry>`), on `/v1/chat/completions`
 and `/v1/completions`. It never reaches a provider, and no other header is
 exposed to a rule; a malformed value is the caller's `400`.
+
+### Go client
+
+`client/` is the official Go client. It imports nothing outside the standard
+library, so depending on it does not pull the gateway's dependency graph into a
+caller's build; its wire types mirror the OpenAI-compatible JSON the handlers in
+`internal/handler` write instead of reusing `providers/core`.
+
+| Call | Endpoint |
+|------|----------|
+| `ChatCompletion` | `POST /v1/chat/completions` |
+| `ChatCompletionStream` | `POST /v1/chat/completions` with `stream: true` |
+| `Embeddings` | `POST /v1/embeddings` |
+| `Models` | `GET /v1/models` |
+| `Capabilities` | `GET /v1/capabilities` |
+
+`New(baseURL, apiKey, ...Option)` takes the gateway root (`/v1` on the end is
+accepted and dropped); `WithHTTPClient`, `WithTimeout`, `WithHeader` and
+`WithHeaders` configure it. `WithTimeout` bounds a whole unary call but only the
+*opening* of a stream, because a stream's length is the model's to decide.
+The default `http.Client` does not follow redirects — a `3xx` comes back as an
+`*APIError` — so the bearer credential is never replayed to a location the
+caller did not name.
+
+- **Attribution.** Every result's `Meta` and every error's `Meta` carry the four
+  headers above as `Attribution`, plus `X-Request-ID`.
+- **Errors.** A non-2xx answer is an `*APIError`: status, the envelope's `type`,
+  `code` and `message`, the raw body, and `RetryAfter` parsed from
+  `Retry-After` (seconds or an HTTP date). A failure the gateway reports inside
+  an already-open stream is a `*StreamError`.
+- **Streams.** The reader implements the event-stream grammar — comments,
+  multi-line `data:`, LF / CRLF / CR line endings, `event: error` — ends cleanly
+  on `[DONE]`, and reports a connection that ends before `[DONE]` as
+  `ErrStreamTruncated`. It starts no goroutines: cancelling the context or
+  calling `Close` releases the connection.
+- **Routing metadata.** `WithRoutingMetadata` / `EncodeRoutingMetadata` refuse,
+  before a request is made, what the gateway would answer `400` to: more than 32
+  entries, a value that is not a string, number or boolean, or an encoded value
+  over 4 KiB.
+
+`client/gateway_contract_test.go` runs the client against the gateway's own
+handlers over a stub provider, so a wire change on either side fails there.
 
 ### Legacy completions
 

@@ -9,7 +9,7 @@ What's next, roughly in priority order:
 
 - **Plugin SDK & vendor observability bridges** — external guardrail and transform plugins, plus bridges for LangSmith, Langfuse, Datadog, New Relic, Honeycomb, Grafana, and more, shipped from a companion `ai-gateway-plugins` repo so the core binary stays slim.
 - **Semantic & Redis-backed caching** — beyond the built-in in-memory cache.
-- **Broader provider coverage and an official Go client**, driven by community demand.
+- **Broader provider coverage**, driven by community demand.
 - **Deeper deployment guidance** — Kubernetes operators and Terraform modules.
 
 ### Plugins & cookbook
@@ -85,5 +85,5 @@ Everything below is available today.
 - Single static binary, ~32 MB base memory, 13,925 RPS at 1,000 concurrent users
 - memory / SQLite / PostgreSQL backends
 - Multi-arch container images, a Helm chart, GoReleaser packaging, and Railway & Render deploy templates
-- Official Python and TypeScript SDKs
+- Official Python and TypeScript SDKs, and an official Go client (`github.com/ferro-labs/ai-gateway/client`) with no dependencies beyond the standard library — chat, streaming, embeddings, models and capabilities, with routing attribution and typed errors on every response
 - Importable from Go (v1.5.0): `run.Main()` composes the whole `ferrogw` program into your own binary with extra plugins compiled in, `run.Run(ctx, …)` runs it under a context you own, and `httpgateway` mounts the gateway's HTTP surfaces behind your own middleware
