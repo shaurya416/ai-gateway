@@ -18,6 +18,7 @@ import (
 	"github.com/ferro-labs/ai-gateway/config"
 	"github.com/ferro-labs/ai-gateway/internal/admin/handlers"
 	"github.com/ferro-labs/ai-gateway/internal/admin/repository"
+	"github.com/ferro-labs/ai-gateway/internal/fspath"
 	"github.com/ferro-labs/ai-gateway/internal/httpserver"
 	gwotel "github.com/ferro-labs/ai-gateway/internal/otel"
 	"github.com/ferro-labs/ai-gateway/internal/requestlog"
@@ -529,13 +530,21 @@ func ResolveMasterKey() string {
 	return strings.TrimSpace(os.Getenv("MASTER_KEY"))
 }
 
-// LogDeprecatedEnvVars warns about environment variables the gateway still
-// honours but is going to stop reading.
+// LogDeprecatedEnvVars warns about environment variables the gateway has
+// stopped reading, where a deployment may still be relying on one.
+//
+// OLLAMA_MODELS used to be read as the ollama model list. It is Ollama's own
+// variable for its models directory, so on a host running Ollama it is set to
+// a path that is none of the gateway's business — only a value shaped like a
+// model list, with no FERRO_OLLAMA_MODELS beside it, means a list the gateway
+// no longer advertises.
 func LogDeprecatedEnvVars() {
-	if strings.TrimSpace(os.Getenv("OLLAMA_MODELS")) != "" {
-		logger.Default().Warn("OLLAMA_MODELS is deprecated -- use FERRO_OLLAMA_MODELS instead; " +
-			"OLLAMA_MODELS is Ollama's own variable for its models directory and will stop being read")
+	v := strings.TrimSpace(os.Getenv("OLLAMA_MODELS"))
+	if v == "" || fspath.IsDirectoryPath(v) || strings.TrimSpace(os.Getenv("FERRO_OLLAMA_MODELS")) != "" {
+		return
 	}
+	logger.Default().Warn("OLLAMA_MODELS is no longer read as the ollama model list -- set FERRO_OLLAMA_MODELS instead; " +
+		"OLLAMA_MODELS is Ollama's own variable for its models directory")
 }
 
 // configFilePath returns the config path the operator named, or "" when

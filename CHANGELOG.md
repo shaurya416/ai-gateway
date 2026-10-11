@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
+- **Breaking:** `OLLAMA_MODELS` is no longer read. It was renamed
+  `FERRO_OLLAMA_MODELS` in 1.4.0 and read for a deprecation window, because
+  `OLLAMA_MODELS` is Ollama's own variable for its models *directory* — on a
+  host running Ollama it registered that path as a model id. Set
+  `FERRO_OLLAMA_MODELS` to keep a model list. Routing is unaffected either way
+  (ollama serves any model); only what `/v1/models` advertises narrows. Startup
+  warns when `OLLAMA_MODELS` holds what looks like a model list and
+  `FERRO_OLLAMA_MODELS` is unset, and stays silent for Ollama's own directory
+  path, which the previous deprecation warning flagged on every Ollama host.
 - The `make test-integration-containers` target is gone. It was kept as an
   alias for `make test-integration-postgres` and marked for removal in 1.1.0;
   call `make test-integration-postgres` (or `make test-integration`) instead.

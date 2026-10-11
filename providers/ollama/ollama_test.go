@@ -425,7 +425,7 @@ func TestNewOllama_RejectsInvalidBaseURL(t *testing.T) {
 	}
 }
 
-// Ollama serves whatever the local server has pulled, named by OLLAMA_MODELS.
+// Ollama serves whatever the local server has pulled, named by FERRO_OLLAMA_MODELS.
 // No catalog can enumerate another machine's models, so this list is the only
 // source the gateway has for routing to them.
 func TestConfiguredModelsAreTheConfiguredList(t *testing.T) {

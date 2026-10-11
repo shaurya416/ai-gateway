@@ -77,7 +77,7 @@ type modelLookupIndex struct {
 }
 
 // configuredModelsOf returns the models a provider's own configuration named —
-// an Azure deployment, an OLLAMA_MODELS entry — or nil for the providers whose
+// an Azure deployment, a FERRO_OLLAMA_MODELS entry — or nil for the providers whose
 // inventory the catalog supplies. See core.ConfiguredModelProvider.
 func configuredModelsOf(p providers.Provider) []string {
 	cm, ok := providers.As[providers.ConfiguredModelProvider](p)

@@ -55,44 +55,12 @@ func TestOllamaBuild_TrimsConfiguredModels(t *testing.T) {
 	}
 }
 
-// TestIsDirectoryPath guards the OLLAMA_MODELS collision: Ollama's own variable
-// of that name is its models *directory*, so a path landing in the model list
-// must be recognised — without swallowing model ids that merely contain a colon
-// or a slash.
-func TestIsDirectoryPath(t *testing.T) {
-	paths := []string{
-		"/root/.ollama/models", // Ollama's own default shape
-		"/usr/share/ollama/.ollama/models",
-		"~/.ollama/models",
-		"./models",
-		"../models",
-		`C:\Users\me\.ollama\models`,
-		"D:/ollama/models",
-	}
-	for _, v := range paths {
-		if !isDirectoryPath(v) {
-			t.Errorf("isDirectoryPath(%q) = false, want true", v)
-		}
-	}
-
-	modelLists := []string{
-		"", "llama3.2", "gpt-oss:20b", "llama3.2, mistral",
-		"library/mistral", "meta/llama-2-70b-chat",
-		"deepseek-r1:8b,qwen2.5:14b",
-		"/root/.ollama/models,llama3.2", // a comma means someone meant a list
-	}
-	for _, v := range modelLists {
-		if isDirectoryPath(v) {
-			t.Errorf("isDirectoryPath(%q) = true, want false", v)
-		}
-	}
-}
-
 // TestOllamaBuild_DropsDirectoryPathModelList is the regression test for the
 // collision itself: a host running Ollama exports OLLAMA_MODELS as a directory,
 // and that path used to be registered as one model id and advertised by
-// /v1/models. Dropping it leaves the provider exactly as it is with the
-// variable unset.
+// /v1/models. The old name is no longer read, but the same path copied into
+// FERRO_OLLAMA_MODELS must still be dropped, leaving the provider exactly as it
+// is with no list configured.
 func TestOllamaBuild_DropsDirectoryPathModelList(t *testing.T) {
 	entry, ok := GetProviderEntry(NameOllama)
 	if !ok {
@@ -119,37 +87,29 @@ func TestOllamaBuild_DropsDirectoryPathModelList(t *testing.T) {
 	}
 }
 
-// TestOllamaModelsEnvPrecedence pins the rename. Both variables write
-// CfgKeyModels and ProviderConfigFromEnv only writes non-empty values, so the
-// later EnvMapping wins — FERRO_OLLAMA_MODELS must be the later one, or an
-// operator who sets it on an Ollama host still gets that host's OLLAMA_MODELS
-// directory path.
-func TestOllamaModelsEnvPrecedence(t *testing.T) {
+// TestOllamaModelsEnv pins the rename's end state: FERRO_OLLAMA_MODELS is the
+// model list, and OLLAMA_MODELS — Ollama's own models directory on any host
+// running Ollama — is not read at all, so that directory never reaches it.
+func TestOllamaModelsEnv(t *testing.T) {
 	entry, ok := GetProviderEntry(NameOllama)
 	if !ok {
 		t.Fatal("ollama provider entry not found")
 	}
 	t.Setenv("OLLAMA_HOST", "http://localhost:11434")
 
-	t.Run("deprecated name still read", func(t *testing.T) {
-		t.Setenv("OLLAMA_MODELS", "llama3.2")
-		if got := ProviderConfigFromEnv(entry)[CfgKeyModels]; got != "llama3.2" {
-			t.Errorf("models = %q, want %q: OLLAMA_MODELS must keep working this release", got, "llama3.2")
-		}
-	})
-
-	t.Run("new name read", func(t *testing.T) {
+	t.Run("FERRO_OLLAMA_MODELS read", func(t *testing.T) {
 		t.Setenv("FERRO_OLLAMA_MODELS", "mistral")
 		if got := ProviderConfigFromEnv(entry)[CfgKeyModels]; got != "mistral" {
 			t.Errorf("models = %q, want %q", got, "mistral")
 		}
 	})
 
-	t.Run("new name wins over deprecated", func(t *testing.T) {
-		t.Setenv("OLLAMA_MODELS", "/root/.ollama/models")
-		t.Setenv("FERRO_OLLAMA_MODELS", "mistral")
-		if got := ProviderConfigFromEnv(entry)[CfgKeyModels]; got != "mistral" {
-			t.Errorf("models = %q, want %q: FERRO_OLLAMA_MODELS must supersede OLLAMA_MODELS", got, "mistral")
-		}
-	})
+	for _, v := range []string{"/root/.ollama/models", "llama3.2"} {
+		t.Run("OLLAMA_MODELS not read: "+v, func(t *testing.T) {
+			t.Setenv("OLLAMA_MODELS", v)
+			if got, set := ProviderConfigFromEnv(entry)[CfgKeyModels]; set {
+				t.Errorf("models = %q: OLLAMA_MODELS reached the model list", got)
+			}
+		})
+	}
 }

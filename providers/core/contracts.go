@@ -171,7 +171,7 @@ type AnyModelProvider interface {
 
 // ConfiguredModelProvider is the optional interface for a provider whose
 // routable models come from this instance's own configuration rather than from
-// the catalog: an Azure OpenAI deployment name, the OLLAMA_MODELS list pointing
+// the catalog: an Azure OpenAI deployment name, the FERRO_OLLAMA_MODELS list pointing
 // at a local server. No public catalog can know these, so they are the one kind
 // of model list a provider is still the authority on.
 //

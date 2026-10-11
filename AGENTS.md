@@ -496,8 +496,7 @@ already presented a credential carrying `read_only` or `admin`.
 | `AZURE_OPENAI_DEPLOYMENT` | Azure deployment name |
 | `AZURE_OPENAI_API_VERSION` | Azure API version |
 | `OLLAMA_HOST` | Ollama server URL |
-| `FERRO_OLLAMA_MODELS` | Comma-separated Ollama model list. Replaces `OLLAMA_MODELS` — see [Ollama model list](#ollama-model-list-ferro_ollama_models) |
-| `OLLAMA_MODELS` | **Deprecated**, read for one more release. It is Ollama's own variable for the models *directory*, so on a host running Ollama it carries a filesystem path — which the gateway drops rather than register as a model id |
+| `FERRO_OLLAMA_MODELS` | Comma-separated Ollama model list. Replaces `OLLAMA_MODELS`, which is no longer read — see [Ollama model list](#ollama-model-list-ferro_ollama_models) |
 | `REPLICATE_API_TOKEN` | Replicate API token |
 | `XAI_API_KEY` | xAI (Grok) API key |
 | `AZURE_FOUNDRY_API_KEY` | Azure AI Foundry API key |
@@ -546,18 +545,19 @@ then advertised.
 
 `FERRO_OLLAMA_MODELS` is the replacement, matching the `FERRO_` prefix the
 gateway's own variables already use and the non-colliding `OLLAMA_CLOUD_MODELS`
-one provider along.
+one provider along. `OLLAMA_MODELS` was read for a deprecation window and is no
+longer read at all.
 
 | Situation | Behaviour |
 |-----------|-----------|
-| Only `FERRO_OLLAMA_MODELS` set | Used |
-| Only `OLLAMA_MODELS` set | Used, with a startup `WARN`. **Removed next release** |
-| Both set | `FERRO_OLLAMA_MODELS` wins |
-| The value is a filesystem path (`/…`, `~…`, `./…`, `C:\…`) with no comma | Dropped, with a `WARN` naming the replacement. The provider behaves as it does with no list configured |
+| `FERRO_OLLAMA_MODELS` set | Used |
+| Only `OLLAMA_MODELS` set, to a path | Ignored, silently — that is Ollama's own models directory |
+| Only `OLLAMA_MODELS` set, to anything else | Ignored, with a startup `WARN` naming `FERRO_OLLAMA_MODELS` |
+| `FERRO_OLLAMA_MODELS` is a filesystem path (`/…`, `~…`, `./…`, `C:\…`) with no comma | Dropped, with a `WARN`. The provider behaves as it does with no list configured |
 
-The drop is the guard that matters: renaming alone would have failed *silently*,
-because ollama declares `core.AnyModelProvider` — routing keeps working and only
-`/v1/models` quietly narrows to the one path-shaped entry.
+Both warnings exist because the failure is otherwise *silent*: ollama declares
+`core.AnyModelProvider`, so routing keeps working and only `/v1/models` quietly
+changes — narrowing to one path-shaped entry, or losing a list nobody reads.
 
 Neither variable is required. Ollama serves whatever the operator pulled onto
 it, which is why the provider serves any model; a list only narrows what

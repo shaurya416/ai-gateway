@@ -39,7 +39,7 @@ func (r *Registry) List() []string {
 // ModelsFor reports the models the named provider was configured with.
 //
 // A bare Registry holds no catalog and runs no discovery, so this is only the
-// config-derived set — an Azure deployment name, an OLLAMA_MODELS entry — and
+// config-derived set — an Azure deployment name, a FERRO_OLLAMA_MODELS entry — and
 // is empty for the providers whose inventory lives in the catalog. The Gateway
 // composes all three sources; a Registry can only answer for the one it has.
 func (r *Registry) ModelsFor(name string) []ModelInfo {

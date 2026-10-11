@@ -77,8 +77,8 @@ services:
       # Ollama (local):
       # - OLLAMA_HOST=http://host.docker.internal:11434
       # - FERRO_OLLAMA_MODELS=llama3,gemma
-      #   (OLLAMA_MODELS is still read this release but is deprecated: it is
-      #    Ollama's own variable for its models directory)
+      #   (not OLLAMA_MODELS: that is Ollama's own variable for its models
+      #    directory, and the gateway does not read it)
       # Ollama Cloud:
       # - OLLAMA_API_KEY=...
       # - OLLAMA_CLOUD_MODELS=gpt-oss:20b,gpt-oss:120b

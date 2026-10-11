@@ -392,32 +392,42 @@ func TestWarnProductionRisks(t *testing.T) {
 }
 
 // TestLogDeprecatedEnvVars names the replacement, not just the problem: the
-// warning is the only place an operator on an Ollama host learns that the
-// variable they set is Ollama's own models directory and that
-// FERRO_OLLAMA_MODELS is what to set instead.
+// warning is the only place an operator who listed models in OLLAMA_MODELS
+// learns the gateway stopped reading it and that FERRO_OLLAMA_MODELS is what to
+// set instead. It stays silent for the value every host running Ollama
+// carries — Ollama's own models directory — which was never a list.
 func TestLogDeprecatedEnvVars(t *testing.T) {
-	t.Run("warns and names the replacement", func(t *testing.T) {
+	t.Run("a model list warns and names the replacement", func(t *testing.T) {
 		buf := captureDefaultLogger(t)
-		t.Setenv("OLLAMA_MODELS", "/root/.ollama/models")
+		t.Setenv("OLLAMA_MODELS", "llama3.2,mistral")
+		t.Setenv("FERRO_OLLAMA_MODELS", "")
 
 		LogDeprecatedEnvVars()
 
 		out := buf.String()
-		for _, want := range []string{"OLLAMA_MODELS", "FERRO_OLLAMA_MODELS", "deprecated"} {
+		for _, want := range []string{"OLLAMA_MODELS", "FERRO_OLLAMA_MODELS", "no longer read"} {
 			if !strings.Contains(out, want) {
 				t.Errorf("log does not mention %q: %s", want, out)
 			}
 		}
 	})
 
-	t.Run("silent when unset", func(t *testing.T) {
-		buf := captureDefaultLogger(t)
-		t.Setenv("OLLAMA_MODELS", "")
+	silent := map[string][2]string{
+		"unset":                         {"", ""},
+		"Ollama's own models directory": {"/root/.ollama/models", ""},
+		"replacement already set":       {"llama3.2", "llama3.2"},
+	}
+	for name, env := range silent {
+		t.Run("silent when "+name, func(t *testing.T) {
+			buf := captureDefaultLogger(t)
+			t.Setenv("OLLAMA_MODELS", env[0])
+			t.Setenv("FERRO_OLLAMA_MODELS", env[1])
 
-		LogDeprecatedEnvVars()
+			LogDeprecatedEnvVars()
 
-		if out := strings.TrimSpace(buf.String()); out != "" {
-			t.Errorf("unset OLLAMA_MODELS logged %q, want silence", out)
-		}
-	})
+			if out := strings.TrimSpace(buf.String()); out != "" {
+				t.Errorf("OLLAMA_MODELS=%q FERRO_OLLAMA_MODELS=%q logged %q, want silence", env[0], env[1], out)
+			}
+		})
+	}
 }

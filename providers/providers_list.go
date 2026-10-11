@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/ferro-labs/ai-gateway/internal/fspath"
 	"github.com/ferro-labs/ai-gateway/pkg/logger"
 	ai21pkg "github.com/ferro-labs/ai-gateway/providers/ai21"
 	anthropicpkg "github.com/ferro-labs/ai-gateway/providers/anthropic"
@@ -54,44 +55,18 @@ func splitModels(list string) []string {
 // filesystem path.
 //
 // OLLAMA_MODELS is Ollama's own variable for its models *directory*
-// ($HOME/.ollama/models); this gateway read it as a comma-separated model list,
-// so on any host that also runs Ollama the one variable meant two things and
-// the directory path registered as a single bogus model id that /v1/models then
-// advertised. FERRO_OLLAMA_MODELS is the replacement and wins when both are set
-// (ProviderConfigFromEnv is last-non-empty-wins); this guard is what keeps the
-// collision from corrupting the model list until the old name is removed.
-//
-// A path has no comma and begins like a path. A model id — "llama3.2",
-// "gpt-oss:20b", "library/mistral" — does neither.
+// ($HOME/.ollama/models), which is why the gateway's list is
+// FERRO_OLLAMA_MODELS and the old name is no longer read. A deployment that
+// carries the directory across by hand (FERRO_OLLAMA_MODELS=$OLLAMA_MODELS)
+// would still register the path as a single bogus model id that /v1/models then
+// advertised; dropping it leaves the provider as it is with no list configured.
 func ollamaModels(list string) []string {
-	if trimmed := strings.TrimSpace(list); isDirectoryPath(trimmed) {
-		logger.Default().Warn("ignoring model list that is a filesystem path -- OLLAMA_MODELS is Ollama's own models directory; set FERRO_OLLAMA_MODELS to a comma-separated model list instead",
+	if trimmed := strings.TrimSpace(list); fspath.IsDirectoryPath(trimmed) {
+		logger.Default().Warn("ignoring ollama model list that is a filesystem path -- FERRO_OLLAMA_MODELS takes comma-separated model ids, not Ollama's models directory",
 			"provider", NameOllama, "value", trimmed)
 		return nil
 	}
 	return splitModels(list)
-}
-
-// isDirectoryPath reports whether v is a filesystem path rather than a model id.
-//
-// prefix test only. A relative path with no leading "./" ("models",
-// "var/lib/ollama") is indistinguishable from a model id and is not caught —
-// but Ollama's own default is absolute ($HOME/.ollama/models), which is the
-// value that actually collides.
-func isDirectoryPath(v string) bool {
-	if v == "" || strings.Contains(v, ",") {
-		return false
-	}
-	if strings.HasPrefix(v, "/") || strings.HasPrefix(v, "~") ||
-		strings.HasPrefix(v, "./") || strings.HasPrefix(v, "../") ||
-		strings.HasPrefix(v, `.\`) || strings.HasPrefix(v, `..\`) {
-		return true
-	}
-	// Windows drive letter: "C:\models", "C:/models". Not "gpt-oss:20b", whose
-	// colon is not at index 1 and is not followed by a separator.
-	return len(v) >= 3 && v[1] == ':' &&
-		(v[2] == '\\' || v[2] == '/') &&
-		((v[0] >= 'A' && v[0] <= 'Z') || (v[0] >= 'a' && v[0] <= 'z'))
 }
 
 // allProviders is the canonical ordered registry of all built-in providers.
@@ -346,15 +321,10 @@ var allProviders = []ProviderEntry{
 		ID:           NameOllama,
 		Capabilities: []string{CapabilityChat, CapabilityStream, CapabilityEmbed, CapabilityProxy, CapabilityDiscovery},
 		// Ollama has no API key; CfgKeyHost acts as the "configured?" gate.
-		//
-		// Two variables name the same CfgKeyModels: ProviderConfigFromEnv only
-		// writes non-empty values, so the later entry wins when both are set.
-		// FERRO_OLLAMA_MODELS is therefore listed second — OLLAMA_MODELS is
-		// Ollama's own variable for its models directory and is read here for
-		// one more release only (see ollamaModels).
+		// The model list is FERRO_OLLAMA_MODELS, never OLLAMA_MODELS: that one
+		// is Ollama's own variable for its models directory (see ollamaModels).
 		EnvMappings: []EnvMapping{
 			{CfgKeyHost, "OLLAMA_HOST", true},
-			{CfgKeyModels, "OLLAMA_MODELS", false},
 			{CfgKeyModels, "FERRO_OLLAMA_MODELS", false},
 		},
 		Build: func(cfg ProviderConfig) (Provider, error) {

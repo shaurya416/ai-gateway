@@ -87,7 +87,7 @@ func (p *Provider) ConfiguredModels() []string { return p.models }
 func (p *Provider) SupportsModel(_ string) bool { return true }
 
 // ServesAnyModel declares core.AnyModelProvider: a self-hosted Ollama serves
-// whatever the operator pulled onto it, which no catalog knows. OLLAMA_MODELS
+// whatever the operator pulled onto it, which no catalog knows. FERRO_OLLAMA_MODELS
 // and DiscoverModels both narrow that when they are set, but neither is
 // required to run one — so without this declaration the common case, an Ollama
 // host with no model list configured, would route nothing at all.
