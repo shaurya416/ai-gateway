@@ -23,6 +23,7 @@ import (
 	"github.com/ferro-labs/ai-gateway/config"
 	"github.com/ferro-labs/ai-gateway/internal/envref"
 	"github.com/ferro-labs/ai-gateway/internal/latency"
+	"github.com/ferro-labs/ai-gateway/internal/notify"
 	"github.com/ferro-labs/ai-gateway/internal/requestlog"
 	"github.com/ferro-labs/ai-gateway/internal/strategies"
 	"github.com/ferro-labs/ai-gateway/mcp"
@@ -75,6 +76,14 @@ type Gateway struct {
 	// before shutdown cannot leave a subprocess termination ladder running past
 	// process exit.
 	pendingMCPCloses sync.WaitGroup
+	// notifier delivers notifications.webhooks. Read lock-free, because its
+	// readers include circuit-breaker transition hooks that run under a
+	// breaker's lock while a caller may hold g.mu. Nil when no webhook is
+	// configured. Replaced by a reload whose notifications block changed.
+	notifier atomic.Pointer[notify.Notifier]
+	// pendingNotifierCloses tracks notifiers retired by a reload while they
+	// drain. Close waits on it.
+	pendingNotifierCloses sync.WaitGroup
 	// shutdownCtx is a lifecycle context, not a request context. Storing it on the
 	// struct is the intended idiom here: it is created once in New, parents the
 	// gateway's background workers (hook dispatch, catalog refresh, MCP init), and
@@ -266,6 +275,8 @@ func New(cfg config.Config, opts ...Option) (*Gateway, error) {
 	// Wire MCP from config. In New the gateway is not yet published, so no lock
 	// is held here; the field writes are safe.
 	gw.wireMCPLocked(cfg, "mcp: server initialization failed")
+
+	gw.notifier.Store(gw.buildNotifier(cfg.Notifications))
 
 	gw.mu.Lock()
 	gw.ensureCircuitBreakersLocked()
@@ -477,6 +488,7 @@ func (g *Gateway) ReloadConfig(ctx context.Context, cfg config.Config) error {
 	}
 	oldPlugins := g.plugins
 	oldTargets := g.config.Targets
+	oldNotifications := g.config.Notifications
 	g.config = cfg
 	g.modelMaps = targetModelMaps(cfg.Targets)
 	g.plugins = plugins
@@ -490,6 +502,7 @@ func (g *Gateway) ReloadConfig(ctx context.Context, cfg config.Config) error {
 	g.retireResilienceLocked(oldTargets)
 	g.ensureCircuitBreakersLocked()
 	g.ensureProviderLimitersLocked()
+	g.reloadNotifierLocked(oldNotifications, cfg.Notifications)
 
 	// Re-register MCP servers from the new config (clears MCP state when none).
 	g.wireMCPLocked(cfg, "mcp: server initialization failed after reload")
@@ -636,6 +649,12 @@ func (g *Gateway) buildPluginManager(configs []config.PluginConfig) (*plugin.Man
 				return nil, fmt.Errorf("unknown plugin: %s", pc.Name)
 			}
 			p = factory()
+			// Plugins that enforce a limit report its first refusal of a key,
+			// which notifications deliver as budget.exceeded. The sink reads the
+			// current notifier when called, so it survives a reload unchanged.
+			if r, ok := p.(plugin.LimitReporter); ok {
+				r.SetLimitSink(g.emitLimitExceeded)
+			}
 			// Hand the shared request-log store to plugins that record through it,
 			// before Init so Init can direct persistence at it. Plugins never open
 			// their own store from config, so no request-supplied value reaches the
@@ -1028,6 +1047,7 @@ func (g *Gateway) Close() error {
 		g.mcpRegistry = nil
 		g.mcpExecutor = nil
 		g.closed = true
+		notifier := g.notifier.Swap(nil)
 		g.mu.Unlock()
 		if err := closePluginManager(plugins); err != nil {
 			g.log.Warn("plugin close failed during gateway shutdown", "error", err)
@@ -1045,6 +1065,16 @@ func (g *Gateway) Close() error {
 		done := make(chan struct{})
 		drainCtx, cancelDrain := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancelDrain()
+		// Webhooks drain alongside MCP teardown rather than after it, so a
+		// slow subprocess cannot spend the budget queued alerts need. Close
+		// abandons whatever is still pending at the deadline and returns once
+		// every delivery worker has exited.
+		notifyDone := make(chan struct{})
+		go func() {
+			defer close(notifyDone)
+			notifier.Close(drainCtx)
+			g.pendingNotifierCloses.Wait()
+		}()
 		go func() {
 			if mcpRegistry != nil {
 				if err := mcpRegistry.Close(); err != nil {
@@ -1062,6 +1092,7 @@ func (g *Gateway) Close() error {
 			g.pendingMCPCloses.Wait()
 			g.hooks.wait()
 			g.catalogRefreshDone.Wait()
+			<-notifyDone
 			close(done)
 		}()
 		select {

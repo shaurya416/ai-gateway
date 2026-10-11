@@ -197,12 +197,14 @@ func (g *Gateway) ensureCircuitBreakersLocked() {
 			g.log.Warn("target circuit_breaker.timeout is not a duration; applying the default",
 				"target", t.VirtualKey, "timeout", t.CircuitBreaker.Timeout)
 		}
-		g.circuitBreakers[t.VirtualKey] = circuitbreaker.New(
+		cb := circuitbreaker.New(
 			t.CircuitBreaker.FailureThreshold,
 			t.CircuitBreaker.SuccessThreshold,
 			t.CircuitBreaker.MaxHalfThreshold,
 			timeout,
 		)
+		cb.SetStateChangeHook(g.circuitTransitionHook(t.VirtualKey))
+		g.circuitBreakers[t.VirtualKey] = cb
 	}
 }
 

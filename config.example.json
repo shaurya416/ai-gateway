@@ -376,6 +376,9 @@
     },
     "exporters": []
   },
+  "notifications": {
+    "webhooks": []
+  },
   "compatibility": {
     "on_unsupported_param": "warn"
   }

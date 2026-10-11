@@ -119,9 +119,14 @@ var globalStores sync.Map // map[string]*spendStore
 // count cap. All access is serialized through mu so that the read in
 // checkBudget and the read-modify-write in add never interleave.
 type spendStore struct {
-	mu      sync.Mutex
-	spend   map[string]float64 // api_key -> committed USD
-	maxKeys int                // 0 = unlimited
+	mu    sync.Mutex
+	spend map[string]float64 // api_key -> committed USD
+	// refusing holds the keys whose most recent check was refused, so the
+	// first refusal of a run is told from the ones after it. It shares the
+	// spend map's lifetime: a key leaves it when it is next admitted, reset or
+	// evicted.
+	refusing map[string]struct{}
+	maxKeys  int // 0 = unlimited
 }
 
 // evictMinLocked removes the key with the lowest committed spend to make
@@ -136,6 +141,7 @@ func (s *spendStore) evictMinLocked(newKey string) {
 		}
 		if minKey != "" {
 			delete(s.spend, minKey)
+			delete(s.refusing, minKey)
 		}
 	}
 }
@@ -156,11 +162,31 @@ func (s *spendStore) get(key string) float64 {
 	return s.spend[key]
 }
 
+// check compares key's committed spend plus extra against limit under one
+// lock. refuse is whether the check fails; first is whether this refusal
+// starts a run — the key's previous check, if any, was admitted. An admitted
+// check ends the run, so the next refusal is a first one again.
+func (s *spendStore) check(key string, extra, limit float64) (current float64, refuse, first bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	current = s.spend[key] + extra
+	if current < limit {
+		delete(s.refusing, key)
+		return current, false, false
+	}
+	if _, already := s.refusing[key]; already {
+		return current, true, false
+	}
+	s.refusing[key] = struct{}{}
+	return current, true, true
+}
+
 // reset removes the committed spend record for a single key.
 func (s *spendStore) reset(key string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.spend, key)
+	delete(s.refusing, key)
 }
 
 // resetAll clears all committed spend records in the store.
@@ -168,12 +194,14 @@ func (s *spendStore) resetAll() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.spend = make(map[string]float64)
+	s.refusing = make(map[string]struct{})
 }
 
 func getStore(id string, maxKeys int) *spendStore {
 	v, _ := globalStores.LoadOrStore(id, &spendStore{
-		spend:   make(map[string]float64),
-		maxKeys: maxKeys,
+		spend:    make(map[string]float64),
+		refusing: make(map[string]struct{}),
+		maxKeys:  maxKeys,
 	})
 	return v.(*spendStore) //nolint:forcetypeassert // globalStores only ever holds *spendStore values
 }
@@ -213,7 +241,16 @@ type Plugin struct {
 	cacheReadPerMTokens  *float64
 	cacheWritePerMTokens *float64
 	store                *spendStore
+	// limitSink receives the first refusal of each run of refusals for a key.
+	// Installed by the gateway before Init; nil when nothing listens.
+	limitSink func(plugin.LimitExceeded)
 }
+
+var _ plugin.LimitReporter = (*Plugin)(nil)
+
+// SetLimitSink installs the callback told when a key starts being refused.
+// See plugin.LimitReporter.
+func (p *Plugin) SetLimitSink(fn func(plugin.LimitExceeded)) { p.limitSink = fn }
 
 // Name returns the plugin identifier.
 func (p *Plugin) Name() string { return "budget" }
@@ -479,11 +516,12 @@ func (p *Plugin) checkBudget(pctx *plugin.Context, key string) error {
 	// many turns and however large the context grew. The loop is the one place
 	// a single request can spend without bound, so it is the one place the soft
 	// cap has to be able to close mid-request.
-	current := p.store.get(key)
+	var extra float64
 	if pctx.Measurements.HasCost {
-		current += pctx.Measurements.CostUSD
+		extra = pctx.Measurements.CostUSD
 	}
-	if current >= p.spendLimitUSD {
+	current, refuse, first := p.store.check(key, extra, p.spendLimitUSD)
+	if refuse {
 		// A denial mid-loop ends the request on its error path, where the
 		// after stage — the only place spend is otherwise recorded — never
 		// runs. The turns already made were billed all the same, so they are
@@ -497,6 +535,19 @@ func (p *Plugin) checkBudget(pctx *plugin.Context, key string) error {
 		}
 		pctx.Reject = true
 		pctx.Reason = fmt.Sprintf("budget exceeded: spent $%.4f of $%.2f limit", current, p.spendLimitUSD)
+		// Reported once per run of refusals, not once per refused request: a
+		// client retrying against its cap would otherwise turn one fact into an
+		// alert per retry.
+		if first && p.limitSink != nil {
+			p.limitSink(plugin.LimitExceeded{
+				Plugin:   p.Name(),
+				Kind:     plugin.LimitSpend,
+				KeyID:    key,
+				Scope:    p.storeID,
+				Limit:    p.spendLimitUSD,
+				Observed: current,
+			})
+		}
 		return nil
 	}
 	return nil

@@ -96,6 +96,10 @@ type Config struct {
 	// endpoint still works. Should name the provider a deployment creates
 	// responses against (openai or xai).
 	ResponsesTarget string `json:"responses_target,omitempty" yaml:"responses_target,omitempty"`
+	// Notifications configures outbound alerts: webhooks posted on circuit
+	// breaker transitions, a budget's first refusal, and a target's error rate
+	// crossing a threshold. Omitted sends nothing. See NotificationsConfig.
+	Notifications *NotificationsConfig `json:"notifications,omitempty" yaml:"notifications,omitempty"`
 }
 
 // CompatibilityConfig controls the gateway's handling of OpenAI request

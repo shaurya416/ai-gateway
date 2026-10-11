@@ -44,6 +44,7 @@ plugins:                    # guardrails and middleware — see the plugin READM
 | `plugins[]` | Guardrails, caching, rate limits, budgets, logging | [`../plugin/README.md`](../plugin/README.md) |
 | `mcp_servers[]` | MCP tool servers (stdio + Streamable HTTP) | [`../mcp/README.md`](../mcp/README.md) |
 | `observability` | OpenTelemetry tracing + exporter plugins | [`../observability/README.md`](../observability/README.md) |
+| `notifications` | Webhooks posted on circuit-breaker transitions, a budget's first refusal, and error-rate spikes | [below](#webhook-notifications-notificationswebhooks) |
 | `compatibility` | `on_unsupported_param: warn \| drop \| reject` for parameters a provider cannot express | [`../providers/README.md`](../providers/README.md) |
 | `request_timeout` | End-to-end bound on one non-streaming request, retries included | — |
 | `batch_target` / `responses_target` | The single backend serving `/v1/files*` + `/v1/batches*`, and the Responses id sub-routes | [`../providers/README.md`](../providers/README.md) |
@@ -97,6 +98,56 @@ targets:
   - virtual_key: anthropic
     model_map: { smart: claude-sonnet-4-6 }
 ```
+
+## Webhook notifications (`notifications.webhooks`)
+
+Each webhook receives a JSON `POST` for the events it subscribes to:
+
+```yaml
+notifications:
+  webhooks:
+    - name: oncall                     # labels logs and gateway_webhook_deliveries_total
+      url: ${ONCALL_WEBHOOK_URL}       # http(s); resolved at construction, never stored
+      secret: ${ONCALL_WEBHOOK_SECRET} # optional; must be a ${VAR} reference
+      timeout: 5s                      # per delivery attempt (default 5s)
+      events: [circuit.opened, circuit.half_open, circuit.closed, budget.exceeded, error_rate.high]
+      error_rate:                      # required with error_rate.high, refused without it
+        threshold: 0.5                 # failing fraction in (0, 1]
+        window: 1m                     # sliding window (default 1m)
+        min_requests: 20               # fewest attempts judged (default 10)
+```
+
+| Event | Fires when | `details` |
+|---|---|---|
+| `circuit.opened` / `circuit.half_open` / `circuit.closed` | a target's breaker changes state — once per transition | `from`, `to` |
+| `budget.exceeded` | the budget plugin refuses a key for the first time since it was last admitted (a reset re-arms it) | `plugin`, `store_id`, `api_key_id`, `limit_usd`, `spent_usd` |
+| `error_rate.high` | a target's failing fraction of routing attempts over `window` rises to `threshold` with at least `min_requests` attempts — once per rise; falling back below re-arms it | `error_rate`, `errors`, `requests`, `threshold`, `window`, `min_requests` |
+
+The body is `{"event", "time" (UTC RFC 3339), "target", "provider", "details"}`
+and never carries a credential, a request body, or prompt text; a key is named
+by its opaque id. Every delivery carries `X-Ferro-Event`, `X-Ferro-Delivery`
+(the same id on each retry of one event) and `X-Ferro-Timestamp` (Unix
+seconds). With a `secret`, `X-Ferro-Signature` is
+`sha256=` + hex(HMAC-SHA256(secret, timestamp + "." + body)) — verify it over
+the raw body, and refuse an old timestamp to reject a replay.
+
+An unknown event, a duplicate name, a literal `secret`, a URL that is not
+`http(s)`, or an `error_rate` block that does not match the event list is a load
+error. A `${VAR}` that does not resolve at startup disables that webhook with an
+`ERROR` log line; it does not stop the gateway.
+
+Delivery never runs on the request path. Each webhook has its own queue (256
+events); when it is full the oldest pending event is dropped and counted. A
+`5xx` or a transport failure is retried up to three attempts in all with
+exponential backoff; any other non-`2xx` answer — including a redirect — is
+final. `gateway_webhook_deliveries_total{webhook,event,outcome}` counts each
+event's end: `delivered`, `rejected`, `failed`, `dropped`, or `abandoned` (still
+pending when the shutdown grace ran out). On shutdown queued events are
+delivered for up to five seconds and the rest abandoned.
+
+`GET /admin/config` serves a webhook URL as its scheme and host only — chat and
+incident tools put the token in the path — so write the URL as a `${VAR}`
+reference to keep the config editable round-trip.
 
 ## Trusted proxies (`TRUSTED_PROXIES`)
 

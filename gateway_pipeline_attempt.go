@@ -122,6 +122,7 @@ func attemptTarget[Req, Resp any](
 			sequence:       *attemptSequence,
 			targetSequence: attempt + 1,
 		}, time.Since(started), err)
+		g.observeAttemptOutcome(ctx, target, err)
 		if err == nil {
 			return resp, nil
 		}

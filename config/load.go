@@ -450,6 +450,10 @@ func ValidateConfig(cfg Config) error {
 		return err
 	}
 
+	if err := validateNotifications(cfg.Notifications); err != nil {
+		return err
+	}
+
 	if err := ValidatePlugins(cfg.Plugins); err != nil {
 		return err
 	}

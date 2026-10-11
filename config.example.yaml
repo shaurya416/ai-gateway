@@ -658,3 +658,27 @@ observability:
   #     config:
   #       public_key: "${LANGFUSE_PUBLIC_KEY}"
   #       secret_key: "${LANGFUSE_SECRET_KEY}"
+
+# Webhook notifications. Each webhook receives a JSON POST — {event, time,
+# target, provider, details}, never a credential, request body or prompt — for
+# the events it lists: circuit.opened, circuit.half_open, circuit.closed (a
+# target's breaker changing state), budget.exceeded (the budget plugin's first
+# refusal of a key), and error_rate.high (a target's failing fraction of
+# attempts over a sliding window reaching a threshold). Each fires once per
+# transition. url and secret are resolved from ${VAR} references when the
+# gateway starts and are never stored; secret must be a reference, and signs
+# each delivery as X-Ferro-Signature: sha256=HMAC(secret, timestamp + "." + body)
+# with the timestamp in X-Ferro-Timestamp. Delivery is asynchronous: a bounded
+# queue per webhook, a 5xx or transport error retried, any other non-2xx final.
+#
+# notifications:
+#   webhooks:
+#     - name: oncall
+#       url: ${ONCALL_WEBHOOK_URL}
+#       secret: ${ONCALL_WEBHOOK_SECRET}
+#       timeout: 5s
+#       events: [circuit.opened, circuit.closed, budget.exceeded, error_rate.high]
+#       error_rate:               # required with error_rate.high
+#         threshold: 0.5          # failing fraction in (0, 1]
+#         window: 1m
+#         min_requests: 20        # fewest attempts in the window judged

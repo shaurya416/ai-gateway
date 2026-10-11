@@ -34,6 +34,7 @@
 - **Declared models (v1.4.0)** — `targets[].models` lets an operator name the models a target serves, joined into the routing index alongside the catalog and live discovery and advertised by `/v1/models`. It is provider-agnostic and additive: it needs no `/models` endpoint, works offline, and never narrows what a target already serves. See [Declared models](#declared-models-targetsmodels).
 - **Strategy validation at load (v1.4.0)** — every strategy is validated by `config.ValidateConfig`, so an invalid one is a `ferrogw validate` / startup error rather than a request-time 500. Unknown `conditions[].key` and `content_conditions[].type` values are load errors; `weight: 0` means zero traffic, a negative or non-finite (`.nan`, `.inf`) weight is an error, and an all-zero weight set is an error.
 - **Request identity (v1.5.4)** — `observability.RequestIdentity` (end-user id, session id, request metadata) is set on the request context by `internal/otel.Middleware` from `X-User-ID`, `X-Session-ID` and the W3C `baggage` entries `user.id` / `session.id`, or by an embedder through `observability.ContextWithRequestIdentity`; the gateway overlays the OpenAI body `user`. It is recorded as `enduser.id` / `session.id` / `ferro.request.metadata.<key>` on the request span, on `RequestAttrs`, `Event` and `RoutingAttempt`, and as `user_id` / `session_id` on request-log rows. `observability.tracing.attempt_spans` opens one `gateway.routing.attempt` CLIENT span per routing attempt through the optional `observability.AttemptSpanProvider`; `observability.tracing.propagate_passthrough` (default true) injects `traceparent` on `/v1/*` pass-through forwards and on the fixed-target forwards (`/v1/responses` create and its id sub-routes, `/v1/files`, `/v1/batches`). Nothing is inferred and no identity is a body field other than `user`.
+- **Webhook notifications (Unreleased)** — `notifications.webhooks[]` posts `circuit.opened` / `circuit.half_open` / `circuit.closed` (from a state-change hook on each target's breaker, `circuitbreaker.SetStateChangeHook`), `budget.exceeded` (the budget plugin's first refusal of a key, through `plugin.LimitReporter`), and `error_rate.high` (a sliding-window tracker fed from every routing attempt in `attemptTarget`), each once per transition. `internal/notify` owns delivery: a bounded drop-oldest queue and one worker per webhook, HMAC-SHA256 signing, bounded retries on 5xx/transport errors only, and a grace-bounded drain inside `Gateway.Close`. See [Webhook notifications](#webhook-notifications-notificationswebhooks).
 
 ---
 
@@ -115,6 +116,7 @@ ai-gateway/
 │   ├── envref/           # Shared ${VAR} resolver — applied at component construction, not config load
 │   ├── latency/          # Latency tracking for least-latency strategy
 │   ├── migrations/       # Versioned schema-migration runner (schema_migrations ledger)
+│   ├── notify/           # Webhook notifications: per-webhook queue + worker, HMAC signing, retries, error-rate windows
 │   ├── otel/             # OTel-backed observability.Provider: OTLP exporter, W3C propagation, trace-ID unifying IDGenerator, privacy-aware span errors, HTTP middleware
 │   ├── redact/           # Error-message redaction policies (email / JWT / AWS key)
 │   ├── handler/          # HTTP handlers (chat, completions, embeddings, images, models)
@@ -166,6 +168,8 @@ point into `deploy/`.
 | `gateway_circuitbreaker.go` | `cbProvider` — wraps a provider with its per-target circuit breaker on the routing paths (one breaker per `virtual_key`, shared by all four surfaces); panic-safe half-open probe release |
 | `gateway_pipeline.go` | `routeTargets` — the one target walk chat, streaming, embeddings and images all take: retry, circuit breaker, concurrency, outcome recording |
 | `gateway_retry.go` | `retryPolicyFor` — the single place `targets[].retry` is resolved; it does not consult the routing mode |
+| `gateway_notify.go` | Webhook event sources: the breaker transition hook, the budget limit sink, and the per-attempt error-rate feed; notifier swap on reload |
+| `internal/notify/notify.go` | Webhook delivery — `Notifier.Publish` never blocks; per-webhook queue, signing, retries, outcome metric, `Close` drain |
 | `gateway_strategy.go` | `buildStrategy` — `StrategyMode` → `strategies.Strategy`; every error it returns is one `config.ValidateConfig` already rejects |
 | `plugin/catalog.go` | `plugin.Builtins()` — the built-in plugin catalog served by `GET /admin/plugins/catalog`, so the dashboard keeps no copy of it |
 | `test/conformance/conformance_test.go` | Cross-provider conformance suite + coverage drift guard |
@@ -295,6 +299,14 @@ mcp_servers:                 # external MCP tool servers for agentic tool callin
     headers:
       Authorization: Bearer ${SEARCH_TOKEN}
     allowed_tools: ["web_search"]      # empty means all discovered tools
+
+notifications:
+  webhooks:
+    - name: oncall
+      url: ${ONCALL_WEBHOOK_URL}       # resolved at construction; http(s)
+      secret: ${ONCALL_WEBHOOK_SECRET} # optional; a ${VAR} reference only
+      events: [circuit.opened, circuit.closed, budget.exceeded, error_rate.high]
+      error_rate: { threshold: 0.5, window: 1m, min_requests: 20 }
 
 observability:
   tracing:
@@ -466,6 +478,48 @@ unauthenticated and an MCP failure can quote a server URL, an authorization
 header, or a subprocess command line. It is logged server-side and served on
 the bearer-authenticated `GET /admin/health` instead, where the caller has
 already presented a credential carrying `read_only` or `admin`.
+
+### Webhook notifications (`notifications.webhooks`)
+
+Each webhook names the events it receives from a closed set; anything else is a
+load error. Every event fires **once per transition**, never once per request:
+
+| Event | Source | Fires on | Re-arms on |
+|-------|--------|----------|------------|
+| `circuit.opened`, `circuit.half_open`, `circuit.closed` | `circuitbreaker.SetStateChangeHook`, installed on every target breaker | each state change | — (every transition is its own event) |
+| `budget.exceeded` | the budget plugin, through `plugin.LimitReporter` | a key's first refusal | the key being admitted again, or reset |
+| `error_rate.high` | `observeAttemptOutcome`, after every attempt in `attemptTarget` | the window's failing fraction reaching `threshold` with `min_requests` attempts | the condition no longer holding |
+
+`circuit.half_open` is reported when the breaker is next **consulted** — a
+request, `/health`, `/readyz` or a metrics scrape — not at the instant the open
+timeout elapses, because that transition happens on read. The hook runs under
+the breaker's lock, so it reads only lock-free state (the notifier pointer and
+the routing snapshot) and never `g.mu`, which a reader of breaker state may
+already hold.
+
+An error-rate sample is an attempt that counts toward a circuit breaker, plus a
+`429`: a sustained run of rate limits is what the alert exists for, even though
+the breaker rightly ignores one. A caller hanging up, shedding under the
+gateway's own concurrency limit, a parameter refused before the call, and an
+open circuit's refusal are not samples at all. A stream contributes its start.
+
+The payload is `{event, time, target, provider, details}` — no credential, no
+request body, no prompt; a budget event names the key by its opaque id. `url`
+and `secret` are resolved by `internal/envref` at construction, never at load,
+and `secret` must be a `${VAR}` reference. A webhook whose reference does not
+resolve is disabled with an `ERROR` line, and the gateway still starts.
+`GET /admin/config` serves a webhook `url` as scheme and host only and a literal
+`secret` not at all, because the token in a chat-tool webhook lives in the path.
+
+`Notifier.Publish` never blocks: each webhook has a 256-event queue that drops
+its oldest entry when full. Retries are bounded (three attempts, exponential
+backoff) and happen on `5xx` and transport errors only — a `3xx` or `4xx` is
+final. `gateway_webhook_deliveries_total{webhook,event,outcome}` counts
+`delivered`, `rejected`, `failed`, `dropped` and `abandoned`. `Gateway.Close`
+drains queued events inside its five-second budget, then cancels what is left
+and waits for every worker to exit. A reload that changes the block swaps in a
+new notifier and drains the old one in the background; an unchanged block keeps
+the running one and its error-rate windows.
 
 ### Key Environment Variables
 
@@ -887,6 +941,13 @@ setting. **An unrecognised key is withheld.**
 
 A shown key is still run through the value rules, so a credential inlined under
 a declared setting is caught on its shape.
+
+Two named scalars are withheld rather than shape-scrubbed:
+`notifications.webhooks[].url` is served as its scheme and host alone, because a
+chat or incident tool puts the webhook's token in the path, which the URL rule
+(userinfo and query values) would serve whole; and a literal
+`notifications.webhooks[].secret` is served as `[REDACTED]`. A `${VAR}`
+reference in either is served as written.
 
 **Withholding removes the key, not just the value.** A credential can be inlined
 in either position, and an env or header *name* is deployment topology in its own

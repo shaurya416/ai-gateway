@@ -222,6 +222,21 @@ var (
 		[]string{"subject"},
 	)
 
+	// WebhookDeliveriesTotal counts webhook notifications by their final
+	// outcome, labelled by the configured webhook name and the event. Outcomes:
+	// "delivered" (a 2xx), "rejected" (the receiver answered with a status that
+	// is not retried — a 3xx or 4xx), "failed" (5xx or transport errors through
+	// every retry), "dropped" (the webhook's queue was full and the oldest
+	// pending event made way for a newer one), and "abandoned" (still pending
+	// when the shutdown grace ran out).
+	WebhookDeliveriesTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "gateway_webhook_deliveries_total",
+			Help: "Total webhook notifications by webhook, event and final outcome.",
+		},
+		[]string{"webhook", "event", "outcome"},
+	)
+
 	// ObservabilityEventsDroppedTotal counts observability events dropped
 	// because the exporter dispatch queue was full, labelled by event subject.
 	ObservabilityEventsDroppedTotal = promauto.NewCounterVec(

@@ -134,6 +134,7 @@ AI gateways differ most under load, in throughput, latency and memory. Ferro Lab
 | 🎯 **Capability matrix** | One declarative record of which OpenAI parameters each provider forwards, translates, or cannot express, served by `GET /v1/capabilities` | [Docs →](https://docs.ferrolabs.ai/guides/provider-capabilities/) |
 | 🤖 **MCP** | Connects to stdio and Streamable HTTP tool servers, injects their tools into chat completions, and drives the agentic `tool_calls` loop itself | [Docs →](https://docs.ferrolabs.ai/guides/mcp/) |
 | 📊 **Observability** | OpenTelemetry tracing and Prometheus metrics, one trace ID across logs and spans — a zero-allocation no-op until enabled | [Docs →](https://docs.ferrolabs.ai/guides/observability/) |
+| 🔔 **Webhook alerts** | Signed webhooks when a circuit breaker opens, half-opens or closes, when a budget starts refusing a key, and when a target's error rate crosses a threshold — once per transition, delivered off the request path | [Config →](config/README.md#webhook-notifications-notificationswebhooks) |
 | 🖥️ **Dashboard** | Operations console compiled into the binary and served at `/` — traffic, spend, provider health, request logs, audit trail | [Docs →](https://docs.ferrolabs.ai/guides/dashboard/) |
 
 ---

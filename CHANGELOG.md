@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Webhook notifications.** A new `notifications.webhooks[]` block posts a
+  JSON event to an operator's endpoint when something an on-call engineer
+  needs to know about happens, instead of leaving it to be found on a
+  dashboard: `circuit.opened`, `circuit.half_open` and `circuit.closed` when a
+  target's circuit breaker changes state; `budget.exceeded` when the budget
+  plugin first refuses a key; and `error_rate.high` when a target's failing
+  share of routing attempts over a sliding `window` reaches a `threshold`
+  (with a `min_requests` floor). Each fires once per transition — a key held at
+  its cap by a retrying client, or an outage that fails a thousand requests, is
+  one event, and a recovery re-arms it. The body is `{event, time, target,
+  provider, details}` and never carries a credential, a request body or prompt
+  text; a key is named by its opaque id. With a `secret` every delivery is
+  signed: `X-Ferro-Signature: sha256=<hex>` over the `X-Ferro-Timestamp` value
+  and the body. `url` and `secret` are `${VAR}` references resolved when the
+  gateway starts and never stored, and `GET /admin/config` serves a webhook URL
+  as its scheme and host only, since chat tools carry the token in the path.
+  Delivery never touches the request path: each webhook has its own bounded
+  queue that drops its oldest event when full, a `5xx` or transport failure is
+  retried with backoff a bounded number of times while any other non-`2xx` is
+  final, and shutdown drains what is queued within the existing grace period.
+  `gateway_webhook_deliveries_total{webhook,event,outcome}` counts delivered,
+  rejected, failed, dropped and abandoned events. An unknown event, a literal
+  `secret`, a non-`http(s)` URL, or an `error_rate` block that does not match the
+  event list is refused at load and by `ferrogw validate`.
+
 ### Removed
 
 - **Breaking:** `OLLAMA_MODELS` is no longer read. It was renamed

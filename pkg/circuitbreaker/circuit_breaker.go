@@ -64,6 +64,7 @@ type CircuitBreaker struct {
 	timeout          time.Duration
 	openUntil        time.Time
 	now              func() time.Time // clock seam; defaults to time.Now, overridable in tests
+	onChange         func(from, to State)
 }
 
 // New creates a CircuitBreaker with the given thresholds and open timeout.
@@ -104,6 +105,23 @@ func (cb *CircuitBreaker) SetNowForTest(fn func() time.Time) {
 	cb.now = fn
 }
 
+// SetStateChangeHook installs fn to be called once for every state
+// transition, with the state left and the state entered. Passing nil removes
+// it.
+//
+// fn runs while the breaker's lock is held, so transitions are reported in the
+// order they happened and none is reported twice. It must therefore return
+// quickly and must not call back into this breaker.
+//
+// Open→HalfOpen happens on the clock rather than on a call outcome, and is
+// reported when the breaker is next consulted — by a request, or by anything
+// reading State — rather than at the instant the open timeout elapses.
+func (cb *CircuitBreaker) SetStateChangeHook(fn func(from, to State)) {
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
+	cb.onChange = fn
+}
+
 // State returns the current state, transitioning Open→HalfOpen if the timeout
 // has elapsed.
 func (cb *CircuitBreaker) State() State {
@@ -122,11 +140,15 @@ func (cb *CircuitBreaker) resolveState() State {
 	return cb.state
 }
 
-// setState moves to s and starts a new generation. Must be called with cb.mu
-// held.
+// setState moves to s and starts a new generation, reporting the transition
+// to the state-change hook. Must be called with cb.mu held.
 func (cb *CircuitBreaker) setState(s State) {
+	from := cb.state
 	cb.state = s
 	cb.generation++
+	if cb.onChange != nil && from != s {
+		cb.onChange(from, s)
+	}
 }
 
 // Admission is the receipt for one call Admit let through. It records the

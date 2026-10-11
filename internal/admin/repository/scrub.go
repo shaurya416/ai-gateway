@@ -621,12 +621,49 @@ func scrubStruct(v reflect.Value) {
 		if !f.IsExported() {
 			continue
 		}
-		if field := v.Field(i); field.Kind() == reflect.Map {
+		field := v.Field(i)
+		switch {
+		case field.Kind() == reflect.Map:
 			scrubFreeFormMap(field, shownKeys(owner, f.Name))
-		} else {
+		case field.Kind() == reflect.String && withheldScalar(owner, f.Name):
+			field.SetString(scrubWithheldURL(field.String()))
+		default:
 			scrubValue(field, f.Name)
 		}
 	}
+}
+
+// withheldScalar reports whether a named string field is a credential in its
+// own right rather than a setting that may carry one: a webhook's url and its
+// signing secret.
+//
+// A webhook URL is the credential for the endpoint it names — chat and
+// incident tools put the token in the PATH, where scrubURLSecrets, which
+// withholds userinfo and query values, would serve it whole. And a secret
+// field holds nothing but a secret. Both keep a ${VAR} reference legible.
+func withheldScalar(owner any, field string) bool {
+	_, ok := owner.(config.WebhookConfig)
+	return ok && (field == "URL" || field == "Secret")
+}
+
+// scrubWithheldURL serves a withheld field as its scheme and host alone, with
+// everything after them replaced, so an operator can still tell which endpoint
+// is configured. A value that is not an absolute URL — a secret — is withheld
+// whole. A ${VAR} reference and an empty value are returned as they stand.
+func scrubWithheldURL(s string) string {
+	if s == "" || isEnvRef(s) {
+		return s
+	}
+	u, err := url.Parse(s)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return redactedPlaceholder
+	}
+	host := u.Host
+	if u.User != nil {
+		// The username can be the token on its own.
+		host = redactedPlaceholder + "@" + host
+	}
+	return u.Scheme + "://" + host + "/" + redactedPlaceholder
 }
 
 // scrubScalar redacts the secret-bearing parts of a named string field while

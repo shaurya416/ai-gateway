@@ -8,7 +8,6 @@ see [CHANGELOG.md](CHANGELOG.md).
 What's next, roughly in priority order:
 
 - **Plugin SDK & vendor observability bridges** — external guardrail and transform plugins, plus bridges for LangSmith, Langfuse, Datadog, New Relic, Honeycomb, Grafana, and more, shipped from a companion `ai-gateway-plugins` repo so the core binary stays slim.
-- **Webhook notifications** — configurable alerts for budget limits, error spikes, and circuit-breaker events.
 - **Semantic & Redis-backed caching** — beyond the built-in in-memory cache.
 - **Broader provider coverage and an official Go client**, driven by community demand.
 - **Deeper deployment guidance** — Kubernetes operators and Terraform modules.
@@ -69,6 +68,7 @@ Everything below is available today.
 - OpenTelemetry tracing (OTLP gRPC/HTTP, W3C propagation, GenAI + `ferro.*` attributes, privacy levels) — zero-allocation when off
 - Prometheus metrics; `/health`, `/livez`, and `/readyz`; a single trace ID unified across logs, spans, and the `X-Request-ID` header
 - Structured request logging with SQLite or PostgreSQL persistence
+- Webhook notifications — `notifications.webhooks[]` posts `circuit.opened` / `circuit.half_open` / `circuit.closed`, a budget's first refusal of a key (`budget.exceeded`), and a target's error rate crossing a threshold over a sliding window (`error_rate.high`), each once per transition; HMAC-SHA256 signed, delivered off the request path through a bounded per-webhook queue with bounded retries, and drained on shutdown
 
 ### Operations dashboard
 
