@@ -864,6 +864,95 @@ func TestGateway_GenerateImage_UnpricedModelStaysUnpriced(t *testing.T) {
 	}
 }
 
+// audioSurfaceProvider answers transcription and speech the way every audio
+// provider does: with the text or the audio, and no duration or character count
+// the gateway could price.
+type audioSurfaceProvider struct {
+	mockProvider
+}
+
+func (p *audioSurfaceProvider) Transcribe(context.Context, providers.TranscriptionRequest) (*providers.TranscriptionResponse, error) {
+	return &providers.TranscriptionResponse{Text: "hello"}, nil
+}
+
+func (p *audioSurfaceProvider) Speech(context.Context, providers.SpeechRequest) (*providers.SpeechResponse, error) {
+	return &providers.SpeechResponse{Audio: []byte("audio")}, nil
+}
+
+// TestGateway_AudioSurfaces_UnmeasuredQuantityIsUnpricedNotFree covers the two
+// audio surfaces against catalog rows priced the way they are billed: per
+// minute of input (openai/whisper-1's real shape) and per character of output.
+// Neither surface measures the quantity its price is per, so there is nothing
+// to bill — and the honest answer is unpriced. Every whisper-1 transcription
+// used to reach the request log as a known $0.00 instead.
+func TestGateway_AudioSurfaces_UnmeasuredQuantityIsUnpricedNotFree(t *testing.T) {
+	perMinute, perCharacter := 0.006, 0.000015
+	gw, _ := newTestGateway(t, config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeSingle},
+		Targets:  []config.Target{{VirtualKey: "audio"}},
+	})
+	gw.RegisterProvider(&audioSurfaceProvider{mockProvider{name: "audio", models: []string{"whisper-1", "tts-1"}}})
+	gw.mu.Lock()
+	gw.catalog = models.Catalog{
+		"audio/whisper-1": {
+			Provider: "audio",
+			ModelID:  "whisper-1",
+			Mode:     models.ModeAudioIn,
+			Pricing:  models.Pricing{AudioInputPerMinute: &perMinute},
+		},
+		"audio/tts-1": {
+			Provider: "audio",
+			ModelID:  "tts-1",
+			Mode:     models.ModeAudioOut,
+			Pricing:  models.Pricing{AudioOutputPerCharacter: &perCharacter},
+		},
+	}
+	gw.mu.Unlock()
+
+	var measured plugin.Measurements
+	var ran bool
+	_ = gw.RegisterPlugin(plugin.StageAfterRequest, &testPlugin{
+		name: "recorder",
+		typ:  plugin.TypeLogging,
+		execFn: func(_ context.Context, pctx *plugin.Context) error {
+			ran = true
+			measured = pctx.Measurements
+			return nil
+		},
+	})
+
+	cases := []struct {
+		name string
+		call func() error
+	}{
+		{"transcription", func() error {
+			_, err := gw.Transcribe(context.Background(), providers.TranscriptionRequest{Model: "whisper-1", File: []byte("audio"), Filename: "a.wav"})
+			return err
+		}},
+		{"speech", func() error {
+			_, err := gw.Speech(context.Background(), providers.SpeechRequest{Model: "tts-1", Input: "hello", Voice: "alloy"})
+			return err
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			measured, ran = plugin.Measurements{}, false
+			if err := tc.call(); err != nil {
+				t.Fatalf("%s: %v", tc.name, err)
+			}
+			if !ran {
+				t.Fatal("after_request stage did not run")
+			}
+			if measured.HasCost {
+				t.Error("HasCost = true with no measured quantity: a $0.00 bill recorded as though it were the real figure")
+			}
+			if measured.CostUSD != 0 {
+				t.Errorf("CostUSD = %v, want 0: nothing was measured to bill", measured.CostUSD)
+			}
+		})
+	}
+}
+
 // Under content-based, a non-chat request takes the first configured target
 // that can serve the model on this surface — not the first target flat, which
 // a rule list written for chat may well make a chat-only or wrong-model one.

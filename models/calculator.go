@@ -33,7 +33,8 @@ type CostResult struct {
 	// Priced is false when the catalog entry carries no price for the field its
 	// mode bills off: input tokens for chat, embedding tokens for embeddings,
 	// per-tile or (failing that, and only against reported usage) per-token for
-	// images, per-minute or per-character for audio.
+	// images, per-minute or per-character for audio (and only against a measured
+	// duration or character count).
 	Priced bool
 }
 
@@ -117,15 +118,20 @@ func Calculate(catalog Catalog, modelKey string, usage Usage) CostResult {
 			r.OutputUSD = perM(p.OutputPerMTokens, usage.CompletionTokens)
 		}
 
+	// The audio arms require the measured quantity, for the reason the image
+	// token arm does. A transcription response carries only text and a speech
+	// response only audio, so the gateway has no duration or character count to
+	// bill — and pricing that zero recorded every whisper-1 transcription as a
+	// known $0.00. No quantity means unpriced.
 	case ModeAudioIn:
-		r.Priced = p.AudioInputPerMinute != nil
 		if p.AudioInputPerMinute != nil && usage.AudioInputSecs > 0 {
+			r.Priced = true
 			r.AudioUSD = *p.AudioInputPerMinute * usage.AudioInputSecs / 60
 		}
 
 	case ModeAudioOut:
-		r.Priced = p.AudioOutputPerCharacter != nil
 		if p.AudioOutputPerCharacter != nil && usage.AudioOutputChars > 0 {
+			r.Priced = true
 			r.AudioUSD = *p.AudioOutputPerCharacter * float64(usage.AudioOutputChars)
 		}
 	}

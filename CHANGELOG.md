@@ -9,6 +9,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A streamed chat request to an OpenAI-compatible provider whose upstream
+  answers `200` without a stream is now a failure, not an empty success. An
+  HTML page from a catch-all route behind a misconfigured `<PROVIDER>_BASE_URL`,
+  an empty body, or a body of nothing but keep-alives yielded no frame and no
+  `[DONE]`, and the shared SSE reader ended it cleanly: the client got an empty
+  stream, the request log wrote an `after_request` row with zero tokens, the
+  success counter rose and the circuit breaker counted a healthy call. A body
+  that ends having delivered no chunk now ends with an error chunk, so the
+  request takes the error path — an `on_error` row, an error metric, and a
+  breaker failure. A stream that delivered any chunk, or that ended with
+  `[DONE]`, is unchanged.
+- A Responses call (`POST /v1/responses`) the catalog prices now reaches the
+  request log with its cost. The usage teed off the response was priced, and
+  the span, the cost metric and the completed event all carried the figure,
+  but the `after_request` stage was handed a duration and nothing else — so the
+  request logger wrote `cost_usd` as NULL and the dashboard counted the call
+  among its unpriced requests. The stage now receives the same price the other
+  three report; a Responses call that captured no usage, and every other
+  pass-through, still reaches it unpriced.
+- A transcription against a model the catalog prices per minute —
+  `openai/whisper-1`, `azure/whisper-1` and `groq/whisper-large-v3`, among
+  others — is no longer recorded as a known `$0.00`. A transcription response
+  carries only text, so the gateway never has the duration the price is per,
+  and the calculator priced that zero as a real bill: the request-log row carried `cost_usd = 0` and the
+  request was left out of the dashboard's unpriced count. The audio modes now
+  report priced only against a measured duration or character count, as the
+  token-billed image models already do against reported usage; with none, the
+  request is unpriced. Cost-optimized ranking, which prices a representative
+  minute and thousand characters, is unaffected.
 - `POST /v1/responses` is now priced for a caller that accepts a compressed
   response, which is the default for common SDK HTTP clients. The caller's
   `Accept-Encoding` was forwarded upstream, so the transport left the

@@ -247,3 +247,46 @@ func TestStreamSSE_MidStreamError(t *testing.T) {
 		}
 	})
 }
+
+// TestStreamSSE_NoFrameIsAFailure pins what a 200 that carries no stream means.
+// An upstream that answers the stream request with something other than SSE —
+// an HTML page from a catch-all route behind a misconfigured base URL, an empty
+// body, a proxy that only ever sent keep-alives — yields no frame and no [DONE].
+// That used to end as a clean, empty stream: the request was recorded as a
+// success with zero tokens, and the breaker counted a healthy call.
+func TestStreamSSE_NoFrameIsAFailure(t *testing.T) {
+	tests := []struct {
+		name        string
+		contentType string
+		body        string
+	}{
+		{"an HTML page", "text/html; charset=utf-8", "<!doctype html>\n<html><body>dashboard</body></html>\n"},
+		{"an empty body", "text/event-stream", ""},
+		{"keep-alives only", "text/event-stream", ": keep-alive\n\n: keep-alive\n\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", tt.contentType)
+				_, _ = io.WriteString(w, tt.body)
+			}))
+			defer srv.Close()
+
+			ch, err := PostStream(context.Background(), ChatParams{
+				HTTPClient: srv.Client(),
+				URL:        srv.URL,
+				Headers:    map[string]string{"Content-Type": "application/json"},
+				Provider:   "test",
+				Label:      "test",
+			}, core.Request{Model: "m", Messages: []core.Message{{Role: core.RoleUser, Content: "hi"}}})
+			if err != nil {
+				t.Fatalf("PostStream: %v", err)
+			}
+
+			chunks := collect(ch)
+			if len(chunks) != 1 || chunks[0].Error == nil {
+				t.Fatalf("got %d chunks (%+v), want exactly one error chunk: a stream with no frame must not read as a complete answer", len(chunks), chunks)
+			}
+		})
+	}
+}

@@ -584,6 +584,15 @@ func TestCalculatePricedFollowsTheModesOwnPriceField(t *testing.T) {
 			usage:   Usage{AudioInputSecs: 60},
 		},
 		{
+			// openai/whisper-1's shape against the transcription surface, which
+			// measures no duration. There is nothing to bill, and claiming $0.00
+			// was billed is the known-zero this flag exists to prevent.
+			name:    "audio in with a per-minute price, no duration measured",
+			mode:    ModeAudioIn,
+			pricing: Pricing{AudioInputPerMinute: ptr(0.006)},
+			usage:   Usage{},
+		},
+		{
 			name:       "audio out with a per-character price",
 			mode:       ModeAudioOut,
 			pricing:    Pricing{AudioOutputPerCharacter: ptr(0.00003)},
@@ -596,6 +605,12 @@ func TestCalculatePricedFollowsTheModesOwnPriceField(t *testing.T) {
 			mode:    ModeAudioOut,
 			pricing: Pricing{},
 			usage:   Usage{AudioOutputChars: 100},
+		},
+		{
+			name:    "audio out with a per-character price, no characters measured",
+			mode:    ModeAudioOut,
+			pricing: Pricing{AudioOutputPerCharacter: ptr(0.00003)},
+			usage:   Usage{},
 		},
 		{
 			name:       "chat is unchanged: input price decides",

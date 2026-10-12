@@ -339,10 +339,17 @@ func (g *Gateway) runPassthroughGovernance(
 	}
 
 	pctx.Response = record.pluginView()
-	// HasCost stays false for an unpriced pass-through: see RoutePassthrough on why
-	// it is unpriced rather than free. A plugin that persists this keeps the
-	// distinction, so a request-log row reads "cost unknown", not "cost 0".
-	pctx.Measurements = plugin.Measurements{DurationMs: elapsedMs(start)}
+	// The record's own price, the same figure the span, the metric and the
+	// completed event report. HasCost stays false for an unpriced pass-through
+	// (see RoutePassthrough on why it is unpriced rather than free), so its
+	// request-log row reads "cost unknown", not "cost 0". A Responses call priced
+	// from its captured usage carries that price; its row read "cost unknown" too
+	// while only the duration was handed over.
+	pctx.Measurements = plugin.Measurements{
+		DurationMs: elapsedMs(start),
+		CostUSD:    record.cost.TotalUSD,
+		HasCost:    record.cost.Priced,
+	}
 	pctx.Metadata["completed"] = true
 	if err := plugins.RunAfter(ctx, pctx); err != nil {
 		pctx.Error = err

@@ -3,6 +3,7 @@ package openaicompat
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 
@@ -83,6 +84,12 @@ func streamError(typ, msg string) error {
 	return fmt.Errorf("stream error (%s): %s", typ, msg)
 }
 
+// errNoStreamFrame is a 200 whose body ended without a single decodable frame
+// and without the [DONE] sentinel — an HTML page, an empty body, nothing but
+// keep-alives. No completion is that short, so it is a failure, not an empty
+// answer.
+var errNoStreamFrame = errors.New("stream ended before any chunk: the upstream answered 200 without a stream frame")
+
 // StreamSSE consumes an OpenAI-compatible SSE response body and returns a channel
 // of decoded chunks. Frames are read with core.SSEDataLines, so the space after
 // "data:" is optional as the SSE spec has it. It takes ownership of body: a
@@ -91,7 +98,8 @@ func streamError(typ, msg string) error {
 // are skipped so benign non-JSON keep-alive frames don't abort an otherwise
 // healthy stream; a scanner read error is surfaced as a final chunk. A frame
 // carrying an error envelope is forwarded with Error set and ends the stream —
-// nothing valid follows it.
+// nothing valid follows it. A body that reaches EOF having delivered no chunk
+// at all ends with errNoStreamFrame rather than as an empty success.
 //
 // Callers must perform the non-200 status check before handing the body over.
 // ctx cancellation stops the reader promptly: a pending send is abandoned and
@@ -103,6 +111,7 @@ func StreamSSE(ctx context.Context, body io.ReadCloser) <-chan core.StreamChunk 
 		defer func() { _ = body.Close() }()
 
 		lines, scanErr := core.SSEDataLines(body)
+		delivered := false
 		for data := range lines {
 			if data == core.SSEDone {
 				return
@@ -114,12 +123,17 @@ func StreamSSE(ctx context.Context, body io.ReadCloser) <-chan core.StreamChunk 
 			if !core.SendChunk(ctx, ch, chunk) {
 				return
 			}
+			delivered = true
 			if chunk.Error != nil {
 				return
 			}
 		}
 		if err := scanErr(); err != nil {
 			core.SendChunk(ctx, ch, core.StreamChunk{Error: err})
+			return
+		}
+		if !delivered {
+			core.SendChunk(ctx, ch, core.StreamChunk{Error: errNoStreamFrame})
 		}
 	}()
 	return ch
