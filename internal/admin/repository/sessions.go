@@ -77,6 +77,11 @@ type SessionStore interface {
 	// reports false for an unknown, expired, or idle-expired token without
 	// distinguishing between them.
 	ValidateSession(ctx context.Context, token string) (*model.Session, bool)
+	// LookupSession is ValidateSession for a caller that must not mistake a
+	// store failure for a dead session: an unknown, expired, or idle-expired
+	// token is ErrSessionNotFound, and any other error means the store could
+	// not answer. ValidateSession folds both into false.
+	LookupSession(ctx context.Context, token string) (*model.Session, error)
 	ListSessions(ctx context.Context) ([]*model.Session, error)
 	DeleteSession(ctx context.Context, id string) error
 	// DeleteAllSessions removes every session and returns how many were
@@ -248,6 +253,17 @@ func (s *MemorySessionStore) ValidateSession(_ context.Context, token string) (*
 	}
 
 	return cloneSession(stored), true
+}
+
+// LookupSession resolves token to a live session, reporting a dead token as
+// ErrSessionNotFound. The in-memory store cannot fail to answer, so that is the
+// only error it returns.
+func (s *MemorySessionStore) LookupSession(ctx context.Context, token string) (*model.Session, error) {
+	sess, ok := s.ValidateSession(ctx, token)
+	if !ok {
+		return nil, ErrSessionNotFound
+	}
+	return sess, nil
 }
 
 // ListSessions returns every currently live session, newest first, with the id

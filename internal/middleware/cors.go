@@ -17,6 +17,15 @@ import (
 const allowedRequestHeaders = "Content-Type, Authorization, X-Provider, X-User-ID, X-Session-ID, Baggage, " +
 	"X-Gateway-Metadata, Traceparent, Tracestate, X-Request-ID"
 
+// exposedResponseHeaders is the Access-Control-Expose-Headers value: the
+// response headers the gateway writes for its caller to read. A browser hides
+// every response header outside the CORS-safelisted few from a cross-origin
+// script unless it is listed here, so without it an allowed origin read null
+// for the request id it would quote in a report, the routing attribution
+// headers, the gateway overhead, and the Retry-After a 429 or 503 carries.
+const exposedResponseHeaders = "X-Request-ID, X-Gateway-Provider, X-Gateway-Target, X-Gateway-Model, " +
+	"X-Gateway-Attempts, X-Gateway-Overhead-Ms, Retry-After"
+
 // CORS returns middleware that sets CORS headers for the given allowed origins.
 //
 // A cross-origin request is denied by withholding Access-Control-Allow-Origin,
@@ -84,6 +93,7 @@ func CORS(allowedOrigins ...string) func(http.Handler) http.Handler {
 				// traceparent, which OpenTelemetry's fetch instrumentation adds to
 				// every request it propagates trace context on, the gateway itself.
 				w.Header().Set("Access-Control-Allow-Headers", allowedRequestHeaders)
+				w.Header().Set("Access-Control-Expose-Headers", exposedResponseHeaders)
 				w.Header().Set("Access-Control-Max-Age", "86400")
 			}
 

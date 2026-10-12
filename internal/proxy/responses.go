@@ -78,6 +78,15 @@ func ResponsesCreate(src ResponsesSource) http.HandlerFunc {
 		priceProvider := providers.CanonicalName(p)
 		authHeaders := pp.AuthHeaders()
 
+		// The usage tee reads the body as text, so it must not be handed one the
+		// caller negotiated a compression for. A forwarded Accept-Encoding stops
+		// the transport from decoding the response itself, and every client
+		// stack that advertises gzip — the common SDK default — then had its
+		// usage left unread and the request recorded unpriced. Without the
+		// header the transport negotiates the encoding and decodes it before the
+		// tee, and the caller receives the same body uncompressed.
+		r.Header.Del("Accept-Encoding")
+
 		// The usage tee wraps the response body once the upstream headers are in:
 		// text/event-stream selects the SSE terminal-event scan, otherwise the
 		// non-streaming JSON body is parsed for its top-level usage.

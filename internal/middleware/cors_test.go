@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	aigateway "github.com/ferro-labs/ai-gateway"
 	"github.com/ferro-labs/ai-gateway/internal/handler"
 	"github.com/ferro-labs/ai-gateway/pkg/logger"
 )
@@ -364,5 +365,50 @@ func TestCORS_TrimsWhitespaceFromOrigins(t *testing.T) {
 
 	if got := w.Header().Get("Access-Control-Allow-Origin"); got != "https://example.com" {
 		t.Fatalf("expected https://example.com, got %q", got)
+	}
+}
+
+// TestCORS_AllowedOrigin_ExposesGatewayResponseHeaders pins that a browser on
+// an allowed origin can read the headers the gateway answers with. Outside the
+// CORS-safelisted few, a browser hides every response header from a
+// cross-origin script unless Access-Control-Expose-Headers names it, so with
+// none set the attribution headers, the request id and Retry-After all read as
+// null there although the response carried them. The names come from the
+// constants the gateway writes them with, so the list cannot drift from them.
+func TestCORS_AllowedOrigin_ExposesGatewayResponseHeaders(t *testing.T) {
+	want := []string{
+		logger.RequestIDHeader,
+		aigateway.HeaderGatewayProvider,
+		aigateway.HeaderGatewayTarget,
+		aigateway.HeaderGatewayModel,
+		aigateway.HeaderGatewayAttempts,
+		"X-Gateway-Overhead-Ms",
+		"Retry-After",
+	}
+
+	handler := CORS("https://app.example.com")(dummyHandler)
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/chat/completions", nil)
+	r.Header.Set("Origin", "https://app.example.com")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, r)
+
+	exposed := map[string]bool{}
+	for _, name := range strings.Split(w.Header().Get("Access-Control-Expose-Headers"), ",") {
+		exposed[http.CanonicalHeaderKey(strings.TrimSpace(name))] = true
+	}
+	for _, name := range want {
+		if !exposed[http.CanonicalHeaderKey(name)] {
+			t.Errorf("Access-Control-Expose-Headers %q does not name %s — a cross-origin caller cannot read it",
+				w.Header().Get("Access-Control-Expose-Headers"), name)
+		}
+	}
+
+	// A denied origin is told nothing, this header included.
+	denied := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/chat/completions", nil)
+	denied.Header.Set("Origin", "https://other.example.com")
+	dw := httptest.NewRecorder()
+	handler.ServeHTTP(dw, denied)
+	if got := dw.Header().Get("Access-Control-Expose-Headers"); got != "" {
+		t.Errorf("denied origin got Access-Control-Expose-Headers %q, want none", got)
 	}
 }

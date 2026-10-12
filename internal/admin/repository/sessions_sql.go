@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -128,30 +129,43 @@ func scanSession(row interface{ Scan(...any) error }) (*model.Session, error) {
 
 // ValidateSession resolves a plaintext token, refreshing last-seen. It reports
 // false for an unknown, expired, or idle-expired token without distinguishing
-// between them.
+// between them, and false as well when the store could not answer — see
+// LookupSession for a caller that must tell those apart.
 func (s *SQLSessionStore) ValidateSession(ctx context.Context, token string) (*model.Session, bool) {
+	sess, err := s.LookupSession(ctx, token)
+	return sess, err == nil
+}
+
+// LookupSession resolves a plaintext token, refreshing last-seen. An unknown,
+// expired, or idle-expired token is ErrSessionNotFound; a read the database
+// could not complete is returned as itself, so a transient failure is never
+// reported to the caller as a session that has ended.
+func (s *SQLSessionStore) LookupSession(ctx context.Context, token string) (*model.Session, error) {
 	if token == "" {
-		return nil, false
+		return nil, ErrSessionNotFound
 	}
 	query := sqldb.Bind(s.dialect,
 		"SELECT id, subject, credential_id, scopes, created_at, last_seen_at, expires_at FROM sessions WHERE token_hash = ?")
 	sess, err := scanSession(s.db.QueryRowContext(ctx, query, hashSessionToken(token)))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrSessionNotFound
+	}
 	if err != nil {
-		return nil, false
+		return nil, fmt.Errorf("lookup session: %w", err)
 	}
 
 	now := time.Now().UTC()
 	// Both bounds are enforced here rather than by a sweeper, so a row that
 	// outlived either one never validates even if no sweep has run.
 	if !isLive(sess, now) {
-		return nil, false
+		return nil, ErrSessionNotFound
 	}
 
 	// Not every validated request writes; see sessionLastSeenResolution. When
 	// the write is skipped the stored value is returned unchanged rather than
 	// being reported as now, so ListSessions shows what is actually persisted.
 	if !shouldRefreshLastSeen(sess, now) {
-		return sess, true
+		return sess, nil
 	}
 
 	update := sqldb.Bind(s.dialect, "UPDATE sessions SET last_seen_at = ? WHERE id = ?")
@@ -161,10 +175,10 @@ func (s *SQLSessionStore) ValidateSession(ctx context.Context, token string) (*m
 		// authenticated request proceeds and the idle clock simply does not
 		// advance this time.
 		logger.Default().Warn("session last_seen update failed", "error", err)
-		return sess, true
+		return sess, nil
 	}
 	sess.LastSeenAt = &now
-	return sess, true
+	return sess, nil
 }
 
 // sweepExpiredSessions deletes rows that can no longer validate.

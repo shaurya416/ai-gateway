@@ -6,12 +6,14 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 
 	"github.com/ferro-labs/ai-gateway/internal/admin/model"
 	"github.com/ferro-labs/ai-gateway/internal/admin/repository"
 	"github.com/ferro-labs/ai-gateway/internal/redact"
+	"github.com/ferro-labs/ai-gateway/pkg/logger"
 )
 
 // syntheticMasterKeyPrefix begins the credential ID NewCredentialValidator
@@ -145,9 +147,17 @@ func AuthMiddlewareWithSessions(store repository.Store, sessions repository.Sess
 			presented := strings.TrimPrefix(auth, "Bearer ")
 
 			if sessions != nil && strings.HasPrefix(presented, model.SessionTokenPrefix) {
-				sess, ok := sessions.ValidateSession(r.Context(), presented)
-				if !ok {
+				// Both reads on this path keep "ended" apart from "could not
+				// check". A 401 is what signs the dashboard out — it discards the
+				// token it holds — so answering one for a store that merely
+				// failed to respond ended sessions that were still valid.
+				sess, err := sessions.LookupSession(r.Context(), presented)
+				if errors.Is(err, repository.ErrSessionNotFound) {
 					writeError(w, http.StatusUnauthorized, "session expired or invalid", "authentication_error", "invalid_session")
+					return
+				}
+				if err != nil {
+					writeAuthStoreUnavailable(w, err)
 					return
 				}
 				// A session outlives the key it was minted from by design (up to
@@ -176,12 +186,16 @@ func AuthMiddlewareWithSessions(store repository.Store, sessions repository.Sess
 						return
 					}
 				} else {
-					cred, credOK := store.Get(r.Context(), sess.CredentialID)
-					if !credOK || !model.KeyIsUsable(cred) {
+					cred, credErr := store.Lookup(r.Context(), sess.CredentialID)
+					if credErr != nil && !errors.Is(credErr, model.ErrKeyNotFound) {
+						writeAuthStoreUnavailable(w, credErr)
+						return
+					}
+					if credErr != nil || !model.KeyIsUsable(cred) {
 						writeError(w, http.StatusUnauthorized, "session expired or invalid", "authentication_error", "invalid_session")
 						return
 					}
-					scopes = cred.Scopes // store.Get already returns a clone
+					scopes = cred.Scopes // store.Lookup already returns a copy
 				}
 				// A session is presented to the rest of the stack as an APIKey so
 				// no downstream handler needs to know which kind of credential
@@ -222,6 +236,17 @@ func AuthMiddlewareWithSessions(store repository.Store, sessions repository.Sess
 			next.ServeHTTP(w, r.WithContext(model.StoreKeyInContext(r.Context(), apiKey, "")))
 		})
 	}
+}
+
+// writeAuthStoreUnavailable answers a request whose credential could not be
+// checked because a store did not answer. It is a 503, not a 401: nothing was
+// learned about the credential, and a client that reads 401 as "this credential
+// is dead" — the dashboard discards its session token on one — must not be told
+// so by an outage. The request is still refused; the store error is logged and
+// never written to the caller.
+func writeAuthStoreUnavailable(w http.ResponseWriter, err error) {
+	logger.Default().Error("credential store unavailable during authentication", "error", err)
+	writeError(w, http.StatusServiceUnavailable, "credential store unavailable; retry the request", "server_error", "auth_store_unavailable")
 }
 
 // RequireScope returns a middleware that checks whether the authenticated key

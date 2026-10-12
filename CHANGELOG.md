@@ -9,6 +9,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `POST /v1/responses` is now priced for a caller that accepts a compressed
+  response, which is the default for common SDK HTTP clients. The caller's
+  `Accept-Encoding` was forwarded upstream, so the transport left the
+  compressed body for the client to decode, the usage tee read gzip bytes as
+  text and found nothing, and the request was recorded unpriced: no cost in the
+  request log, nothing spent against a budget, and a normal `200` to the
+  caller. The create forward no longer passes the caller's `Accept-Encoding`
+  on; the gateway negotiates the encoding itself, decodes it before the usage
+  is read, and returns the body uncompressed. Streamed and non-streamed
+  responses are both affected.
+- A database blip no longer signs dashboard operators out. Every request on a
+  dashboard session re-reads the session row and the key it was minted from,
+  and both reads folded a store that could not answer into "no such session" /
+  "no such key", so a transient SQLite or Postgres failure answered
+  `401 invalid_session` — and a `401` is what makes the dashboard discard its
+  token, ending sessions that were still valid. A store failure on either read
+  now answers `503 auth_store_unavailable` and the request is still refused; an
+  unknown, expired or idle-expired session, or a deleted, revoked or expired
+  key, still answers `401`. `SessionStore` gains `LookupSession`, which keeps
+  the two cases apart as `Store.Lookup` already does for keys.
+- A browser application on a `CORS_ORIGINS` origin can now read the headers
+  the gateway answers with. No `Access-Control-Expose-Headers` was sent, and a
+  browser hides every response header outside the CORS-safelisted few from a
+  cross-origin script, so `X-Gateway-Provider`, `X-Gateway-Target`,
+  `X-Gateway-Model`, `X-Gateway-Attempts`, `X-Gateway-Overhead-Ms`,
+  `X-Request-ID` and the `Retry-After` on a `429` or `503` all read as null
+  there although every response carried them. An allowed origin now has all
+  seven exposed; a denied origin still receives no CORS headers.
 - A retry wait that cannot end before the request's deadline is no longer
   slept. With `request_timeout` set, a target answering `429` with a
   `Retry-After` inside the 30-second cap but beyond the time left held the
