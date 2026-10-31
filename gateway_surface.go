@@ -185,10 +185,10 @@ func elapsedMs(start time.Time) float64 {
 //
 // content is what the surface asks the provider to work on — an embeddings
 // input, an image prompt — projected into the request the plugins see; call is
-// handed the model the stage settled on. On failure the record is returned
-// alongside the error so the caller can still label metrics with the target that
-// failed.
-func (g *Gateway) runSurfaceGovernance(ctx context.Context, surface string, span observability.Span, start time.Time, model string, content any, call func(context.Context, string) (surfaceRecord, error)) (surfaceRecord, error) {
+// handed the model the stage settled on. user is the request body's `user`, ""
+// on a surface whose body has none. On failure the record is returned alongside
+// the error so the caller can still label metrics with the target that failed.
+func (g *Gateway) runSurfaceGovernance(ctx context.Context, surface string, span observability.Span, start time.Time, model, user string, content any, call func(context.Context, string) (surfaceRecord, error)) (surfaceRecord, error) {
 	g.mu.RLock()
 	plugins := g.plugins
 	release := acquirePluginManager(plugins)
@@ -211,8 +211,13 @@ func (g *Gateway) runSurfaceGovernance(ctx context.Context, surface string, span
 	// an operator has no way to tell apart from chat in config. Projecting it is
 	// what /v1/completions already does with a prompt, for the same reason — a
 	// single user message is what a prompt IS once it reaches this shape.
+	//
+	// The user is carried for the same reason chat carries it: a per-user
+	// limit (rate-limit's user_rpm) keys on Request.User, and a projection
+	// without it let a caller held to one chat request a minute make any number
+	// of embeddings or image requests under the same user.
 	messages, inspectable := surfaceMessages(content)
-	surfaceReq := providers.Request{Model: model, Messages: messages}
+	surfaceReq := providers.Request{Model: model, Messages: messages, User: user}
 	// Never nil: the no-plugins case returned above.
 	pctx := g.newPluginContext(ctx, plugins, span, &surfaceReq)
 	defer plugin.PutContext(pctx)
@@ -353,7 +358,7 @@ func (g *Gateway) Embed(ctx context.Context, req providers.EmbeddingRequest) (*p
 	req.Model = g.resolveModelAlias(req.Model)
 
 	var resp *providers.EmbeddingResponse
-	record, err := g.runSurfaceGovernance(ctx, surfaceEmbeddings, span, start, req.Model, req.Input, func(ctx context.Context, model string) (surfaceRecord, error) {
+	record, err := g.runSurfaceGovernance(ctx, surfaceEmbeddings, span, start, req.Model, req.User, req.Input, func(ctx context.Context, model string) (surfaceRecord, error) {
 		req.Model = model
 		embedded, target, routeErr := g.routeEmbedding(ctx, req)
 		if routeErr != nil {
@@ -426,7 +431,7 @@ func (g *Gateway) GenerateImage(ctx context.Context, req providers.ImageRequest)
 	req.Model = g.resolveModelAlias(req.Model)
 
 	var resp *providers.ImageResponse
-	record, err := g.runSurfaceGovernance(ctx, surfaceImages, span, start, req.Model, req.Prompt, func(ctx context.Context, model string) (surfaceRecord, error) {
+	record, err := g.runSurfaceGovernance(ctx, surfaceImages, span, start, req.Model, req.User, req.Prompt, func(ctx context.Context, model string) (surfaceRecord, error) {
 		req.Model = model
 		generated, target, routeErr := g.routeImage(ctx, req)
 		if routeErr != nil {
@@ -500,7 +505,7 @@ func (g *Gateway) Rerank(ctx context.Context, req providers.RerankRequest) (*pro
 	content = append(content, req.Documents...)
 
 	var resp *providers.RerankResponse
-	record, err := g.runSurfaceGovernance(ctx, surfaceRerank, span, start, req.Model, content, func(ctx context.Context, model string) (surfaceRecord, error) {
+	record, err := g.runSurfaceGovernance(ctx, surfaceRerank, span, start, req.Model, "", content, func(ctx context.Context, model string) (surfaceRecord, error) {
 		req.Model = model
 		reranked, target, routeErr := g.routeRerank(ctx, req)
 		if routeErr != nil {
@@ -568,7 +573,7 @@ func (g *Gateway) Moderate(ctx context.Context, req providers.ModerationRequest)
 	req.Model = g.resolveModelAlias(req.Model)
 
 	var resp *providers.ModerationResponse
-	record, err := g.runSurfaceGovernance(ctx, surfaceModeration, span, start, req.Model, req.Input, func(ctx context.Context, model string) (surfaceRecord, error) {
+	record, err := g.runSurfaceGovernance(ctx, surfaceModeration, span, start, req.Model, "", req.Input, func(ctx context.Context, model string) (surfaceRecord, error) {
 		req.Model = model
 		moderated, target, routeErr := g.routeModeration(ctx, req)
 		if routeErr != nil {
@@ -633,7 +638,7 @@ func (g *Gateway) Transcribe(ctx context.Context, req providers.TranscriptionReq
 	req.Model = g.resolveModelAlias(req.Model)
 
 	var resp *providers.TranscriptionResponse
-	record, err := g.runSurfaceGovernance(ctx, surfaceTranscription, span, start, req.Model, req.Prompt, func(ctx context.Context, model string) (surfaceRecord, error) {
+	record, err := g.runSurfaceGovernance(ctx, surfaceTranscription, span, start, req.Model, "", req.Prompt, func(ctx context.Context, model string) (surfaceRecord, error) {
 		req.Model = model
 		transcribed, target, routeErr := g.routeTranscription(ctx, req)
 		if routeErr != nil {
@@ -697,7 +702,7 @@ func (g *Gateway) Speech(ctx context.Context, req providers.SpeechRequest) (*pro
 	req.Model = g.resolveModelAlias(req.Model)
 
 	var resp *providers.SpeechResponse
-	record, err := g.runSurfaceGovernance(ctx, surfaceSpeech, span, start, req.Model, req.Input, func(ctx context.Context, model string) (surfaceRecord, error) {
+	record, err := g.runSurfaceGovernance(ctx, surfaceSpeech, span, start, req.Model, "", req.Input, func(ctx context.Context, model string) (surfaceRecord, error) {
 		req.Model = model
 		synthesized, target, routeErr := g.routeSpeech(ctx, req)
 		if routeErr != nil {

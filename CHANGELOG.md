@@ -192,6 +192,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   offending field reached the caller as a bare `Unprocessable Entity`. The
   error is now built from the response body by the constructor the chat path
   uses.
+- The `rate-limit` plugin's `user_rpm` now limits `/v1/embeddings` and
+  `/v1/images/generations` requests. It keys on the request's `user`, and the
+  request those two surfaces hand the plugin stage carried only the model and
+  the content, so a caller held to one chat request a minute could make any
+  number of embeddings or image requests under the same `user`. The body's
+  `user` now reaches the plugin stage on both surfaces, as it does on chat.
 - A config reload that changes the `budget` plugin's `max_keys` now takes
   effect. Spend is kept in a process-level store per `store_id` that survives
   a reload, and that store kept the cap of the first instance that opened it,
