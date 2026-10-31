@@ -242,6 +242,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   request_too_large` unless a content guardrail refuses it first, where it was
   forwarded unread under `X-Provider`. Raise `max_request_bytes` to accept
   larger Responses inputs.
+- A config reload that changes a target's `circuit_breaker` block no longer
+  leaves webhook receivers holding a circuit state the gateway does not. The
+  reload replaces the target's breaker, but the retired one kept its
+  notification hook: a request it had admitted before the reload and that
+  failed afterwards tripped it, and `circuit.opened` was posted for a target
+  whose circuit `/health`, `/readyz` and `gateway_circuit_breaker_state` all
+  read as closed — an incident nothing would ever close. Replacing an open
+  breaker had the opposite gap: the target admitted traffic again through its
+  new breaker and no `circuit.closed` was sent. A retired breaker now reports
+  nothing, and replacing one that was open or half-open on a target the new
+  config keeps posts `circuit.closed`.
 - `make test` runs the tests of the Go client (`client/`) and of the `run`
   and `httpgateway` packages. The target names its packages instead of
   `./...`, and the list named none of the three, so it reported success

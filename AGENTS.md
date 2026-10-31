@@ -536,6 +536,12 @@ the breaker's lock, so it reads only lock-free state (the notifier pointer and
 the routing snapshot) and never `g.mu`, which a reader of breaker state may
 already hold.
 
+A reload that changes a target's `circuit_breaker` block replaces its breaker,
+and the one it retires stops reporting: requests it admitted before the reload
+can still trip it, but it no longer guards the target. When the retired breaker
+was open or half-open and the target is still configured, the reload is
+reported as `circuit.closed`, because the target now admits traffic again.
+
 An error-rate sample is an attempt that counts toward a circuit breaker, plus a
 `429`: a sustained run of rate limits is what the alert exists for, even though
 the breaker rightly ignores one. A caller hanging up, shedding under the

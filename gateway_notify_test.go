@@ -355,6 +355,110 @@ func TestNotifications_ReloadKeepsOrReplacesTheNotifier(t *testing.T) {
 	}
 }
 
+// circuitNotifyConfig is a single-target config whose breaker opens on one
+// failure, with every circuit event delivered to url.
+func circuitNotifyConfig(url, timeout string) config.Config {
+	return config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeSingle},
+		Targets: []config.Target{{
+			VirtualKey:     mockProviderName,
+			CircuitBreaker: &config.CircuitBreakerConfig{FailureThreshold: 1, Timeout: timeout},
+		}},
+		Notifications: &config.NotificationsConfig{Webhooks: []config.WebhookConfig{{
+			Name:   "circuit",
+			URL:    url,
+			Events: []string{config.WebhookEventCircuitOpened, config.WebhookEventCircuitHalfOpen, config.WebhookEventCircuitClosed},
+		}}},
+	}
+}
+
+// TestNotifications_RetiredBreakerReportsNothing: a reload that changes a
+// target's circuit_breaker block replaces its breaker. A request admitted by
+// the old breaker and failing after the reload trips that old breaker, which
+// no longer guards the target — so it must not report the target's circuit as
+// opened while /health, /readyz and the gauge all read it closed, an alert no
+// circuit.closed would ever follow.
+func TestNotifications_RetiredBreakerReportsNothing(t *testing.T) {
+	rcv := newHookReceiver(t)
+	cfg := circuitNotifyConfig(rcv.URL, "1h")
+	gw, err := newTestGateway(t, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entered, release := make(chan struct{}), make(chan struct{})
+	gw.RegisterProvider(&mockProvider{
+		name:   mockProviderName,
+		models: []string{"gpt-4o"},
+		completeFn: func(context.Context, providers.Request) (*providers.Response, error) {
+			close(entered)
+			<-release
+			return nil, errors.New("upstream exploded")
+		},
+	})
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = gw.Route(context.Background(), notifyRequest())
+	}()
+	<-entered
+	if err := gw.ReloadConfig(context.Background(), circuitNotifyConfig(rcv.URL, "2h")); err != nil {
+		t.Fatal(err)
+	}
+	close(release)
+	<-done
+
+	settle()
+	if got := rcv.payloads(t); len(got) != 0 {
+		t.Fatalf("a breaker the reload retired reported %v for a target whose circuit is %+v",
+			eventsOf(got), gw.Readiness().Providers)
+	}
+}
+
+// TestNotifications_ReloadClosingAnOpenCircuitReportsIt: a reload that
+// replaces an open breaker leaves the target admitting traffic through a closed
+// one. The receiver was told the circuit opened, so it is told it closed;
+// otherwise the incident stays open on the receiver for as long as the target
+// keeps serving. A target the reload removes has no circuit left to report.
+func TestNotifications_ReloadClosingAnOpenCircuitReportsIt(t *testing.T) {
+	rcv := newHookReceiver(t)
+	gw, err := newTestGateway(t, circuitNotifyConfig(rcv.URL, "1h"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	gw.RegisterProvider(&mockProvider{name: mockProviderName, models: []string{"gpt-4o"}, err: errors.New("down")})
+
+	_, _ = gw.Route(context.Background(), notifyRequest())
+	rcv.waitForCount(t, 1)
+	if err := gw.ReloadConfig(context.Background(), circuitNotifyConfig(rcv.URL, "2h")); err != nil {
+		t.Fatal(err)
+	}
+	got := rcv.waitForCount(t, 2)
+	want := []string{config.WebhookEventCircuitOpened, config.WebhookEventCircuitClosed}
+	if strings.Join(eventsOf(got), ",") != strings.Join(want, ",") {
+		t.Fatalf("events = %v, want %v", eventsOf(got), want)
+	}
+	if p := got[1]; p.Target != mockProviderName || p.Details["from"] != "open" || p.Details["to"] != "closed" {
+		t.Fatalf("closing payload = %+v", p)
+	}
+	if circuit := gw.Readiness().Providers[0].Circuit; circuit != "closed" {
+		t.Fatalf("the reported close disagrees with readiness: circuit %q", circuit)
+	}
+
+	// Open it again, then drop the target: nothing is left to report on.
+	_, _ = gw.Route(context.Background(), notifyRequest())
+	rcv.waitForCount(t, 3)
+	removed := circuitNotifyConfig(rcv.URL, "2h")
+	removed.Targets = []config.Target{{VirtualKey: "other"}}
+	if err := gw.ReloadConfig(context.Background(), removed); err != nil {
+		t.Fatal(err)
+	}
+	settle()
+	if got := rcv.payloads(t); len(got) != 3 {
+		t.Fatalf("removing the target reported %v", eventsOf(got[3:]))
+	}
+}
+
 // TestNotifications_CloseDeliversWhatIsQueued: an event published just before
 // shutdown still reaches its receiver.
 func TestNotifications_CloseDeliversWhatIsQueued(t *testing.T) {

@@ -540,8 +540,10 @@ func (g *Gateway) retireResilienceLocked(prev []config.Target) {
 	}
 	// A target the new config dropped resolves to the zero Target, whose nil
 	// block never matches the non-nil one that built the instance.
-	for key := range g.circuitBreakers {
+	for key, cb := range g.circuitBreakers {
 		if !sameBlock(was[key].CircuitBreaker, now[key].CircuitBreaker) {
+			_, kept := now[key]
+			g.retireCircuitBreakerLocked(key, cb, kept)
 			delete(g.circuitBreakers, key)
 		}
 	}

@@ -83,6 +83,41 @@ func (g *Gateway) circuitTransitionHook(target string) func(from, to circuitbrea
 	}
 }
 
+// retireCircuitBreakerLocked settles the notifications of a breaker a reload
+// is dropping. kept is whether the new config still lists target.
+//
+// The breaker stops reporting first. Requests it admitted before the reload
+// still resolve against it, and a failure among them can trip it; but it no
+// longer guards the target, so a transition it makes from here on describes
+// nothing the gateway does, and reporting one opened an incident that no
+// circuit.closed would ever end.
+//
+// A target the reload keeps is then served through a fresh, closed breaker or
+// through none, which admits as a closed one does. When the breaker it replaces
+// was not closed, that change is the target's circuit closing, and it is
+// reported as one. A target the reload removes has no circuit left to report.
+// Caller holds g.mu.
+func (g *Gateway) retireCircuitBreakerLocked(target string, cb *circuitbreaker.CircuitBreaker, kept bool) {
+	cb.SetStateChangeHook(nil)
+	if !kept {
+		return
+	}
+	from := cb.State()
+	if from == circuitbreaker.StateClosed {
+		return
+	}
+	n := g.notifier.Load()
+	if !n.Wants(config.WebhookEventCircuitClosed) {
+		return
+	}
+	n.Publish(notify.Event{
+		Type:     config.WebhookEventCircuitClosed,
+		Target:   target,
+		Provider: g.providerNameOf(target),
+		Details:  map[string]any{"from": from.String(), "to": circuitbreaker.StateClosed.String()},
+	})
+}
+
 // providerNameOf returns the canonical provider registered under target, or ""
 // when none is. Lock-free: it reads the published routing snapshot.
 func (g *Gateway) providerNameOf(target string) string {
