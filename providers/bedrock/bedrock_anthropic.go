@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
@@ -120,10 +121,15 @@ func bedrockAnthropicContent(msg core.Message) (any, error) {
 // base64-encoded images and do not fetch remote URLs (unlike the native
 // Anthropic API), so a non-data-URI image is rejected with a clear error rather
 // than emitting a "url" source block the Bedrock API would reject.
+//
+// The refusal is the caller's 400: only they can inline the image. A bare
+// error carries no status, so it was answered 500, retried, carried to the
+// next target in a pool and counted against this target's circuit breaker.
 func bedrockAnthropicImageBlock(url string) (anthropicwire.Block, error) {
 	mediaType, data, ok := anthropicwire.ParseDataURI(url)
 	if !ok {
-		return anthropicwire.Block{}, fmt.Errorf("bedrock anthropic: image inputs must be base64 data URIs; remote image URLs are not supported")
+		return anthropicwire.Block{}, core.StatusError(Name, http.StatusBadRequest,
+			"image inputs must be base64 data URIs; remote image URLs are not supported")
 	}
 	return anthropicwire.Block{
 		Type: "image",

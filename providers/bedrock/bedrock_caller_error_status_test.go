@@ -107,6 +107,22 @@ func TestCallerErrorsCarry400(t *testing.T) {
 			wantMsg: "cohere.embed-english-v3",
 		},
 		{
+			name: "claude chat with a remote image URL",
+			call: func(p *Provider) error {
+				_, err := p.Complete(context.Background(), remoteImageRequest())
+				return err
+			},
+			wantMsg: "base64 data URIs",
+		},
+		{
+			name: "claude stream with a remote image URL",
+			call: func(p *Provider) error {
+				_, err := p.CompleteStream(context.Background(), remoteImageRequest())
+				return err
+			},
+			wantMsg: "base64 data URIs",
+		},
+		{
 			name: "image generation on a model that generates no images",
 			call: func(p *Provider) error {
 				_, err := p.GenerateImage(context.Background(), core.ImageRequest{
@@ -136,5 +152,20 @@ func TestCallerErrorsCarry400(t *testing.T) {
 				t.Errorf("error = %q, want it to mention %q", err.Error(), tt.wantMsg)
 			}
 		})
+	}
+}
+
+// remoteImageRequest is a Claude chat request carrying an image by URL, which
+// Bedrock's Anthropic models do not fetch.
+func remoteImageRequest() core.Request {
+	return core.Request{
+		Model: "anthropic.claude-3-5-sonnet-20240620-v1:0",
+		Messages: []core.Message{{
+			Role: core.RoleUser,
+			ContentParts: []core.ContentPart{
+				{Type: core.ContentTypeText, Text: "what is in this image?"},
+				{Type: "image_url", ImageURL: &core.ImageURLPart{URL: "https://example.com/cat.png"}},
+			},
+		}},
 	}
 }

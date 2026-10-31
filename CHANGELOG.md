@@ -156,6 +156,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the drained one, whose credential is the one being revoked. A drained target
   is now not a candidate at all, so such a request is answered with the
   weighted target's own failure.
+- A chat request carrying an image by URL to a Claude model on Bedrock is now
+  answered `400` with the reason. Bedrock's Anthropic models take an image only
+  inlined as a base64 data URI, and the provider refused a remote URL before
+  calling AWS, but with a bare error that carries no status: the caller got
+  `500` "internal error" with the reason withheld, the target's retry budget
+  was spent asking again, a pool mode carried the request to the next target as
+  though this one had failed in transit, and each such request counted toward
+  the target's circuit breaker — a few of them opened it and refused the
+  target's other traffic. Streamed and non-streamed requests alike now get the
+  `400` every other refusal of what the caller sent already carries.
 - An `openai` target's refusal of an embeddings or image request now
   classifies exactly as the same refusal of a chat request does. Those two
   surfaces go through the OpenAI SDK, and the error was rebuilt from the SDK's
