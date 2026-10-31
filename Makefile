@@ -15,8 +15,9 @@ LDFLAGS  := -s -w \
 # the config strict-decode contract. CI runs `./...` and did cover them, so this
 # was a local blind spot rather than an unguarded one, which is exactly what makes
 # it easy to leave: the gate that caught a regression was never the one a developer
-# ran first.
-GATEWAY_PACKAGES = $(shell go list . ./cmd/... ./config/... ./internal/... ./mcp/... ./models/... ./observability/... ./pkg/... ./plugin/... ./providers/... ./test/...)
+# ran first. cmd/ferrogw/build_gates_test.go fails when a package directory is
+# missing from it.
+GATEWAY_PACKAGES = $(shell go list . ./client/... ./cmd/... ./config/... ./httpgateway/... ./internal/... ./mcp/... ./models/... ./observability/... ./pkg/... ./plugin/... ./providers/... ./run/... ./test/...)
 
 # Where internal/webui embeds the dashboard from. go:embed cannot reference a
 # path outside its own package directory, so the bundle web/ produces has to be

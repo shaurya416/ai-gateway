@@ -126,6 +126,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `make test` runs the tests of the Go client (`client/`) and of the `run`
+  and `httpgateway` packages. The target names its packages instead of
+  `./...`, and the list named none of the three, so it reported success
+  without running them; CI, which runs `./...`, did. The list now names them,
+  and a test fails when a package directory of the module is missing from it.
 - A streamed chat request to OpenAI or an OpenAI-compatible provider whose
   upstream answers `200` without a stream is now a failure, not an empty
   success. An HTML page from a catch-all route behind a misconfigured
