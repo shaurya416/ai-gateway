@@ -156,6 +156,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the drained one, whose credential is the one being revoked. A drained target
   is now not a candidate at all, so such a request is answered with the
   weighted target's own failure.
+- A streamed chat completion from an `openai` target whose server streams
+  reasoning, or content as a list of chunks, now delivers what it sent. The
+  provider reads its own stream frames and took `delta.content` as a string and
+  nothing else, so behind an `OPENAI_BASE_URL` pointed at DeepSeek or Ollama
+  the `reasoning_content` / `reasoning` deltas never reached the caller,
+  the stream's assembled response or an `after_request` guardrail — while the
+  same request unstreamed carried its reasoning — and a frame whose content was
+  a list of chunks failed to decode and was skipped with the text, finish reason
+  or usage it carried. Deltas are now read by the rule the shared
+  OpenAI-compatible stream reader applies to every other provider: reasoning
+  under either spelling, and string or list content, with list `thinking`
+  chunks streamed as `reasoning_content`.
 - A chat request carrying an image by URL to a Claude model on Bedrock is now
   answered `400` with the reason. Bedrock's Anthropic models take an image only
   inlined as a base64 data URI, and the provider refused a remote URL before

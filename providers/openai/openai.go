@@ -628,13 +628,16 @@ type openAIStreamChunk struct {
 	Model   string `json:"model"`
 	Choices []struct {
 		Index int `json:"index"`
-		Delta struct {
-			Role      string                 `json:"role"`
-			Content   string                 `json:"content"`
-			ToolCalls []openAIStreamToolCall `json:"tool_calls"`
-		} `json:"delta"`
-		FinishReason string        `json:"finish_reason"`
-		Logprobs     core.Logprobs `json:"logprobs"`
+		// Delta is read by core.MessageDelta, the rule the shared
+		// OpenAI-compatible stream reader applies: reasoning under either
+		// spelling, and content as a string or a list of chunks. A server behind
+		// OPENAI_BASE_URL streams all of these, and this provider's
+		// non-streaming path already keeps them; a delta read as a plain string
+		// dropped the reasoning, and a list-form frame failed to decode and was
+		// skipped with whatever it carried.
+		Delta        core.MessageDelta `json:"delta"`
+		FinishReason string            `json:"finish_reason"`
+		Logprobs     core.Logprobs     `json:"logprobs"`
 	} `json:"choices"`
 	Usage *openAIUsage `json:"usage"`
 	// Error is the envelope OpenAI emits when a request fails once the 200
@@ -647,16 +650,6 @@ type openAIStreamChunk struct {
 	Error json.RawMessage `json:"error"`
 }
 
-type openAIStreamToolCall struct {
-	Index    int    `json:"index"`
-	ID       string `json:"id"`
-	Type     string `json:"type"`
-	Function struct {
-		Name      string `json:"name"`
-		Arguments string `json:"arguments"`
-	} `json:"function"`
-}
-
 // toStreamChunk converts a decoded OpenAI SSE frame to the gateway's canonical
 // stream chunk, carrying usage (including reasoning/cache detail) on the frame
 // that reports it. OpenAI finish reasons are already canonical.
@@ -664,12 +657,8 @@ func (c openAIStreamChunk) toStreamChunk() core.StreamChunk {
 	sc := core.StreamChunk{ID: c.ID, Model: c.Model}
 	for _, choice := range c.Choices {
 		sc.Choices = append(sc.Choices, core.StreamChoice{
-			Index: choice.Index,
-			Delta: core.MessageDelta{
-				Role:      choice.Delta.Role,
-				Content:   choice.Delta.Content,
-				ToolCalls: mapStreamToolCalls(choice.Delta.ToolCalls),
-			},
+			Index:        choice.Index,
+			Delta:        indexedToolCalls(choice.Delta),
 			FinishReason: choice.FinishReason,
 			Logprobs:     choice.Logprobs,
 		})
@@ -694,24 +683,14 @@ func (c openAIStreamChunk) toStreamChunk() core.StreamChunk {
 	return sc
 }
 
-// mapStreamToolCalls maps SSE tool-call deltas to canonical tool calls,
-// preserving the streaming index each fragment belongs to.
-func mapStreamToolCalls(in []openAIStreamToolCall) []core.ToolCall {
-	if len(in) == 0 {
-		return nil
+// indexedToolCalls returns delta with every tool-call fragment carrying the
+// streaming index it belongs to. OpenAI always sends one; a fragment without it
+// is read as index 0, so the assembler never meets a fragment it cannot place.
+func indexedToolCalls(delta core.MessageDelta) core.MessageDelta {
+	for i := range delta.ToolCalls {
+		if delta.ToolCalls[i].Index == nil {
+			delta.ToolCalls[i].Index = core.Ptr(0)
+		}
 	}
-	out := make([]core.ToolCall, 0, len(in))
-	for _, tc := range in {
-		index := tc.Index
-		out = append(out, core.ToolCall{
-			Index: &index,
-			ID:    tc.ID,
-			Type:  tc.Type,
-			Function: core.FunctionCall{
-				Name:      tc.Function.Name,
-				Arguments: tc.Function.Arguments,
-			},
-		})
-	}
-	return out
+	return delta
 }
