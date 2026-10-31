@@ -151,7 +151,9 @@ func (g *Gateway) emitLimitExceeded(le plugin.LimitExceeded) {
 }
 
 // observeAttemptOutcome feeds one routing attempt into every error-rate
-// webhook.
+// webhook. attemptTarget calls it after every attempt, and
+// forwardUnderResilience after every pass-through forward, so a target's
+// rate covers every surface its circuit breaker scores.
 //
 // An attempt counts as an error on the terms it counts toward a circuit
 // breaker, and a 429 counts too: the breaker excludes a rate limit because it

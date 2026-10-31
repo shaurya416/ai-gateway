@@ -409,6 +409,16 @@ func (g *Gateway) forwardUnderResilience(ctx context.Context, key string, forwar
 			}
 			return struct{}{}, err
 		})
+	// An error-rate sample on the breaker's terms, as a routed attempt is: what
+	// the breaker scored as answered is a success, plus a 429, which the
+	// breaker lets pass and the error-rate alert exists for.
+	if g.notifier.Load().WantsAttempts() {
+		sample := err
+		if sample == nil && isRateLimitError(rejected) {
+			sample = rejected
+		}
+		g.observeAttemptOutcome(ctx, routedTarget{key: key, priceProvider: g.providerNameOf(key)}, sample)
+	}
 	if err == nil {
 		err = rejected
 	}

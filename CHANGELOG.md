@@ -262,6 +262,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   scheme, the host and a fragment written before the first reference are now
   checked at load as a literal URL's are; what the reference supplies is still
   checked once it resolves.
+- `error_rate.high` now counts `POST /v1/responses` and the `/v1/*`
+  pass-through. Its window was fed only by the routed surfaces' attempts, so a
+  target whose every Responses request failed with `503` never reached the
+  threshold, and an outage on that traffic sent no alert — while each of those
+  failures counted toward the same target's circuit breaker, which is the
+  definition an error-rate sample is documented to follow. Each pass-through
+  forward is now a sample on its breaker's terms: a `5xx` or a connection
+  failure is a failure, a `429` is a failure, any other `4xx` is the caller's
+  request answered, and an open circuit's refusal, a shed and a caller hanging
+  up are not samples.
 - `make test` runs the tests of the Go client (`client/`) and of the `run`
   and `httpgateway` packages. The target names its packages instead of
   `./...`, and the list named none of the three, so it reported success

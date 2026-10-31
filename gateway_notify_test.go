@@ -18,6 +18,7 @@ import (
 	"github.com/ferro-labs/ai-gateway/internal/notify"
 	"github.com/ferro-labs/ai-gateway/plugin/budget"
 	"github.com/ferro-labs/ai-gateway/providers"
+	"github.com/ferro-labs/ai-gateway/providers/core"
 )
 
 // hookReceiver is a webhook endpoint recording every payload it is sent.
@@ -300,6 +301,64 @@ func TestNotifications_ErrorRateHighFiresOnce(t *testing.T) {
 	// Four successes then four failures is the first window at 50%.
 	if p.Details["requests"] != float64(8) || p.Details["errors"] != float64(4) {
 		t.Fatalf("details = %v, want the window that crossed: 4 of 8", p.Details)
+	}
+}
+
+// TestNotifications_ErrorRateCountsPassthroughForwards: POST /v1/responses and
+// the /v1/* pass-through reach a target under its circuit breaker, which
+// scores each forward, so each forward is an error-rate sample on the same
+// terms: a 5xx is a failure, a 429 is a failure, and any other 4xx is the
+// caller's own request answered, which is a success.
+func TestNotifications_ErrorRateCountsPassthroughForwards(t *testing.T) {
+	rcv := newHookReceiver(t)
+	gw, err := newTestGateway(t, config.Config{
+		Strategy: config.StrategyConfig{Mode: config.ModeSingle},
+		Targets:  []config.Target{{VirtualKey: mockProviderName}},
+		Notifications: &config.NotificationsConfig{Webhooks: []config.WebhookConfig{{
+			Name:      "errors",
+			URL:       rcv.URL,
+			Events:    []string{config.WebhookEventErrorRateHigh},
+			ErrorRate: &config.ErrorRateConfig{Threshold: 0.5, Window: "1m", MinRequests: 8},
+		}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gw.RegisterProvider(&mockProvider{name: mockProviderName, models: []string{"gpt-4o"}})
+
+	status := func(code int) func(context.Context) error {
+		return func(context.Context) error {
+			return &core.HTTPStatusError{StatusCode: code, Message: "upstream answer"}
+		}
+	}
+	ctx := context.Background()
+	// Four answered requests, a 400 among them: below the threshold whatever
+	// follows until the eighth sample.
+	for range 3 {
+		_ = gw.RouteResponses(ctx, mockProviderName, "gpt-4o", "hi", true, 0, nil, func(context.Context) error { return nil })
+	}
+	_ = gw.RoutePassthrough(ctx, mockProviderName, "gpt-4o", "hi", true, status(http.StatusBadRequest))
+	_ = gw.RouteResponses(ctx, mockProviderName, "gpt-4o", "hi", true, 0, nil, status(http.StatusServiceUnavailable))
+	_ = gw.RoutePassthrough(ctx, mockProviderName, "gpt-4o", "hi", true, status(http.StatusTooManyRequests))
+	settle()
+	if got := rcv.payloads(t); len(got) != 0 {
+		t.Fatalf("fired before the window held min_requests samples: %v", eventsOf(got))
+	}
+	for range 2 {
+		_ = gw.RouteResponses(ctx, mockProviderName, "gpt-4o", "hi", true, 0, nil, status(http.StatusBadGateway))
+	}
+
+	got := rcv.waitForCount(t, 1)
+	settle()
+	if len(rcv.payloads(t)) != 1 {
+		t.Fatalf("got %d events, want 1", len(rcv.payloads(t)))
+	}
+	p := got[0]
+	if p.Event != config.WebhookEventErrorRateHigh || p.Target != mockProviderName || p.Provider != mockProviderName {
+		t.Fatalf("payload = %+v", p)
+	}
+	if p.Details["requests"] != float64(8) || p.Details["errors"] != float64(4) {
+		t.Fatalf("details = %v, want 4 failures (503, 429, 502, 502) of 8 forwards", p.Details)
 	}
 }
 
