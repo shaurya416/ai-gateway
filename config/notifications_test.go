@@ -38,15 +38,34 @@ func TestValidateNotifications_Accepts(t *testing.T) {
 	plainHTTP.Name = "plain"
 	plainHTTP.URL = "http://localhost:9000/alerts"
 
+	// A reference can supply any part of the URL, so only what is written
+	// before the first one can be judged at load.
+	referencedPath := validHook()
+	referencedPath.Name = "referenced-path"
+	referencedPath.URL = "HTTPS://hooks.example.com/services/${SLACK_WEBHOOK_PATH}"
+	referencedHost := validHook()
+	referencedHost.Name = "referenced-host"
+	referencedHost.URL = "https://${WEBHOOK_HOST}/hooks"
+	referencedScheme := validHook()
+	referencedScheme.Name = "referenced-scheme"
+	referencedScheme.URL = "${WEBHOOK_SCHEME}://hooks.example.com/x"
+	referencedBase := validHook()
+	referencedBase.Name = "referenced-base"
+	referencedBase.URL = "${WEBHOOK_BASE}/ferro"
+
 	cases := map[string]config.Config{
-		"no block":         {Targets: []config.Target{{VirtualKey: "openai"}}},
-		"empty block":      notificationsConfig(),
-		"literal url":      notificationsConfig(validHook()),
-		"error rate":       notificationsConfig(withRate),
-		"references":       notificationsConfig(referenced),
-		"http":             notificationsConfig(plainHTTP),
-		"every event":      notificationsConfig(config.WebhookConfig{Name: "all", URL: "https://h/x", Events: config.WebhookEvents(), ErrorRate: &config.ErrorRateConfig{Threshold: 1}}),
-		"several webhooks": notificationsConfig(validHook(), withRate, referenced),
+		"reference in path":   notificationsConfig(referencedPath),
+		"reference in host":   notificationsConfig(referencedHost),
+		"reference in scheme": notificationsConfig(referencedScheme),
+		"reference as base":   notificationsConfig(referencedBase),
+		"no block":            {Targets: []config.Target{{VirtualKey: "openai"}}},
+		"empty block":         notificationsConfig(),
+		"literal url":         notificationsConfig(validHook()),
+		"error rate":          notificationsConfig(withRate),
+		"references":          notificationsConfig(referenced),
+		"http":                notificationsConfig(plainHTTP),
+		"every event":         notificationsConfig(config.WebhookConfig{Name: "all", URL: "https://h/x", Events: config.WebhookEvents(), ErrorRate: &config.ErrorRateConfig{Threshold: 1}}),
+		"several webhooks":    notificationsConfig(validHook(), withRate, referenced),
 	}
 	for name, cfg := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -83,6 +102,20 @@ func TestValidateNotifications_Rejects(t *testing.T) {
 		{"relative url", []config.WebhookConfig{mutate(func(w *config.WebhookConfig) { w.URL = "/hooks" })}, "http or https"},
 		{"no host", []config.WebhookConfig{mutate(func(w *config.WebhookConfig) { w.URL = "https:///hooks" })}, "must name a host"},
 		{"fragment", []config.WebhookConfig{mutate(func(w *config.WebhookConfig) { w.URL = "https://h/x#frag" })}, "fragment"},
+		// A reference later in the URL cannot change the scheme or host written
+		// before it, so those are judged at load as a literal URL's are.
+		{"ftp url with a reference", []config.WebhookConfig{mutate(func(w *config.WebhookConfig) {
+			w.URL = "ftp://hooks.example.com/${WEBHOOK_PATH}"
+		})}, "http or https"},
+		{"misspelled scheme with a reference", []config.WebhookConfig{mutate(func(w *config.WebhookConfig) {
+			w.URL = "htps://hooks.slack.com/services/${SLACK_WEBHOOK_PATH}"
+		})}, "http or https"},
+		{"no host with a reference", []config.WebhookConfig{mutate(func(w *config.WebhookConfig) {
+			w.URL = "https:///${WEBHOOK_PATH}"
+		})}, "must name a host"},
+		{"fragment before a reference", []config.WebhookConfig{mutate(func(w *config.WebhookConfig) {
+			w.URL = "https://hooks.example.com/x#${WEBHOOK_TAG}"
+		})}, "fragment"},
 		{"no events", []config.WebhookConfig{mutate(func(w *config.WebhookConfig) { w.Events = nil })}, "at least one"},
 		{"unknown event", []config.WebhookConfig{mutate(func(w *config.WebhookConfig) { w.Events = []string{"circuit.open"} })}, `unknown event "circuit.open"`},
 		{"duplicate event", []config.WebhookConfig{mutate(func(w *config.WebhookConfig) {

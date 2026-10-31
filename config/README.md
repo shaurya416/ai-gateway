@@ -133,8 +133,11 @@ the raw body, and refuse an old timestamp to reject a replay.
 
 An unknown event, a duplicate name, a literal `secret`, a URL that is not
 `http(s)`, or an `error_rate` block that does not match the event list is a load
-error. A `${VAR}` that does not resolve at startup disables that webhook with an
-`ERROR` log line; it does not stop the gateway.
+error. In a URL carrying a `${VAR}`, the scheme and host written before the
+reference are checked at load the same way; whatever the reference supplies is
+checked once it resolves at startup. A `${VAR}` that does not resolve at
+startup, or resolves to a URL that is not `http(s)`, disables that webhook with
+an `ERROR` log line; it does not stop the gateway.
 
 Delivery never runs on the request path. Each webhook has its own queue (256
 events); when it is full the oldest pending event is dropped and counted. A

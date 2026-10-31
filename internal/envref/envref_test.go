@@ -150,3 +150,21 @@ func TestHasReferenceIn_WalksMapsAndLists(t *testing.T) {
 		})
 	}
 }
+
+// LiteralPrefix is the part of a value no reference can change; a bare "$" or
+// a malformed reference is literal text and does not end it.
+func TestLiteralPrefix(t *testing.T) {
+	tests := []struct{ in, want string }{
+		{"https://h/services/${PATH}", "https://h/services/"},
+		{"${URL}", ""},
+		{"https://h/${A}/${B}", "https://h/"},
+		{"pa$$w0rd", "pa$$w0rd"},
+		{"https://h/$5/${lower-case}", "https://h/$5/${lower-case}"},
+		{"", ""},
+	}
+	for _, tt := range tests {
+		if got := LiteralPrefix(tt.in); got != tt.want {
+			t.Errorf("LiteralPrefix(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}

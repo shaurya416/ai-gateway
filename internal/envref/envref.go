@@ -36,6 +36,16 @@ func HasReference(s string) bool {
 	return refPattern.MatchString(s)
 }
 
+// LiteralPrefix returns the text of s before its first ${VAR} reference, or all
+// of s when it carries none. No reference can change it, so a load-time check
+// can judge it before anything is resolved.
+func LiteralPrefix(s string) string {
+	if loc := refPattern.FindStringIndex(s); loc != nil {
+		return s[:loc[0]]
+	}
+	return s
+}
+
 // HasReferenceIn reports whether any string inside v — walking maps and lists
 // — still carries a ${VAR} reference. It is what a pre-flight check asks of a
 // whole config block before deciding whether it can judge the block yet.

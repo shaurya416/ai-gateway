@@ -253,6 +253,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   new breaker and no `circuit.closed` was sent. A retired breaker now reports
   nothing, and replacing one that was open or half-open on a target the new
   config keeps posts `circuit.closed`.
+- A webhook URL that carries a `${VAR}` reference no longer skips the load
+  check on the parts written around it. Any URL with a reference was accepted
+  at load whole, so `htps://hooks.slack.com/services/${SLACK_WEBHOOK_PATH}` or
+  `ftp://hooks.example.com/${TOKEN}` passed `ferrogw validate` and startup,
+  and the webhook was then disabled with an `ERROR` line and never sent
+  anything — although a non-`http(s)` URL is documented as a load error. The
+  scheme, the host and a fragment written before the first reference are now
+  checked at load as a literal URL's are; what the reference supplies is still
+  checked once it resolves.
 - `make test` runs the tests of the Go client (`client/`) and of the `run`
   and `httpgateway` packages. The target names its packages instead of
   `./...`, and the list named none of the three, so it reported success

@@ -67,7 +67,8 @@ type WebhookConfig struct {
 	// contain, a ${VAR} reference, resolved when the gateway is constructed —
 	// never at load — so a URL carrying a token in its path or query is never
 	// stored or served by GET /admin/config. A URL with no reference is
-	// checked at load.
+	// checked at load; in one with a reference, the scheme and host written
+	// before the first reference are checked at load too.
 	URL string `json:"url" yaml:"url"`
 	// Events is the set of events this webhook receives. Each must be one of
 	// WebhookEvents(); an unknown value is a load error.
@@ -156,6 +157,32 @@ func ValidateWebhookURL(raw string) error {
 	return nil
 }
 
+// validateWebhookURLTemplate checks a webhook URL carrying a ${VAR} reference
+// as far as the load can: what is written before the first reference, which no
+// resolved value can change. A scheme written there must be http or https, and
+// a host written there in full must be present, exactly as ValidateWebhookURL
+// requires of a literal URL; a literal "#" there already starts a fragment.
+// Whatever the reference supplies is checked at construction, once resolved.
+func validateWebhookURLTemplate(raw string) error {
+	scheme, rest, ok := strings.Cut(envref.LiteralPrefix(raw), "://")
+	if !ok {
+		// The scheme itself may come from the reference.
+		return nil
+	}
+	if !strings.EqualFold(scheme, "http") && !strings.EqualFold(scheme, "https") {
+		return fmt.Errorf("must be an http or https URL, got scheme %q", scheme)
+	}
+	if strings.Contains(rest, "#") {
+		return fmt.Errorf("must not carry a fragment; it is never sent")
+	}
+	end := strings.IndexAny(rest, "/?")
+	if end < 0 {
+		// The host runs into the reference, which may complete it.
+		return nil
+	}
+	return ValidateWebhookURL(scheme + "://" + rest[:end] + "/")
+}
+
 // validateNotifications checks the notifications block.
 func validateNotifications(n *NotificationsConfig) error {
 	if n == nil {
@@ -189,7 +216,11 @@ func validateWebhook(where string, w WebhookConfig) error {
 	switch {
 	case w.URL == "":
 		return fmt.Errorf("%s.url must not be empty", where)
-	case !envref.HasReference(w.URL):
+	case envref.HasReference(w.URL):
+		if err := validateWebhookURLTemplate(w.URL); err != nil {
+			return fmt.Errorf("%s.url %w", where, err)
+		}
+	default:
 		if err := ValidateWebhookURL(w.URL); err != nil {
 			return fmt.Errorf("%s.url %w", where, err)
 		}
