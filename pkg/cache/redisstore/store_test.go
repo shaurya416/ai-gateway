@@ -2,8 +2,10 @@ package redisstore
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	"encoding/json"
+	"net"
 	"reflect"
 	"slices"
 	"strings"
@@ -501,19 +503,145 @@ func TestStore_ClosedStoreClosesItsConnections(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	captureLog(s)
+	logs := captureLog(s)
 	s.Set("k", sampleResponse("resp-1"))
 	if err := s.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
-	if _, ok := s.Get("k"); ok {
-		t.Fatal("hit from a closed store")
+	// More operations than it takes to trip the breaker: none of them is a
+	// Redis failure.
+	for range failuresToTrip + 1 {
+		if _, ok := s.Get("k"); ok {
+			t.Fatal("hit from a closed store")
+		}
 	}
 	if err := s.Close(); err != nil {
 		t.Fatalf("second Close: %v", err)
 	}
 	if s.breaker.State().String() != "closed" {
 		t.Fatalf("breaker %s: closing the store is not a Redis failure", s.breaker.State())
+	}
+	if got := logs.lines(t, "WARN", "redis unavailable"); len(got) != 0 {
+		t.Fatalf("a closed store reported Redis unavailable:\n%s", strings.Join(got, "\n"))
+	}
+}
+
+// An operation in flight when the store closes finishes, and its connection is
+// closed rather than returned to a pool nothing will drain again.
+func TestStore_OperationInFlightAtCloseLeavesNoIdleConnection(t *testing.T) {
+	srv := redisstub.New(t)
+	s := newStore(t, Options{URL: srv.URL(), Timeout: 5 * time.Second})
+	captureLog(s)
+	srv.Stall(100 * time.Millisecond)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		s.Get("k")
+	}()
+	waitUntil := time.Now().Add(2 * time.Second)
+	for !slices.Contains(srv.Commands(), "GET") {
+		if time.Now().After(waitUntil) {
+			t.Fatal("the GET never reached the stub")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	<-done
+
+	s.client.mu.Lock()
+	idle := len(s.client.idle)
+	s.client.mu.Unlock()
+	if idle != 0 {
+		t.Fatalf("%d idle connections after Close; the in-flight one was pooled", idle)
+	}
+}
+
+// A reply that arrives after its operation gave up is still owed on that
+// connection. Pooled, the connection would hand it to the next command, which
+// would then read another key's entry as its own; it is closed instead.
+func TestStore_LateReplyIsNeverReadAsTheNextAnswer(t *testing.T) {
+	srv := redisstub.New(t)
+	// One connection, so a pooled one is the one the next lookup gets.
+	s := newStore(t, Options{URL: srv.URL(), PoolSize: 1, Timeout: 50 * time.Millisecond})
+	captureLog(s)
+	s.Set("a", sampleResponse("a"))
+	s.Set("b", sampleResponse("b"))
+
+	srv.Stall(150 * time.Millisecond)
+	if _, ok := s.Get("a"); ok {
+		t.Fatal("hit from a stalled Redis")
+	}
+	srv.Stall(0)
+	// Long enough for the late reply to GET a to land on the connection the
+	// lookup gave up on.
+	time.Sleep(250 * time.Millisecond)
+
+	got, ok := s.Get("b")
+	if !ok || got.ID != "b" {
+		t.Fatalf("Get(b) = %+v, %v: want b's entry; a connection still owed a reply was reused", got, ok)
+	}
+	if n := srv.Accepted(); n != 2 {
+		t.Fatalf("accepted %d connections, want 2: the timed-out connection must not be reused", n)
+	}
+}
+
+// A server that accepts the connection and never answers the TLS handshake
+// costs the timeout like any other stall: the handshake runs inside the
+// operation's deadline.
+func TestStore_SilentTLSHandshakeIsBoundedByTheTimeout(t *testing.T) {
+	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var (
+		mu       sync.Mutex
+		accepted []net.Conn
+		served   = make(chan struct{})
+	)
+	go func() {
+		defer close(served)
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			mu.Lock()
+			accepted = append(accepted, c)
+			mu.Unlock()
+		}
+	}()
+	t.Cleanup(func() {
+		_ = ln.Close()
+		<-served
+		mu.Lock()
+		defer mu.Unlock()
+		for _, c := range accepted {
+			_ = c.Close()
+		}
+	})
+
+	s := newStore(t, Options{URL: "rediss://" + ln.Addr().String(), Timeout: 50 * time.Millisecond})
+	captureLog(s)
+
+	result := make(chan bool, 1)
+	start := time.Now()
+	go func() {
+		_, ok := s.Get("k")
+		result <- ok
+	}()
+	select {
+	case ok := <-result:
+		if ok {
+			t.Fatal("hit from a server that never completed the handshake")
+		}
+		if elapsed := time.Since(start); elapsed > time.Second {
+			t.Fatalf("Get took %v against a 50ms timeout", elapsed)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Get still waiting on the TLS handshake 2s into a 50ms timeout")
 	}
 }
 
