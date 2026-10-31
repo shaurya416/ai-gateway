@@ -265,3 +265,37 @@ func TestResponseCache_RedisBackend_CloseReleasesTheStore(t *testing.T) {
 		t.Fatalf("a second Close: %v", err)
 	}
 }
+
+// The Redis backend files an entry under the key every backend uses: the
+// key_prefix, then the request's pkg/cache.Fingerprint inside the namespace of
+// its credential and routing metadata. A request with no fingerprint writes
+// nothing to Redis.
+func TestResponseCache_RedisBackend_KeysOnTheRequestFingerprint(t *testing.T) {
+	t.Parallel()
+
+	srv := redisstub.New(t)
+	c := initRedisCache(t, redisConfig(srv, nil))
+	req := testRequest("gpt-4", "hello")
+	req.RoutingMetadata = map[string]string{"tier": "gold"}
+	storeAs(t, c, req, "key-a", testResponse())
+
+	want := defaultKeyPrefix + requestKeyForTest(t, req, "key-a")
+	if !strings.HasPrefix(want, defaultKeyPrefix+"v1:") {
+		t.Fatalf("request key %q does not carry the fingerprint's version", want)
+	}
+	if keys := srv.Keys(0); len(keys) != 1 || keys[0] != want {
+		t.Fatalf("Redis holds %v, want [%s]", keys, want)
+	}
+	other := testRequest("gpt-4", "hello")
+	other.RoutingMetadata = map[string]string{"tier": "standard"}
+	if lookupAs(t, c, other, "key-a") {
+		t.Error("another routing tier was served the entry")
+	}
+
+	unhashable := testRequest("gpt-4", "hello")
+	unhashable.ToolChoice = make(chan int)
+	storeAs(t, c, unhashable, "key-a", testResponse())
+	if keys := srv.Keys(0); len(keys) != 1 {
+		t.Fatalf("a request with no fingerprint was written to Redis: %v", keys)
+	}
+}
