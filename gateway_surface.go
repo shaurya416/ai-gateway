@@ -1059,6 +1059,9 @@ func (g *Gateway) surfaceTargetOrder(req providers.Request, surface string) ([]s
 
 func providerSupportsSurface(p providers.Provider, surface string) bool {
 	switch surface {
+	case surfaceStream:
+		_, ok := providers.As[providers.StreamProvider](p)
+		return ok
 	case surfaceEmbeddings:
 		_, ok := providers.As[providers.EmbeddingProvider](p)
 		return ok

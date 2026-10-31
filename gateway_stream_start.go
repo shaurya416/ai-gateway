@@ -247,12 +247,16 @@ func raceCompleteStream(waitCtx, streamCtx context.Context, sp providers.StreamP
 	}
 }
 
-// streamingTargetOrder resolves the strategy — the same object Route executes —
-// and asks it for the streaming target order, so both paths share one ordering
-// implementation. A getStrategy error surfaces identically on both paths; for
-// ValidateConfig-passing gateways getStrategy does not error here.
+// streamingTargetOrder resolves the strategy — built from the same config Route
+// executes, with chat's rules — and asks it for the streaming target order, so
+// both paths share one ordering implementation. It is built over the targets
+// that can stream (see strategyFor): a target that cannot is not a candidate
+// for a stream, so it must not win a weighted draw, an A/B variant draw or a
+// ranking slot it can never serve and hand the request to whichever streaming
+// target follows it. A strategy error surfaces identically on both paths; for
+// ValidateConfig-passing gateways it does not error here.
 func (g *Gateway) streamingTargetOrder(req providers.Request) ([]string, error) {
-	s, err := g.getStrategy()
+	s, err := g.strategyFor(surfaceStream)
 	if err != nil {
 		return nil, err
 	}

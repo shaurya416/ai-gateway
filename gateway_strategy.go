@@ -21,6 +21,12 @@ func (g *Gateway) getStrategy() (strategies.Strategy, error) {
 	return g.strategyFor("")
 }
 
+// surfaceStream keys the streaming chat strategy. It is not a surface name
+// operators see — a stream is chat, and is labelled as chat — only the key
+// under which strategyFor builds chat's strategy over the targets that can
+// stream.
+const surfaceStream = "chat.stream"
+
 // strategyFor is getStrategy for one surface. It is the same strategy built
 // from the same config, and differs in two places only. The provider lookup
 // drops a target whose provider cannot serve this surface: that keeps a
@@ -31,6 +37,10 @@ func (g *Gateway) getStrategy() (strategies.Strategy, error) {
 // other surface's rule list (see withoutChatOnlyConditions). Model
 // eligibility, order, and the tail are then decided once, in
 // internal/strategies, for chat and every other surface.
+//
+// Streaming takes the first difference and not the second: its lookup holds
+// only the targets that can stream, and its rules are chat's, `stream` and
+// `has_tools` included (surfaceStream).
 func (g *Gateway) strategyFor(surface string) (strategies.Strategy, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -88,7 +98,7 @@ func (g *Gateway) strategyFor(surface string) (strategies.Strategy, error) {
 	}
 
 	strategyCfg := g.config.Strategy
-	if surface != "" {
+	if surface != "" && surface != surfaceStream {
 		strategyCfg.Conditions = withoutChatOnlyConditions(strategyCfg.Conditions)
 	}
 

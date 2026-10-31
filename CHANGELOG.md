@@ -126,6 +126,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A streamed chat request no longer has its target drawn over providers that
+  cannot stream. Every other surface narrows a strategy's candidates to the
+  targets able to serve it, but the stream order was drawn over every
+  chat-capable target, so under `load-balance` a provider registered through
+  the Go API without streaming won its share of draws and the walk handed each
+  of them to whichever streaming target followed it — one sibling took all of
+  it, the other none — and under `ab-test` a request drawn for such a variant
+  was served by a different target under that variant's label. Streams are now
+  ordered over the targets that can stream, with chat's rules, `stream` and
+  `has_tools` included.
 - A target whose provider serves model ids nothing can enumerate —
   `azure-foundry`, `databricks`, `ollama`, `openrouter`, `cloudflare`,
   `hugging-face` — is offered a model again when the only provider owning it
