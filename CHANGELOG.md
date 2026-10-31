@@ -126,6 +126,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Under `load-balance`, a target with `weight: 0` no longer receives the
+  traffic its weighted siblings cannot serve. Zero weight kept a target out of
+  the weighted draw but left it in the candidate list, and pool modes walk that
+  list on a failover-safe failure and skip a target whose circuit is open or
+  that is parked after a `429` — so the moment the only weighted target
+  answered `5xx`, opened its circuit or was rate limited, every request went to
+  the drained one, whose credential is the one being revoked. A drained target
+  is now not a candidate at all, so such a request is answered with the
+  weighted target's own failure.
 - `make test` runs the tests of the Go client (`client/`) and of the `run`
   and `httpgateway` packages. The target names its packages instead of
   `./...`, and the list named none of the three, so it reported success

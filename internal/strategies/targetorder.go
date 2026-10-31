@@ -47,10 +47,11 @@ func appendRemainingTargetKeys(keys []string, targets []Target) []string {
 // so the first attempted target is weight-biased while the rest remain
 // available as fallbacks.
 //
-// A zero weight means zero: that target is never the start index, so under
-// load-balance — where the pipeline commits to the first key — it receives no
-// traffic at all. That is the whole point of the value; draining a target ahead
-// of revoking its credential is what it is for.
+// A zero weight means zero: that target is never the start index. Under
+// load-balance it is not in the candidate list at all (see
+// LoadBalance.SelectTargets), so it receives no traffic, failover included.
+// That is the whole point of the value; draining a target ahead of revoking
+// its credential is what it is for.
 //
 // The second return is false when no target carries a positive weight. Callers
 // report that as "nothing here can serve this" rather than falling back to
