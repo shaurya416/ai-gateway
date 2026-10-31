@@ -569,11 +569,17 @@ func warnStoredLiterals(cfg config.Config) {
 // endpoint, sampler, privacy level and exporters keep the values they were
 // built with.
 //
+// Two tracing settings are the exception, and are not compared:
+// tracing.attempt_spans and tracing.propagate_passthrough are read by the
+// gateway on every request, so a reload that changes only them has already
+// taken effect — warning that it awaits a restart would tell the operator the
+// opposite of what happened.
+//
 // The log line is the weak form of this signal — a durable flag on
 // GET /admin/config beside the value, as pg_settings.pending_restart is, is
 // what an operator should be able to query. That belongs to the admin handler.
 func warnBootOnlyChanges(previous, next config.Config) {
-	if reflect.DeepEqual(previous.Observability, next.Observability) {
+	if reflect.DeepEqual(bootOnlyObservability(previous), bootOnlyObservability(next)) {
 		return
 	}
 	logger.Default().Warn(
@@ -581,6 +587,15 @@ func warnBootOnlyChanges(previous, next config.Config) {
 		"section", "observability",
 		"pending_restart", true,
 	)
+}
+
+// bootOnlyObservability returns cfg's observability section less the settings
+// the gateway reads per request (see warnBootOnlyChanges).
+func bootOnlyObservability(cfg config.Config) config.ObservabilityConfig {
+	obs := cfg.Observability
+	obs.Tracing.AttemptSpans = false
+	obs.Tracing.PropagatePassthrough = nil
+	return obs
 }
 
 // LoadHistory returns the durable config-version trail. The bool reports whether

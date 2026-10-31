@@ -126,6 +126,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A config change through the Admin API that touches only
+  `observability.tracing.attempt_spans` or
+  `observability.tracing.propagate_passthrough` no longer logs that it was not
+  applied. Both settings are read on every request, so the change takes effect
+  on the next one, but any difference in the `observability` section was
+  reported as boot-only — `WARN` "observability config accepted and persisted
+  but not applied", `pending_restart=true` — telling the operator that trace
+  propagation or attempt spans were unchanged until a restart when they had
+  already changed. The warning now covers only the settings read at startup.
 - An embeddings, image, rerank, moderation or audio request served while a
   config reload switches the routing mode to `content-based` is no longer
   routed by a content rule. Content rules read a chat prompt, which these

@@ -141,6 +141,39 @@ func TestReloadConfig_LiveSectionsDoNotReportPendingRestart(t *testing.T) {
 	}
 }
 
+// TestReloadConfig_PerRequestTracingSettingsDoNotReportPendingRestart covers
+// the two observability settings that are not boot-only. attempt_spans and
+// propagate_passthrough are read by the gateway on every request, so a reload
+// that changes only them has already taken effect, and a warning that it
+// awaits a restart tells the operator the opposite of what happened.
+func TestReloadConfig_PerRequestTracingSettingsDoNotReportPendingRestart(t *testing.T) {
+	gw, err := newTestGateway(t, baseConfig())
+	if err != nil {
+		t.Fatalf("new gateway: %v", err)
+	}
+	mgr, err := NewGatewayConfigManager(gw, &successConfigStore{})
+	if err != nil {
+		t.Fatalf("new config manager: %v", err)
+	}
+
+	propagate := false
+	next := baseConfig()
+	next.Observability.Tracing.AttemptSpans = true
+	next.Observability.Tracing.PropagatePassthrough = &propagate
+
+	buf := captureLogger(t)
+	if err := mgr.ReloadConfig(context.Background(), next); err != nil {
+		t.Fatalf("ReloadConfig: %v", err)
+	}
+
+	if gw.PropagatesPassthroughTrace() {
+		t.Fatal("propagate_passthrough: false was not applied by the reload")
+	}
+	if strings.Contains(buf.String(), "pending_restart") {
+		t.Errorf("a change the reload already applied must not report a pending restart:\n%s", buf.String())
+	}
+}
+
 func captureLogger(t *testing.T) *bytes.Buffer {
 	t.Helper()
 	buf := &bytes.Buffer{}
