@@ -5,7 +5,7 @@
 **Ferro Labs AI Gateway** is a high-performance, open-source AI gateway written in Go. It acts as a unified routing layer between applications and 30 LLM providers (OpenAI, Anthropic, Gemini, Mistral, etc.), offering smart routing, plugin middleware, and API key management — all with an OpenAI-compatible API and transparent pass-through proxy.
 
 - **Module**: `github.com/ferro-labs/ai-gateway`
-- **Go version**: 1.25+
+- **Go version**: 1.26.10+
 - **License**: Apache 2.0
 
 ### Current Development Snapshot
@@ -566,7 +566,10 @@ The response cache keeps its entries in process memory by default, so each
 replica has a cache of its own and a request one replica answered is a provider
 call on the next. `backend: redis` keeps them in a Redis every replica shares.
 The cache key, the per-credential scoping and what counts as a hit are
-unchanged — only where an entry lives moves.
+unchanged — only where an entry lives moves. A Redis key is `key_prefix`
+followed by the request's `pkg/cache.Fingerprint` (`v1:` and 64 hex digits)
+within a namespace of the credential's `api_key_id` and the routing metadata, so
+a new fingerprint version is a cold cache rather than a misread entry.
 
 ```yaml
 plugins:

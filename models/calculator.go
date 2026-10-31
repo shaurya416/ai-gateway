@@ -31,13 +31,14 @@ type CostResult struct {
 	// All cost fields will be zero in that case.
 	ModelFound bool
 	// Priced is false when the catalog entry carries no price for the field its
-	// mode bills off: input tokens for chat and responses, embedding tokens for
-	// embeddings, per-tile or (failing that, and only against reported usage)
-	// per-token for images, per-minute or per-character for audio. Every rate
-	// but the per-tile one prices only a reported measurement — token usage, a
-	// duration or a character count — so a request that reported none is
-	// unpriced rather than a priced $0.00. An image priced per token is priced
-	// only when the row carries a rate for every token count reported.
+	// mode bills off: input tokens for chat, responses and completion, embedding
+	// tokens for embeddings, per-tile or (failing that, and only against
+	// reported usage) per-token for images, per-minute or per-character for
+	// audio. Every rate but the per-tile one prices only a reported
+	// measurement — token usage, a duration or a character count — so a request
+	// that reported none is unpriced rather than a priced $0.00. An image priced
+	// per token is priced only when the row carries a rate for every token count
+	// reported.
 	Priced bool
 }
 
@@ -77,10 +78,11 @@ func Calculate(catalog Catalog, modelKey string, usage Usage) CostResult {
 	// cost-optimized routing skips unpriced candidates, so under
 	// `unpriced_strategy: skip` no embedding target could rank at all.
 	switch model.Mode {
-	// A responses-mode row is a model served only on the Responses API, priced
-	// with the same per-token rates under the same inclusive-prompt convention.
-	// Without this arm every /v1/responses request to one was recorded unpriced.
-	case ModeChat, ModeResponses:
+	// A responses-mode row is a model served only on the Responses API, and a
+	// completion-mode row a legacy completions model; both are priced with the
+	// same per-token rates under the same inclusive-prompt convention. Without
+	// an arm for either, every request to one was recorded unpriced.
+	case ModeChat, ModeResponses, ModeCompletion:
 		// Priced only against reported usage, for the reason the image token arm
 		// and the audio arms are: a completion has at least one prompt token, so
 		// a usage block with no token count at all is one the provider did not

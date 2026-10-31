@@ -19,9 +19,7 @@ import (
 
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 
-	"github.com/ferro-labs/ai-gateway/internal/httpclient"
 	"github.com/ferro-labs/ai-gateway/internal/transport"
-	"github.com/ferro-labs/ai-gateway/internal/version"
 	"github.com/ferro-labs/ai-gateway/pkg/logger"
 )
 
@@ -48,9 +46,12 @@ const (
 // Client communicates with a single MCP server over Streamable HTTP transport.
 // All exported methods are safe for concurrent use.
 type Client struct {
-	endpoint   string
-	headers    map[string]string
-	httpClient *http.Client
+	endpoint         string
+	headers          map[string]string
+	httpClient       *http.Client
+	maxResponseBytes int64
+	clientName       string
+	clientVersion    string
 
 	// sessionMu protects sessionID. Written during Initialize(), read on every
 	// subsequent call. RWMutex ensures concurrent CallTool invocations only
@@ -82,19 +83,7 @@ type Client struct {
 // NewClient creates an MCP client for the given Streamable HTTP endpoint.
 // timeout is the per-request HTTP timeout; 0 defaults to 30 seconds.
 func NewClient(endpoint string, headers map[string]string, timeout time.Duration) *Client {
-	if timeout <= 0 {
-		timeout = defaultToolCallTimeout
-	}
-	httpClient := httpclient.New(timeout)
-	return &Client{
-		endpoint:   endpoint,
-		headers:    headers,
-		httpClient: httpClient,
-		streamClient: &http.Client{
-			Transport:     httpClient.Transport,
-			CheckRedirect: httpClient.CheckRedirect,
-		},
-	}
+	return newClient(endpoint, headers, timeout, ClientOptions{})
 }
 
 // Initialize performs the MCP initialization handshake (initialize +
@@ -109,8 +98,8 @@ func (c *Client) Initialize(ctx context.Context) (*ServerInfo, error) {
 		"protocolVersion": mcpgo.LATEST_PROTOCOL_VERSION,
 		"capabilities":    map[string]any{},
 		"clientInfo": map[string]string{
-			"name":    "ferro-ai-gateway",
-			"version": version.Short(),
+			"name":    c.clientName,
+			"version": c.clientVersion,
 		},
 	}
 
@@ -197,19 +186,19 @@ func (c *Client) ListTools(ctx context.Context) ([]Tool, error) {
 	var (
 		tools  []Tool
 		params any
-		listed int
+		listed int64
 	)
 	for range maxToolListPages {
 		resp, err := c.call(ctx, mcpMethodToolsList, params)
 		if err != nil {
 			return nil, fmt.Errorf("mcp tools/list: %w", err)
 		}
-		// Each page is capped by maxResponseBodyBytes; the listing as a whole is
-		// held to the same bound, so following cursors cannot hold more tool
-		// definitions in memory than one unpaginated answer could.
-		listed += len(resp.Result)
-		if listed > maxResponseBodyBytes {
-			return nil, fmt.Errorf("mcp tools/list: listing exceeds %d byte limit", maxResponseBodyBytes)
+		// Each page is capped by the client's response limit; the listing as a
+		// whole is held to the same bound, so following cursors cannot hold more
+		// tool definitions in memory than one unpaginated answer could.
+		listed += int64(len(resp.Result))
+		if listed > c.maxResponseBytes {
+			return nil, fmt.Errorf("mcp tools/list: listing exceeds %d byte limit", c.maxResponseBytes)
 		}
 
 		var result struct {
@@ -400,7 +389,7 @@ func (c *Client) send(ctx context.Context, method string, params any, sid string
 
 	// Bound the success-path read: read one byte past the cap so an
 	// over-limit body is detected rather than silently truncated.
-	respBody := io.LimitReader(httpResp.Body, maxResponseBodyBytes+1)
+	respBody := io.LimitReader(httpResp.Body, c.maxResponseBytes+1)
 	var rpcResp *JSONRPCResponse
 	if isEventStream(httpResp.Header.Get("Content-Type")) {
 		// A request the server sends while it works on the answer is replied to
@@ -410,14 +399,14 @@ func (c *Client) send(ctx context.Context, method string, params any, sid string
 		if replySID == "" {
 			replySID = httpResp.Header.Get("Mcp-Session-Id")
 		}
-		rpcResp, err = readSSEResponse(respBody, func(data string) {
+		rpcResp, err = readSSEResponse(respBody, c.maxResponseBytes, func(data string) {
 			c.answerServerMessage(ctx, replySID, data)
 		})
 	} else {
-		rpcResp, err = readJSONResponse(respBody)
+		rpcResp, err = readJSONResponse(respBody, c.maxResponseBytes)
 	}
 	if errors.Is(err, errResponseTooLarge) {
-		return nil, fmt.Errorf("mcp response from %s exceeds %d byte limit", method, maxResponseBodyBytes)
+		return nil, fmt.Errorf("mcp response from %s exceeds %d byte limit", method, c.maxResponseBytes)
 	}
 	if err != nil {
 		return nil, err
@@ -436,19 +425,18 @@ func (c *Client) send(ctx context.Context, method string, params any, sid string
 	return rpcResp, nil
 }
 
-// errResponseTooLarge reports a response body past maxResponseBodyBytes.
+// errResponseTooLarge reports a response body past the client's response limit.
 var errResponseTooLarge = errors.New("mcp response exceeds the size limit")
 
 // readJSONResponse decodes the response to a single JSON-RPC request from a body
-// that is a JSON object. body yields at most one byte past
-// maxResponseBodyBytes, so an over-limit body is detected rather than silently
-// truncated.
-func readJSONResponse(body io.Reader) (*JSONRPCResponse, error) {
+// that is a JSON object. body yields at most one byte past limit, so an
+// over-limit body is detected rather than silently truncated.
+func readJSONResponse(body io.Reader, limit int64) (*JSONRPCResponse, error) {
 	respBody, err := io.ReadAll(body)
 	if err != nil {
 		return nil, fmt.Errorf("mcp read body: %w", &unreachableError{err})
 	}
-	if len(respBody) > maxResponseBodyBytes {
+	if int64(len(respBody)) > limit {
 		return nil, errResponseTooLarge
 	}
 	var rpcResp JSONRPCResponse
@@ -460,8 +448,8 @@ func readJSONResponse(body io.Reader) (*JSONRPCResponse, error) {
 
 // readSSEResponse reads the response to a single JSON-RPC request from an SSE
 // stream as it arrives, and returns the first event whose data decodes to a
-// JSON-RPC result or error. body yields at most one byte past
-// maxResponseBodyBytes, the same bound as a JSON body.
+// JSON-RPC result or error. body yields at most one byte past limit, the same
+// bound as a JSON body.
 //
 // Streamable HTTP lets a server answer a POSTed request either way, and the
 // Accept header above offers both, so both must be read: a spec-conformant
@@ -494,11 +482,11 @@ func readJSONResponse(body io.Reader) (*JSONRPCResponse, error) {
 //   - Per the SSE spec an event's data field may span several data: lines, which
 //     are joined with newlines before dispatch. Decoding each line on its own
 //     rejected a split response entirely.
-func readSSEResponse(body io.Reader, onRequest func(data string)) (*JSONRPCResponse, error) {
+func readSSEResponse(body io.Reader, limit int64, onRequest func(data string)) (*JSONRPCResponse, error) {
 	var (
 		resp *JSONRPCResponse
 		data []string
-		read int
+		read int64
 	)
 
 	// dispatch handles the accumulated data field of one event and clears it.
@@ -518,8 +506,8 @@ func readSSEResponse(body io.Reader, onRequest func(data string)) (*JSONRPCRespo
 	br := bufio.NewReader(body)
 	for {
 		raw, err := br.ReadString('\n')
-		read += len(raw)
-		if read > maxResponseBodyBytes {
+		read += int64(len(raw))
+		if read > limit {
 			return nil, errResponseTooLarge
 		}
 		line := strings.TrimRight(raw, "\r\n")

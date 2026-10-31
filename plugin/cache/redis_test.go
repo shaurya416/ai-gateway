@@ -255,7 +255,7 @@ func TestResponseCache_RedisBackend_CloseReleasesTheStore(t *testing.T) {
 	if err := c.Init(map[string]any{}); err != nil {
 		t.Fatalf("re-Init: %v", err)
 	}
-	if _, ok := first.Get(cacheKey(req, "")); ok {
+	if _, ok := first.Get(requestKeyForTest(t, req, "")); ok {
 		t.Fatal("the store a re-Init replaced still served a hit")
 	}
 	if err := c.Close(); err != nil {

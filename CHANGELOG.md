@@ -1412,12 +1412,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   through. The guard now uses a lookup that tells the two apart and answers
   `500` without changing anything when the store cannot say what the key is.
   `GET /admin/keys/{id}` reports the same failure as `500` instead of `404`.
-- The response cache no longer serves one routing tier's answer to another.
-  `X-Gateway-Metadata` was the one conditional-routing input outside the cache
-  key — model, user, `stream` and tools are all in it — so two requests a
-  `key: metadata` rule sent to different targets shared an entry, and with a
-  per-target `model_map` the second was answered from a model it was never
-  routed to. The routing metadata is now part of the key.
 - An OpenAI-compatible embeddings answer that carries fewer embeddings than
   the request had inputs is now a failed call. A `2xx` body with an error
   envelope and no `data`, or a short `data` list, was returned as a successful
@@ -1578,13 +1572,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   empty projection and recorded nothing. `block`, and `pii-redact` under
   `redact`, still deny content they cannot read. `plugin.ScreenUninspectable`
   applies the rule for a guardrail's configured actions.
-- `word-filter` refuses a `blocked_words` it cannot use. A bare string
-  (`blocked_words: password`) and a non-string entry were dropped in silence,
-  so the filter loaded, reported itself enabled and never blocked the words it
-  was given; an empty entry did the opposite and blocked every request, since
-  every string contains it. Each is now a load error, reported by
-  `ferrogw validate` as well as at startup. An absent or empty list is
-  unchanged.
+- `word-filter` refuses an empty or blank `blocked_words` entry. Every string
+  contains it, so the filter blocked every request. It is now a load error,
+  reported by `ferrogw validate` as well as at startup, alongside the
+  malformed lists refused since 1.5.10. An absent or empty list is unchanged.
 - `secret-scan` and `word-filter` listed at `on_error` are refused at load.
   At that stage the request has already failed, so a rejection denies nothing:
   the entry loaded, reported itself enabled and enforced nothing. Both now
@@ -1609,8 +1600,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `allowed_tools` entry naming one matched nothing, and the same server run
   over stdio, whose library follows the cursor, exposed them all. The cursor is
   now followed to the last page. A listing that never ends — more than 1024
-  pages, or more than the 10 MiB one response may carry in all — fails the
-  server's initialization instead of holding the handshake open.
+  pages, or more in all than one response may carry (10 MiB, or
+  `ClientOptions.MaxResponseBytes` for a client built with
+  `mcp.NewClientWithOptions`) — fails the server's initialization instead of
+  holding the handshake open.
 - A Replicate stream for a prediction that did not complete now ends in an
   error instead of a successful answer. Replicate sends its `done` event when a
   prediction succeeds, is canceled or fails, and the stream treated every
@@ -1734,17 +1727,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   request was priced as an unknown model, while the log reported the catalog
   refreshed. It is now refused like unparseable JSON, and a refresh keeps the
   catalog already in use.
-- `/v1/responses` requests to the models the catalog files under mode
-  `responses` — `gpt-5-codex`, `gpt-5.1-codex`, `codex-mini-latest`,
-  `o3-deep-research` and the rest of the Responses-only families — are priced.
-  Cost calculation had no arm for that mode, so every such request was
-  recorded unpriced: no cost on the request-log row, the span or the completed
-  event. The mode is now billed per token exactly as chat is, against the row's
-  input, output and cache-read rates. The same rows now also count as priced to
-  `cost-optimized` routing under `unpriced_strategy: skip`, which orders the
-  targets of the routed surfaces and decides what `/v1/models` lists;
-  `/v1/responses` picks its target by which one serves the model, not through
-  the routing strategy, so its target choice is unchanged.
 - A `/v1/responses` request whose prompt the upstream partly served from its
   cache is priced at the catalog's cache-read rate for that part. The forward
   reads the cached count from `input_tokens_details.cached_tokens`, but the
@@ -2140,6 +2122,123 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   advice left both panels exactly as they were. The traffic chart and the
   Recent Requests table now name `REQUEST_LOG_STORE_BACKEND` and the plugin's
   `persist` setting.
+
+## [1.6.0] — 2026-10-30
+
+### Added
+
+- `pkg/cache.Fingerprint` exposes versioned, namespace-scoped request keys for
+  exact-match completion caches, using the response-cache plugin's encoder.
+- `mcp.NewClientWithOptions` supports a caller-supplied HTTP client, response-size
+  limit and initialization identity. The existing `NewClient` signature and
+  defaults remain unchanged. Constructors copy headers and client configuration.
+  A custom client with no `CheckRedirect` retains the default redirect refusal;
+  an explicitly supplied redirect policy is preserved.
+
+### Changed
+
+- Cache fingerprints now use a `v1:` prefix and an opaque namespace. Existing
+  in-memory entries may miss after the encoding change; no storage migration is
+  required. TTL, capacity, credential isolation and request hooks are unchanged.
+- Fingerprints describe completion content. `RoutingMetadata`, `StreamOptions`
+  and `ClientStreamOptions` are excluded. Applications must scope caches by
+  routing configuration and handle stream framing and usage options separately.
+  A fingerprint is not an authorization decision or a semantic-similarity score.
+- Future changes to encoded fields, including newly included request fields,
+  require a new fingerprint version prefix and intentionally invalidate old keys.
+
+### Fixed
+
+- Response-cache entries now include routing metadata in their namespace, so
+  conditional routing cannot reuse an answer from a different metadata-selected
+  target for the same prompt and credential. Invalid UTF-8 in routing metadata
+  or credential IDs bypasses caching because JSON encoding would otherwise
+  collapse distinct byte sequences into the same namespace.
+- Supplying an MCP HTTP client solely to customize its transport no longer
+  enables automatic redirects. An unset redirect policy refuses redirects,
+  preventing credential replay to redirect targets.
+- Requests with values that cannot be JSON encoded bypass the response cache.
+  Previously, serialization error messages were hashed as request content,
+  allowing distinct invalid requests to share a cache entry.
+
+## [1.5.11] — 2026-10-27
+
+Security fixes. No API or configuration changes. Building the gateway, or a
+module that imports it, now needs Go 1.26.10 or later.
+
+### Security
+
+- Go 1.26.9 → 1.26.10, closing GO-2026-6809: `crypto/x509` did not distrust
+  a set of compromised intermediate certificates. The gateway verifies a
+  certificate chain on every upstream TLS connection, so a provider endpoint
+  presenting a chain through one of them was accepted. (#458)
+- Dashboard build and test tooling refreshed in `web/`: `vitest` and
+  `@vitest/coverage-v8` 3.2 → 4.1.12 (path traversal in `@vitest/mocker`;
+  removes `tinypool` and its two prototype-pollution advisories), `vite`
+  6.4.3 → 6.4.5, `body-parser` 2.3 → 2.4 and `fast-uri` 3.1.9. None of these
+  ship in the bundle; the built dashboard is byte-identical to v1.5.10.
+
+### Changed
+
+- The minimum Go version is 1.26.10 (`go.mod`, CI, release builds and
+  `deploy/Dockerfile`). A module importing the gateway picks it up through
+  `GOTOOLCHAIN=auto`, or fails to build on an older toolchain if that is off.
+- The embedded fallback model catalog (`models/catalog_backup.json`), used
+  when the live catalog cannot be fetched, is refreshed from 2,542 to 2,947
+  models. (#394)
+
+### Fixed
+
+- Requests to Responses-only models (`gpt-5-codex`, `gpt-5.1-codex`,
+  `codex-mini` and the rest of the catalog's `responses` mode) and to legacy
+  completions models (`completion` mode, e.g. `gpt-3.5-turbo-instruct`) are
+  priced again. The model catalog began classifying these models by endpoint
+  contract on 2026-08-22, and the cost calculator had no arm for either mode,
+  so every such request was logged, traced and metered as unpriced at $0 and
+  cost-optimized routing treated the models as unpriced. Both modes now bill
+  the same token fields as chat.
+
+## [1.5.10] — 2026-10-18
+
+Security fixes and one guardrail fix. No API changes. Building the gateway, or
+a module that imports it, now needs Go 1.26.9 or later.
+
+### Security
+
+- Go 1.25.13 → 1.26.9 and `golang.org/x/net` v0.58.0 → v0.60.0, closing
+  GO-2026-6599, GO-2026-6600, GO-2026-6603, GO-2026-6605, GO-2026-6607,
+  GO-2026-6608, GO-2026-6609, GO-2026-6610, GO-2026-6611, GO-2026-6612,
+  GO-2026-6613 and GO-2026-6617 (HTTP/1 and HTTP/2 server and client
+  handling in `net/http`, `crypto/tls`, `net/textproto`, `html/template`).
+  Go 1.25 is out of support, so these have no 1.25 fix.
+- OpenTelemetry v1.43/v1.44 → v1.45.0, closing GO-2026-6505
+  (GHSA-8wmf-6v46-5gfg: exporter config logging could leak endpoint URLs).
+- Dashboard build dependencies refreshed in `web/package-lock.json`:
+  `proxy-addr`, `source-map-js`, `undici`, `js-yaml`, `ip-address`, `hono`,
+  `fast-uri`, `qs`, `postcss-selector-parser`, `brace-expansion` and
+  `@modelcontextprotocol/sdk`. All are build or test tooling and never ship
+  in the bundle; the built dashboard is unchanged.
+
+### Changed
+
+- The minimum Go version is 1.26.9 (`go.mod`, CI, release builds and
+  `deploy/Dockerfile`). A module importing the gateway picks it up through
+  `GOTOOLCHAIN=auto`, or fails to build on an older toolchain if that is off.
+
+### Fixed
+
+- `word-filter` now refuses to load when `blocked_words` is present but is not
+  a list of strings: an explicit `null`, a scalar written where a list belongs,
+  a map, or a list with a non-string item. Such a value used to load as an
+  empty blocklist, so the guardrail registered and let every request through
+  while startup and `ferrogw validate` reported it healthy. The plugin now
+  implements `ValidateConfig`, so `ferrogw validate` reports the same error.
+  An absent key still configures no words. Run `ferrogw validate` against
+  your config before upgrading. (#447, thanks @shaurya416)
+- `deploy/Dockerfile` copies the `run` package, so a source-built image
+  (`make docker-build`, `deploy/compose.dev.yaml`, `render.yaml`) builds again.
+  It had failed with an unresolved import since v1.5.0. Release images are
+  built from `deploy/gateway.release.Dockerfile` and were not affected.
 
 ## [1.5.9] — 2026-09-18
 

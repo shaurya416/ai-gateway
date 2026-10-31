@@ -382,7 +382,7 @@ func TestResponseCache_DelimiterCharactersDoNotCollide(t *testing.T) {
 		},
 	}
 
-	if cacheKey(reqA, "") == cacheKey(reqB, "") {
+	if fingerprintForTest(t, reqA, "") == fingerprintForTest(t, reqB, "") {
 		t.Fatal("expected distinct cache keys for messages containing delimiter characters")
 	}
 
@@ -689,7 +689,7 @@ func TestCacheKey_LogProbsProducesDistinctKey(t *testing.T) {
 		LogProbs: false,
 	}
 
-	if cacheKey(withLogprobs, "") == cacheKey(withoutLogprobs, "") {
+	if fingerprintForTest(t, withLogprobs, "") == fingerprintForTest(t, withoutLogprobs, "") {
 		t.Fatal("logprobs=true and logprobs=false must produce distinct cache keys")
 	}
 }
@@ -709,7 +709,7 @@ func TestCacheKey_DifferentTopLogProbsProducesDistinctKey(t *testing.T) {
 		TopLogProbs: &top5,
 	}
 
-	if cacheKey(req3, "") == cacheKey(req5, "") {
+	if fingerprintForTest(t, req3, "") == fingerprintForTest(t, req5, "") {
 		t.Fatal("requests with different top_logprobs must produce distinct cache keys")
 	}
 }
@@ -776,7 +776,7 @@ func TestCacheKey_OutputParamsProduceDistinctKeys(t *testing.T) {
 			reqA := base()
 			reqB := base()
 			tt.mutate(reqB)
-			if cacheKey(reqA, "") == cacheKey(reqB, "") {
+			if fingerprintForTest(t, reqA, "") == fingerprintForTest(t, reqB, "") {
 				t.Fatalf("requests with different %s must produce distinct cache keys", tt.name)
 			}
 		})
@@ -896,7 +896,7 @@ func TestCacheKey_MessageBodyProducesDistinctKeys(t *testing.T) {
 			reqA := multimodalToolRequest()
 			reqB := multimodalToolRequest()
 			tt.mutate(reqB)
-			if cacheKey(reqA, "") == cacheKey(reqB, "") {
+			if fingerprintForTest(t, reqA, "") == fingerprintForTest(t, reqB, "") {
 				t.Fatalf("requests with different %s must produce distinct cache keys", tt.name)
 			}
 		})
@@ -907,12 +907,12 @@ func TestCacheKey_MessageBodyProducesDistinctKeys(t *testing.T) {
 // request must keep hashing to the same key, or the cache never hits.
 func TestCacheKey_MessageBodyIsStable(t *testing.T) {
 	req := multimodalToolRequest()
-	key := cacheKey(req, "")
+	key := fingerprintForTest(t, req, "")
 
-	if again := cacheKey(req, ""); again != key {
+	if again := fingerprintForTest(t, req, ""); again != key {
 		t.Fatalf("cacheKey is not deterministic: %q then %q", key, again)
 	}
-	if equivalent := cacheKey(multimodalToolRequest(), ""); equivalent != key {
+	if equivalent := fingerprintForTest(t, multimodalToolRequest(), ""); equivalent != key {
 		t.Fatalf("equivalent requests must share a cache key: %q vs %q", key, equivalent)
 	}
 }
@@ -945,7 +945,7 @@ func TestResponseCache_ImageCacheMissForDifferentImage(t *testing.T) {
 	}
 }
 
-func TestCacheKey_LogProbsNilTopLogProbsDoesNotPanic(_ *testing.T) {
+func TestCacheKey_LogProbsNilTopLogProbsDoesNotPanic(t *testing.T) {
 	req := &providers.Request{
 		Model:       "gpt-4",
 		Messages:    []providers.Message{{Role: "user", Content: "hello"}},
@@ -953,7 +953,7 @@ func TestCacheKey_LogProbsNilTopLogProbsDoesNotPanic(_ *testing.T) {
 		TopLogProbs: nil,
 	}
 	// Must not panic.
-	_ = cacheKey(req, "")
+	_ = fingerprintForTest(t, req, "")
 }
 
 // TestResponseCache_LogProbsCacheMissWithoutLogprobs verifies that a cached
@@ -1083,9 +1083,9 @@ func TestCacheKey_ParallelToolCallsProducesDistinctKeys(t *testing.T) {
 	enabled, disabled := true, false
 
 	keys := map[string]string{
-		"unset": cacheKey(base(nil), ""),
-		"true":  cacheKey(base(&enabled), ""),
-		"false": cacheKey(base(&disabled), ""),
+		"unset": fingerprintForTest(t, base(nil), ""),
+		"true":  fingerprintForTest(t, base(&enabled), ""),
+		"false": fingerprintForTest(t, base(&disabled), ""),
 	}
 	for a, ka := range keys {
 		for b, kb := range keys {
@@ -1098,7 +1098,7 @@ func TestCacheKey_ParallelToolCallsProducesDistinctKeys(t *testing.T) {
 	// Same value still hits: the field separates entries, it does not disable
 	// caching for requests that carry it.
 	other := true
-	if cacheKey(base(&enabled), "") != cacheKey(base(&other), "") {
+	if fingerprintForTest(t, base(&enabled), "") != fingerprintForTest(t, base(&other), "") {
 		t.Error("identical parallel_tool_calls requests must produce the same cache key")
 	}
 }
@@ -1118,10 +1118,10 @@ func TestCacheKey_RoutingMetadataProducesDistinctKeys(t *testing.T) {
 	}
 
 	keys := map[string]string{
-		"none":     cacheKey(base(nil), ""),
-		"gold":     cacheKey(base(map[string]string{"tier": "gold"}), ""),
-		"standard": cacheKey(base(map[string]string{"tier": "standard"}), ""),
-		"region":   cacheKey(base(map[string]string{"region": "gold"}), ""),
+		"none":     requestKeyForTest(t, base(nil), ""),
+		"gold":     requestKeyForTest(t, base(map[string]string{"tier": "gold"}), ""),
+		"standard": requestKeyForTest(t, base(map[string]string{"tier": "standard"}), ""),
+		"region":   requestKeyForTest(t, base(map[string]string{"region": "gold"}), ""),
 	}
 	for a, ka := range keys {
 		for b, kb := range keys {
@@ -1134,7 +1134,7 @@ func TestCacheKey_RoutingMetadataProducesDistinctKeys(t *testing.T) {
 	// The same entries hit whatever order the map yields them in.
 	both := map[string]string{"tier": "gold", "region": "eu"}
 	same := map[string]string{"region": "eu", "tier": "gold"}
-	if cacheKey(base(both), "") != cacheKey(base(same), "") {
+	if requestKeyForTest(t, base(both), "") != requestKeyForTest(t, base(same), "") {
 		t.Error("identical routing metadata must produce the same cache key")
 	}
 }
@@ -1157,7 +1157,7 @@ func TestExecute_StandsDownOnNonChatSurfaces(t *testing.T) {
 		Model:    "gpt-4",
 		Messages: []providers.Message{{Role: "user", Content: "hello"}},
 	}
-	if cacheKey(chatRequest, "") != cacheKey(surfaceRequest, "") {
+	if fingerprintForTest(t, chatRequest, "") != fingerprintForTest(t, surfaceRequest, "") {
 		t.Fatal("this test asserts nothing unless the two requests collide")
 	}
 
@@ -1175,13 +1175,13 @@ func TestExecute_StandsDownOnNonChatSurfaces(t *testing.T) {
 	if err := c.Execute(context.Background(), store); err != nil {
 		t.Fatalf("Execute (after_request): %v", err)
 	}
-	if _, ok := c.store.Get(cacheKey(surfaceRequest, "")); ok {
+	if lookupAs(t, c, chatRequest, "") {
 		t.Error("the surface response was stored; the next chat request with this text is served an empty completion")
 	}
 
 	// before_request on the surface must not serve one either, even when the
 	// chat side has primed that key with a real answer.
-	c.store.Set(cacheKey(chatRequest, ""), &providers.Response{
+	storeAs(t, c, chatRequest, "", &providers.Response{
 		Choices: []providers.Choice{{Message: providers.Message{Role: "assistant", Content: "a real answer"}}},
 	})
 	lookup := plugin.NewContext(surfaceRequest)
@@ -1362,5 +1362,50 @@ func TestResponseCache_UninitialisedStandsDown(t *testing.T) {
 		if pctx.SkipProvider {
 			t.Fatalf("an uninitialised cache served a hit at %s", stage)
 		}
+	}
+}
+
+func fingerprintForTest(t testing.TB, req *providers.Request, namespace string) string {
+	t.Helper()
+	key, err := cachestore.Fingerprint(req, namespace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return key
+}
+
+// requestKeyForTest is the key the plugin files req under for the credential
+// keyID: its fingerprint inside the credential and routing-metadata namespace.
+func requestKeyForTest(t testing.TB, req *providers.Request, keyID string) string {
+	t.Helper()
+	key, err := requestKey(req, keyID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return key
+}
+
+func TestResponseCache_RoutingMetadataNamespace(t *testing.T) {
+	c := initCache(t, nil)
+	req := testRequest("gpt-4o", "hello")
+	req.RoutingMetadata = map[string]string{"route": "a", "region": "west"}
+	storeAs(t, c, req, "key-id", testResponse())
+	for _, tc := range []struct {
+		name     string
+		metadata map[string]string
+		hit      bool
+	}{
+		{"same entries", map[string]string{"region": "west", "route": "a"}, true},
+		{"different target", map[string]string{"region": "west", "route": "b"}, false},
+		{"missing field", map[string]string{"route": "a"}, false},
+		{"no metadata", nil, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			lookup := testRequest("gpt-4o", "hello")
+			lookup.RoutingMetadata = tc.metadata
+			if got := lookupAs(t, c, lookup, "key-id"); got != tc.hit {
+				t.Errorf("hit = %v, want %v", got, tc.hit)
+			}
+		})
 	}
 }

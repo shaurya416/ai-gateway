@@ -151,13 +151,24 @@ func (w *WordFilter) Close() error { return nil }
 // blockedWords reads the blocklist out of a config block.
 //
 // A value that cannot be the list the operator meant is a load error. A scalar
-// (`blocked_words: password`) and a non-string entry used to be dropped in
-// silence, so the filter loaded, reported itself enabled and never blocked the
-// words it was given. An empty or blank entry is refused for the opposite
-// reason: every string contains it, so it blocked every request.
+// (`blocked_words: password`), a mapping, an explicit null and a non-string
+// entry used to be dropped in silence, so the filter loaded, reported itself
+// enabled and never blocked the words it was given. An empty or blank entry is
+// refused for the opposite reason: every string contains it, so it blocked
+// every request. An absent key configures no words.
 func blockedWords(config map[string]any) ([]string, error) {
+	raw, present := config["blocked_words"]
+	if !present {
+		return nil, nil
+	}
+	// plugin.ListSetting reads nil as absent, but a key written as null — or
+	// a templated value that rendered empty — named the blocklist and supplied
+	// none, so it is refused rather than loaded as no words.
+	if raw == nil {
+		return nil, fmt.Errorf("word-filter: blocked_words must be a list, got null")
+	}
 	var words []string
-	switch list := config["blocked_words"].(type) {
+	switch list := raw.(type) {
 	case []string:
 		words = list
 	default:
