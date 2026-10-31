@@ -126,6 +126,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- An embeddings, image, rerank, moderation or audio request served while a
+  config reload switches the routing mode to `content-based` is no longer
+  routed by a content rule. Content rules read a chat prompt, which these
+  requests do not carry, so they take the no-match answer — the first target
+  that can serve them. But the mode was read under one hold of the gateway
+  lock and the strategy fetched under another, so a reload landing between the
+  two handed the request a strategy whose `prompt_not_contains` rule matched it
+  vacuously, and it was sent to that rule's target. The no-match answer is now
+  the strategy these surfaces route through under `content-based`, built from
+  the same read of the config as the mode.
 - A streamed chat request no longer has its target drawn over providers that
   cannot stream. Every other surface narrows a strategy's candidates to the
   targets able to serve it, but the stream order was drawn over every

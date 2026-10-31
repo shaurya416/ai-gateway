@@ -33,14 +33,16 @@ const surfaceStream = "chat.stream"
 // chat-only target from winning a weighted draw it can never serve — which
 // would then hand its whole share to whichever capable target follows it in
 // the rotation — or from taking the cheapest or fastest slot under a ranking
-// mode. And a conditional rule on a chat-only predicate is left out of every
-// other surface's rule list (see withoutChatOnlyConditions). Model
-// eligibility, order, and the tail are then decided once, in
-// internal/strategies, for chat and every other surface.
+// mode. And a rule the surface's requests cannot be asked is left out: a
+// conditional rule on a chat-only predicate drops out of every other surface's
+// rule list (see withoutChatOnlyConditions), and content-based rules, which
+// read a prompt those requests do not have, are replaced by the no-match
+// answer (see firstServingTarget). Model eligibility, order, and the tail are
+// then decided once, in internal/strategies, for chat and every other surface.
 //
 // Streaming takes the first difference and not the second: its lookup holds
 // only the targets that can stream, and its rules are chat's, `stream` and
-// `has_tools` included (surfaceStream).
+// `has_tools` included, and so are its content rules (surfaceStream).
 func (g *Gateway) strategyFor(surface string) (strategies.Strategy, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -98,13 +100,26 @@ func (g *Gateway) strategyFor(surface string) (strategies.Strategy, error) {
 	}
 
 	strategyCfg := g.config.Strategy
-	if surface != "" && surface != surfaceStream {
+	promptless := surface != "" && surface != surfaceStream
+	if promptless {
 		strategyCfg.Conditions = withoutChatOnlyConditions(strategyCfg.Conditions)
 	}
 
-	s, err := buildStrategy(strategyCfg, targets, lookup, g.latencyTracker, g.catalog)
-	if err != nil {
-		return nil, err
+	var s strategies.Strategy
+	if promptless && strategyCfg.Mode == config.ModeContentBased && len(targets) > 0 {
+		// Content rules read the prompt, and a request on this surface has
+		// none, so it takes the no-match answer (see firstServingTarget).
+		// Decided here, from the config this strategy is built from, rather
+		// than beside it: a check made under a separate hold of the lock let
+		// a reload into content-based land between the two, and the request
+		// was then routed by the rules it must never be asked.
+		s = firstServingTarget{targets: targets, lookup: lookup}
+	} else {
+		var err error
+		s, err = buildStrategy(strategyCfg, targets, lookup, g.latencyTracker, g.catalog)
+		if err != nil {
+			return nil, err
+		}
 	}
 	if g.strategies == nil {
 		g.strategies = make(map[string]strategies.Strategy)
@@ -194,6 +209,37 @@ func stickyFrom(cfg *config.StickyConfig) strategies.Sticky {
 	return strategies.Sticky{On: cfg.On, TTL: ttl}
 }
 
+// firstServingTarget is content-based routing for a surface whose requests
+// carry no prompt — embeddings, images, rerank, moderation and audio.
+//
+// Content rules only look at a chat prompt. prompt_contains and prompt_regex
+// find no match against an empty one, but prompt_not_contains is the negation
+// of "some user message contains", which is vacuously true over no messages:
+// asked of one of these requests it matched every one and won routing outright,
+// whatever the rule said. No content rule can be evaluated without a prompt, so
+// such a request takes the no-match answer: one target, the first configured
+// one that is a candidate for its model on this surface — a rule list written
+// for chat may well lead with a chat-only target — and the first target when
+// none is, so the walk reports the same 404 it would for any other unroutable
+// request.
+//
+// lookup is strategyFor's, which holds only the providers that can serve the
+// surface and answers SupportsModel from the routing index, so a candidate
+// here is exactly one the pipeline's candidateLocked admits.
+type firstServingTarget struct {
+	targets []strategies.Target
+	lookup  strategies.ProviderLookup
+}
+
+func (s firstServingTarget) SelectTargets(req providers.Request) ([]string, error) {
+	for _, t := range s.targets {
+		if p, ok := s.lookup(t.VirtualKey); ok && p.SupportsModel(req.Model) {
+			return []string{t.VirtualKey}, nil
+		}
+	}
+	return []string{s.targets[0].VirtualKey}, nil
+}
+
 // withoutChatOnlyConditions returns conds less the rules on `stream` and
 // `has_tools`, in order, for a surface other than chat.
 //
@@ -206,7 +252,7 @@ func stickyFrom(cfg *config.StickyConfig) strategies.Sticky {
 // the one configured for that model, or a 404 from one that cannot serve the
 // surface. Dropping the rule is the reading the strategies README gives these
 // keys — chat-only — and the one content-based already gets on these
-// surfaces (see surfaceTargetOrder).
+// surfaces (see firstServingTarget).
 func withoutChatOnlyConditions(conds []config.Condition) []config.Condition {
 	kept := make([]config.Condition, 0, len(conds))
 	for _, c := range conds {

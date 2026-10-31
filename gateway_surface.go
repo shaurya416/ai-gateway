@@ -5,7 +5,6 @@ import (
 	"errors"
 	"time"
 
-	"github.com/ferro-labs/ai-gateway/config"
 	"github.com/ferro-labs/ai-gateway/internal/redact"
 	"github.com/ferro-labs/ai-gateway/models"
 	"github.com/ferro-labs/ai-gateway/observability"
@@ -1020,41 +1019,11 @@ func (g *Gateway) routeSpeech(ctx context.Context, req providers.SpeechRequest) 
 // strategyFor); whether the walk advances past a failure is planFor's
 // question. Order is all this decides.
 func (g *Gateway) surfaceTargetOrder(req providers.Request, surface string) ([]string, error) {
-	model := req.Model
-	// The mode is read and acted on under one hold of the lock, so a reload
-	// that switches modes in between cannot send one request down the path
-	// of a config no longer in force.
-	g.mu.Lock()
-	if g.config.Strategy.Mode == config.ModeContentBased {
-		// Content rules only look at req.Messages (prompt_contains /
-		// prompt_not_contains / prompt_regex), and this surface has none —
-		// Embed/GenerateImage requests carry no chat messages. prompt_contains
-		// and prompt_regex correctly find no match against zero messages, but
-		// strategies.ContentBased's prompt_not_contains rule is
-		// `!anyUserMessageContains(...)`, which is vacuously TRUE over an
-		// empty message set: it would match every embeddings/image request
-		// and win routing outright, regardless of what the rule actually
-		// says. No content rule can be meaningfully evaluated without a
-		// prompt, so the request takes the no-match answer: one target, the
-		// first configured one that is a candidate for this model on this
-		// surface by the pipeline's own test — a rule list written for chat
-		// may well lead with a chat-only target — and the first target when
-		// none is, so the walk reports the same 404 it would for any other
-		// unroutable request.
-		gate := func(p providers.Provider) bool { return providerSupportsSurface(p, surface) }
-		g.ensureCircuitBreakersLocked()
-		g.ensureProviderLimitersLocked()
-		key := g.config.Targets[0].VirtualKey
-		for _, t := range g.config.Targets {
-			if p, ok := g.providers[t.VirtualKey]; ok && g.candidateLocked(t.VirtualKey, p, model, gate) {
-				key = t.VirtualKey
-				break
-			}
-		}
-		g.mu.Unlock()
-		return []string{key}, nil
-	}
-	g.mu.Unlock()
+	// Content-based routing on these surfaces is part of the strategy itself
+	// (see firstServingTarget), so the mode that decides it is read under the
+	// same hold of the lock the strategy is built under: a reload that switches
+	// modes cannot send one request down the path of a config no longer in
+	// force.
 	strategy, err := g.strategyFor(surface)
 	if err != nil {
 		return nil, err
