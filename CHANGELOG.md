@@ -153,6 +153,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   vacuously, and it was sent to that rule's target. The no-match answer is now
   the strategy these surfaces route through under `content-based`, built from
   the same read of the config as the mode.
+- An MCP tool-call audit hook (`MCPToolCallAuditFn`) now survives
+  `Gateway.ReloadConfig`. The hook is set in code before `New`, and a config
+  read with `config.LoadConfig` or decoded from JSON or YAML cannot carry one,
+  so reloading the gateway from a changed config file rebuilt the MCP executor
+  without it: tool calls went on running and were never audited again. A
+  reload whose config sets no hook now keeps the one already installed; one
+  that sets a hook replaces it.
 - An HTTP MCP server's `timeout_seconds` above two minutes is now honoured. The
   MCP client was built on the gateway's shared HTTP transport, which stops
   waiting for a response's headers after 120 seconds, so against a server that

@@ -68,8 +68,9 @@ type Config struct {
 	MCPServers []mcp.ServerConfig `json:"mcp_servers,omitempty" yaml:"mcp_servers,omitempty"`
 	// MCPToolCallAuditFn, if non-nil, is called after every MCP tool invocation,
 	// giving an embedding caller a hook to record tool use. It cannot be set via
-	// JSON or YAML — set it programmatically before calling New. It runs off the
-	// request path, so it must not block.
+	// JSON or YAML — set it programmatically before calling New. A reload whose
+	// config carries none keeps the hook already installed, since a config read
+	// from a file never can. It runs off the request path, so it must not block.
 	MCPToolCallAuditFn mcp.ToolCallAuditFn `json:"-" yaml:"-"`
 	// Observability configures OpenTelemetry tracing. When omitted the
 	// gateway runs with a NoOp provider (zero allocations on the hot

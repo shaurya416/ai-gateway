@@ -490,6 +490,13 @@ func (g *Gateway) ReloadConfig(ctx context.Context, cfg config.Config) error {
 	oldPlugins := g.plugins
 	oldTargets := g.config.Targets
 	oldNotifications := g.config.Notifications
+	// The MCP tool-call audit hook is set in code before New, and a config
+	// read from a file or decoded from JSON cannot carry one. A reload handed
+	// such a config would otherwise rebuild the MCP executor without it, and
+	// every tool call after the reload would go unaudited.
+	if cfg.MCPToolCallAuditFn == nil {
+		cfg.MCPToolCallAuditFn = g.config.MCPToolCallAuditFn
+	}
 	g.config = cfg
 	g.modelMaps = targetModelMaps(cfg.Targets)
 	g.plugins = plugins
