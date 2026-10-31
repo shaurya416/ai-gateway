@@ -25,7 +25,9 @@ type ClientOptions struct {
 
 	// MaxResponseBytes bounds successful JSON and SSE response bodies before
 	// decoding. Zero selects 10 MiB. Values must be nonnegative and less than
-	// math.MaxInt64. Error response bodies remain bounded at 4 KiB.
+	// math.MaxInt64. Error response bodies remain bounded at 4 KiB, and each
+	// line and event of the session's event stream, which carries messages the
+	// server initiates, at 10 MiB.
 	MaxResponseBytes int64
 
 	// ClientName and ClientVersion override the initialization identity. Both

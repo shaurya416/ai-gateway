@@ -472,13 +472,15 @@ func readJSONResponse(body io.Reader, limit int64) (*JSONRPCResponse, error) {
 // two reasons the shared helper cannot serve here:
 //
 //   - That helper sizes a bufio.Scanner for a LIVE provider stream and caps a
-//     line at 1 MiB, while this body is capped at 10 MiB. An MCP result is one
-//     JSON document on one line — an embedded image or a large file read is
-//     routinely megabytes — so the two caps disagreed, and the same tool result
-//     succeeded as JSON and failed as SSE at 1 MiB. Raising the shared cap is
-//     not the fix: six provider streaming paths share it, and it is their
-//     per-stream memory bound against an untrusted upstream. Here the body as a
-//     whole is already bounded, so a second, smaller bound buys nothing.
+//     line at 1 MiB, while this body is capped by the client's response limit,
+//     10 MiB unless ClientOptions.MaxResponseBytes sets another. An MCP result
+//     is one JSON document on one line — an embedded image or a large file
+//     read is routinely megabytes — so the two caps disagreed, and the same
+//     tool result succeeded as JSON and failed as SSE at 1 MiB. Raising the
+//     shared cap is not the fix: six provider streaming paths share it, and it
+//     is their per-stream memory bound against an untrusted upstream. Here the
+//     body as a whole is already bounded, so a second, smaller bound buys
+//     nothing.
 //   - Per the SSE spec an event's data field may span several data: lines, which
 //     are joined with newlines before dispatch. Decoding each line on its own
 //     rejected a split response entirely.
@@ -759,7 +761,9 @@ func (c *Client) serveEvents(ctx context.Context, sid string, done chan<- struct
 // it; a stream the server ended cleanly returns nil.
 //
 // Each line, and each event's data, is bounded by maxResponseBodyBytes — the
-// same bound as a response body, for the same untrusted peer. The data is
+// default response limit, for the same untrusted peer. It does not follow
+// ClientOptions.MaxResponseBytes, which bounds the answers to the client's own
+// requests; this stream carries the messages the server initiates. The data is
 // measured as it is assembled, with the newline that joins each line to the
 // one before it: counting only the text after each prefix let an event of empty
 // data: lines grow without limit, one line at a time.
