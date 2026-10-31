@@ -207,6 +207,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   write now applies the cap of the configuration making it, from the next key
   the store tracks; a lowered cap trims the lowest-spend keys, and recorded
   spend is otherwise kept across the reload.
+- `POST /v1/responses/` — create written with a trailing slash, or a doubled
+  one — is now routed by its model, governed and priced exactly as
+  `POST /v1/responses` is. Only the exact path is mounted on the create
+  handler, so the router handed it to the id sub-routes, which forwarded it as
+  one: with `responses_target` set it went to that target whatever model it
+  named, past every guardrail, budget and rate limit and absent from the
+  request log, and an upstream that drops a trailing slash served it as a
+  create; with `responses_target` unset it answered `501`. It is now served by
+  the create handler, as `POST /v1/responses/compact` already is.
 - `make test` runs the tests of the Go client (`client/`) and of the `run`
   and `httpgateway` packages. The target names its packages instead of
   `./...`, and the list named none of the three, so it reported success

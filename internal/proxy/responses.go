@@ -15,9 +15,13 @@ import (
 	"github.com/ferro-labs/ai-gateway/providers"
 )
 
-// responsesCompactPath is the Responses compaction operation, which carries a
-// model and is billed like create. See ResponsesIDs.
-const responsesCompactPath = "/v1/responses/compact"
+// responsesCreatePath and responsesCompactPath are the two Responses
+// operations that carry a model and are billed: create, and compaction. See
+// ResponsesIDs.
+const (
+	responsesCreatePath  = "/v1/responses"
+	responsesCompactPath = "/v1/responses/compact"
+)
 
 // ResponsesSource is what the Responses surface needs from the gateway: provider
 // resolution (via the embedded ProviderSource), the configured id-subroute
@@ -141,6 +145,11 @@ func ResponsesCreate(src ResponsesSource) http.HandlerFunc {
 // to responses_target whatever model it named, past every guardrail, budget and
 // rate limit and absent from the request log, and was a 501 where
 // responses_target was unset.
+//
+// Create itself reaches this handler when it is spelled with a trailing or a
+// doubled slash — POST /v1/responses/ — because only the exact path is mounted
+// on the create handler. An upstream that drops the slash reads it as create,
+// so it is handed to the create handler too.
 func ResponsesIDs(src ResponsesSource) http.HandlerFunc {
 	create := ResponsesCreate(src)
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -152,11 +161,14 @@ func ResponsesIDs(src ResponsesSource) http.HandlerFunc {
 		}
 
 		// Judged on the cleaned path, the way an upstream that merges slashes
-		// or drops a trailing one reads it, so no spelling of the operation
+		// or drops a trailing one reads it, so no spelling of either operation
 		// reaches responses_target as an id.
-		if r.Method == http.MethodPost && path.Clean(r.URL.Path) == responsesCompactPath {
-			create(w, r)
-			return
+		if r.Method == http.MethodPost {
+			switch path.Clean(r.URL.Path) {
+			case responsesCreatePath, responsesCompactPath:
+				create(w, r)
+				return
+			}
 		}
 
 		name := src.ResponsesTarget()

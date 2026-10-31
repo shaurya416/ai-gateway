@@ -1277,7 +1277,9 @@ and `xai` both serve the OpenAI Responses contract byte-compatibly; a
 names a model, runs it over the caller's conversation and returns the usage it
 billed. It is served by the create handler, so it is routed by its model,
 governed and priced exactly as create is — limits included — and needs no
-`responses_target`.
+`responses_target`. So is create itself when it is spelled with a trailing or
+doubled slash (`POST /v1/responses/`), which the router would otherwise hand
+to the id sub-routes.
 
 ### Completion length: `max_tokens` and `max_completion_tokens`
 

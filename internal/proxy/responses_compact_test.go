@@ -177,3 +177,70 @@ func TestResponsesCompact_IsRoutedAndGovernedAsCreate(t *testing.T) {
 		}
 	})
 }
+
+// POST /v1/responses/ is create written with a trailing slash, and an upstream
+// that drops one reads it as create. The router hands it to the id sub-routes,
+// which forwarded it, ungoverned, to responses_target whatever model it named:
+// a body the content guardrail refuses on create reached the upstream, and none
+// of it reached the request log.
+func TestResponsesIDs_CreateSpelledWithTrailingSlashIsCreate(t *testing.T) {
+	post := func(t *testing.T, gw *aigateway.Gateway, path, body string) *httptest.ResponseRecorder {
+		t.Helper()
+		r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, path, strings.NewReader(body))
+		r.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		ResponsesIDs(gw)(w, r)
+		return w
+	}
+
+	for _, path := range []string{"/v1/responses/", "/v1/responses//"} {
+		t.Run("governed "+path, func(t *testing.T) {
+			stub, pinned := newPathUpstream(t), newPathUpstream(t)
+			gw, _ := compactGateway(t, stub.URL, pinned.URL, "pinned")
+
+			w := post(t, gw, path, `{"model":"stub-model","input":"the forbidden thing"}`)
+			if w.Code != http.StatusBadRequest {
+				t.Errorf("status = %d, want 400 from the content guardrail; body: %s", w.Code, w.Body.String())
+			}
+			if got := append(stub.seen(), pinned.seen()...); len(got) != 0 {
+				t.Errorf("upstreams received %q, want nothing: the guardrail blocks this body on create", got)
+			}
+		})
+
+		t.Run("routed-by-model "+path, func(t *testing.T) {
+			stub, pinned := newPathUpstream(t), newPathUpstream(t)
+			gw, store := compactGateway(t, stub.URL, pinned.URL, "pinned")
+
+			w := post(t, gw, path, `{"model":"stub-model","input":"hello"}`)
+			if w.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200; body: %s", w.Code, w.Body.String())
+			}
+			if got := stub.seen(); len(got) != 1 {
+				t.Errorf("stub-model's target received %q, want one request", got)
+			}
+			if got := pinned.seen(); len(got) != 0 {
+				t.Errorf("responses_target received %q, want nothing: it does not serve stub-model", got)
+			}
+			var recorded bool
+			for _, e := range store.all() {
+				if e.Provider == "stub" && e.Model == "stub-model" {
+					recorded = true
+				}
+			}
+			if !recorded {
+				t.Errorf("no request-log row names the target and model that served the request; rows: %+v", store.all())
+			}
+		})
+	}
+
+	// Without responses_target the id sub-routes are off, and create is not.
+	t.Run("without-responses-target", func(t *testing.T) {
+		stub, pinned := newPathUpstream(t), newPathUpstream(t)
+		gw, _ := compactGateway(t, stub.URL, pinned.URL, "")
+
+		w := post(t, gw, "/v1/responses/", `{"model":"stub-model","input":"hello"}`)
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200: create needs no responses_target; body: %s", w.Code, w.Body.String())
+		}
+	})
+}
