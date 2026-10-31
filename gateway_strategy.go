@@ -61,7 +61,7 @@ func (g *Gateway) strategyFor(surface string) (strategies.Strategy, error) {
 		if surface != "" && !providerSupportsSurface(p, surface) {
 			continue
 		}
-		providerSnap[name] = withIndexedModels(name, p, g.modelIndex.exactProviders)
+		providerSnap[name] = withIndexedModels(name, p, g.modelIndex.targetOwners)
 	}
 
 	// Provider lookup with transparent circuit-breaker and concurrency-limit

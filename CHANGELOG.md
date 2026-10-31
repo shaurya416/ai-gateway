@@ -126,6 +126,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A target whose provider serves model ids nothing can enumerate —
+  `azure-foundry`, `databricks`, `ollama`, `openrouter`, `cloudflare`,
+  `hugging-face` — is offered a model again when the only provider owning it
+  is one no target names. Such a target is offered every model no target owns,
+  but ownership was read over every registered provider, and a provider
+  registers whenever its credential is in the environment: an `OPENAI_API_KEY`
+  no target used made `gpt-4o-mini` owned, so an Azure AI Foundry deployment of
+  that name behind the only target was answered `404 model_not_found` on every
+  routed surface until the unrelated key was removed. Only a provider some
+  target names owns a model now; a model a target owns is still never offered
+  to one of these targets.
 - Under `load-balance`, a target with `weight: 0` no longer receives the
   traffic its weighted siblings cannot serve. Zero weight kept a target out of
   the weighted draw but left it in the candidate list, and pool modes walk that

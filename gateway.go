@@ -263,6 +263,7 @@ func New(cfg config.Config, opts ...Option) (*Gateway, error) {
 		exactStreamProviders: make(map[string][]string),
 		exactEmbedProviders:  make(map[string][]string),
 		exactImageProviders:  make(map[string][]string),
+		targetOwners:         make(map[string][]string),
 	}
 	gw.hooks = newHookBus(hookDispatchQueueSize)
 	gw.obs = observability.NoOp()

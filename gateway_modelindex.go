@@ -53,6 +53,7 @@ var emptyRoutingSnapshot = &routingSnapshot{
 		exactStreamProviders: map[string][]string{},
 		exactEmbedProviders:  map[string][]string{},
 		exactImageProviders:  map[string][]string{},
+		targetOwners:         map[string][]string{},
 	},
 }
 
@@ -68,12 +69,21 @@ func (g *Gateway) routing() *routingSnapshot {
 
 // modelLookupIndex holds the exact model→provider-name maps used for O(1)
 // routing lookups. Each map is keyed by model ID and rebuilt under g.mu whenever
-// the provider set or catalog changes (see rebuildModelIndexesLocked).
+// the provider set, the catalog or the config changes (see
+// rebuildModelIndexesLocked).
 type modelLookupIndex struct {
 	exactProviders       map[string][]string
 	exactStreamProviders map[string][]string
 	exactEmbedProviders  map[string][]string
 	exactImageProviders  map[string][]string
+	// targetOwners is exactProviders narrowed to the providers a configured
+	// target names. It is what routing candidacy reads (see
+	// supportsModelForRoutingLocked): ownership is what keeps a model from a
+	// declared wildcard target, and a provider registered only because its
+	// credential is in the environment serves nothing, so it owns nothing on
+	// a target's behalf either. The exact* maps keep every registered owner,
+	// which is what FindByModel answers from.
+	targetOwners map[string][]string
 }
 
 // configuredModelsOf returns the models a provider's own configuration named —
@@ -211,6 +221,12 @@ func (g *Gateway) rebuildModelIndexesLocked() {
 	g.modelIndex.exactStreamProviders = make(map[string][]string)
 	g.modelIndex.exactEmbedProviders = make(map[string][]string)
 	g.modelIndex.exactImageProviders = make(map[string][]string)
+	g.modelIndex.targetOwners = make(map[string][]string)
+
+	targeted := make(map[string]struct{}, len(g.config.Targets))
+	for _, t := range g.config.Targets {
+		targeted[t.VirtualKey] = struct{}{}
+	}
 
 	for _, name := range g.providerNames {
 		p, ok := g.providers[name]
@@ -218,8 +234,12 @@ func (g *Gateway) rebuildModelIndexesLocked() {
 			continue
 		}
 		models := g.modelsForRoutingLocked(name, p)
+		_, isTarget := targeted[name]
 		for _, model := range models {
 			g.modelIndex.exactProviders[model] = append(g.modelIndex.exactProviders[model], name)
+			if isTarget {
+				g.modelIndex.targetOwners[model] = append(g.modelIndex.targetOwners[model], name)
+			}
 		}
 		indexModelsIfImplements[providers.StreamProvider](p, name, models, g.modelIndex.exactStreamProviders)
 		indexModelsIfImplements[providers.EmbeddingProvider](p, name, models, g.modelIndex.exactEmbedProviders)
@@ -338,9 +358,17 @@ func ownsModel(index map[string][]string, name, model string) (owns, claimed boo
 // Every surface asks through here, so chat, streaming, embeddings and images
 // cannot disagree about who serves a model.
 //
+// Ownership is read from targetOwners, not from every registered provider.
+// "No target owns" is the rule, and registration follows the credentials in the
+// environment: read over the registered set, an OPENAI_API_KEY no target uses
+// made gpt-4o-mini owned, and a wildcard target deployed under that name — an
+// Azure AI Foundry or Databricks endpoint — refused it with 404 for as long as
+// the unrelated credential was present. name is always a configured target's
+// key, so narrowing the owners never hides one of its own models.
+//
 // Caller must hold g.mu (a read lock is sufficient).
 func (g *Gateway) supportsModelForRoutingLocked(name string, p providers.Provider, model string) bool {
-	owns, claimed := ownsModel(g.modelIndex.exactProviders, name, model)
+	owns, claimed := ownsModel(g.modelIndex.targetOwners, name, model)
 	if claimed {
 		return owns
 	}
@@ -403,7 +431,7 @@ func (p *indexedStreamProvider) CompleteStream(ctx context.Context, req provider
 
 // withIndexedModels wraps p in the routing-index view of its model set,
 // preserving its streaming capability. index is a snapshot of
-// modelIndex.exactProviders.
+// modelIndex.targetOwners, the ownership supportsModelForRoutingLocked reads.
 //
 // p is wrapped even when the index is empty. Returning it bare — which is what
 // this did, back when the view only ever WIDENED the provider's own answer —
