@@ -61,7 +61,7 @@ func TestCompleteStream_DecodesDeltasLikeTheSharedReader(t *testing.T) {
 	}
 
 	// The shared reader's answer for the same frames is the reference.
-	var want []core.StreamChunk
+	want := make([]core.StreamChunk, 0, len(frames))
 	for _, f := range frames {
 		c, err := openaicompat.DecodeStreamChunk([]byte(f))
 		if err != nil {
