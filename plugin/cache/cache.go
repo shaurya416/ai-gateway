@@ -31,9 +31,13 @@ func init() {
 
 // ResponseCache is a transform plugin that caches LLM responses using
 // exact-match hashing of the request fields that can affect provider output.
-// It aliases Memory from the internal cache package.
 type ResponseCache struct {
-	*cachestore.Memory
+	// store holds the entries. It is the in-memory LRU unless the config
+	// selects another backend.
+	store cachestore.Store
+	// writes is false when nothing may be stored: max_entries 0 on the memory
+	// backend, which the operator writes to turn storing off.
+	writes bool
 }
 
 var _ plugin.ModelPreserving = (*ResponseCache)(nil)
@@ -117,7 +121,8 @@ func (c *ResponseCache) Init(config map[string]any) error {
 	if err != nil {
 		return err
 	}
-	c.Memory = cachestore.NewMemory(s.capacity, s.ttl)
+	c.store = cachestore.NewMemory(s.capacity, s.ttl)
+	c.writes = s.capacity > 0
 	return nil
 }
 
@@ -128,7 +133,7 @@ func (c *ResponseCache) Init(config map[string]any) error {
 // every guardrail, rate limit and budget registered behind this plugin still runs
 // on the request, and the after_request stage still records it.
 func (c *ResponseCache) Execute(_ context.Context, pctx *plugin.Context) error {
-	if pctx.Request == nil {
+	if pctx.Request == nil || c.store == nil {
 		return nil
 	}
 
@@ -158,7 +163,7 @@ func (c *ResponseCache) Execute(_ context.Context, pctx *plugin.Context) error {
 		if pctx.Metadata != nil {
 			pctx.Metadata[metaLookupKey] = key
 		}
-		if resp, ok := c.Get(key); ok {
+		if resp, ok := c.store.Get(key); ok {
 			pctx.Response = cloneResponse(resp)
 			pctx.SkipProvider = true
 			if pctx.Metadata != nil {
@@ -181,7 +186,7 @@ func (c *ResponseCache) Execute(_ context.Context, pctx *plugin.Context) error {
 		return nil
 	}
 
-	if c.Capacity <= 0 {
+	if !c.writes {
 		return nil
 	}
 
@@ -199,7 +204,7 @@ func (c *ResponseCache) Execute(_ context.Context, pctx *plugin.Context) error {
 	// Store a private copy: the caller's resp keeps being mutated after this
 	// call returns (e.g. Route/RouteStream stamp OverheadMs post-RunAfter), so
 	// the cache must not hold onto the same pointer.
-	c.Set(key, cloneResponse(pctx.Response))
+	c.store.Set(key, cloneResponse(pctx.Response))
 	return nil
 }
 

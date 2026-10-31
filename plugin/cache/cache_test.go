@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	cachestore "github.com/ferro-labs/ai-gateway/pkg/cache"
 	"github.com/ferro-labs/ai-gateway/plugin"
 	"github.com/ferro-labs/ai-gateway/plugin/piiredact"
 	"github.com/ferro-labs/ai-gateway/providers"
@@ -44,30 +45,41 @@ func initCache(t *testing.T, config map[string]any) *ResponseCache {
 	return c
 }
 
+// memoryOf returns the in-memory store a cache built on the default backend
+// holds, so a test can read the bounds Init gave it.
+func memoryOf(t *testing.T, c *ResponseCache) *cachestore.Memory {
+	t.Helper()
+	mem, ok := c.store.(*cachestore.Memory)
+	if !ok {
+		t.Fatalf("store is %T, want *cache.Memory", c.store)
+	}
+	return mem
+}
+
 func TestResponseCache_Init(t *testing.T) {
 	t.Parallel()
 
 	t.Run("default config", func(t *testing.T) {
-		c := initCache(t, map[string]any{})
-		if c.TTL != 300*time.Second {
-			t.Errorf("expected default TTL 300s, got %v", c.TTL)
+		mem := memoryOf(t, initCache(t, map[string]any{}))
+		if mem.TTL != 300*time.Second {
+			t.Errorf("expected default TTL 300s, got %v", mem.TTL)
 		}
-		if c.Capacity != 1000 {
-			t.Errorf("expected default Capacity 1000, got %d", c.Capacity)
+		if mem.Capacity != 1000 {
+			t.Errorf("expected default Capacity 1000, got %d", mem.Capacity)
 		}
 	})
 
 	t.Run("custom max_age", func(t *testing.T) {
-		c := initCache(t, map[string]any{"max_age": 60})
-		if c.TTL != 60*time.Second {
-			t.Errorf("expected TTL 60s, got %v", c.TTL)
+		mem := memoryOf(t, initCache(t, map[string]any{"max_age": 60}))
+		if mem.TTL != 60*time.Second {
+			t.Errorf("expected TTL 60s, got %v", mem.TTL)
 		}
 	})
 
 	t.Run("custom max_entries", func(t *testing.T) {
-		c := initCache(t, map[string]any{"max_entries": 50})
-		if c.Capacity != 50 {
-			t.Errorf("expected Capacity 50, got %d", c.Capacity)
+		mem := memoryOf(t, initCache(t, map[string]any{"max_entries": 50}))
+		if mem.Capacity != 50 {
+			t.Errorf("expected Capacity 50, got %d", mem.Capacity)
 		}
 	})
 }
@@ -122,13 +134,13 @@ func TestResponseCache_AcceptsNullWholeFloatAndZeroSettings(t *testing.T) {
 	if err := plugin.ValidateConfigFor("response-cache", config); err != nil {
 		t.Fatalf("ValidateConfigFor: %v", err)
 	}
-	c := initCache(t, config)
-	if c.TTL != 60*time.Second || c.Capacity != 1000 {
-		t.Fatalf("TTL/Capacity = %v/%d, want 1m0s/1000", c.TTL, c.Capacity)
+	mem := memoryOf(t, initCache(t, config))
+	if mem.TTL != 60*time.Second || mem.Capacity != 1000 {
+		t.Fatalf("TTL/Capacity = %v/%d, want 1m0s/1000", mem.TTL, mem.Capacity)
 	}
 
-	if c := initCache(t, map[string]any{"max_entries": 0, "max_age": 0}); c.Capacity != 0 || c.TTL != 0 {
-		t.Fatalf("TTL/Capacity = %v/%d, want 0s/0", c.TTL, c.Capacity)
+	if mem := memoryOf(t, initCache(t, map[string]any{"max_entries": 0, "max_age": 0})); mem.Capacity != 0 || mem.TTL != 0 {
+		t.Fatalf("TTL/Capacity = %v/%d, want 0s/0", mem.TTL, mem.Capacity)
 	}
 }
 
@@ -396,7 +408,7 @@ func TestResponseCache_ExecuteExpiresEntry(t *testing.T) {
 
 	now := time.Unix(0, 0)
 	c := initCache(t, map[string]any{"max_age": 10})
-	c.SetNowForTest(func() time.Time { return now })
+	memoryOf(t, c).SetNowForTest(func() time.Time { return now })
 
 	req := testRequest("gpt-4", "hello")
 	resp := testResponse()
@@ -528,8 +540,8 @@ func TestResponseCache_MaxEntriesZeroDisablesStore(t *testing.T) {
 	if lookup.SkipProvider {
 		t.Fatal("expected cache miss when max_entries=0")
 	}
-	if c.Len() != 0 {
-		t.Fatalf("expected no cached entries when max_entries=0, got %d", c.Len())
+	if memoryOf(t, c).Len() != 0 {
+		t.Fatalf("expected no cached entries when max_entries=0, got %d", memoryOf(t, c).Len())
 	}
 }
 
@@ -1033,8 +1045,8 @@ func TestResponseCache_MaxEntriesMany(t *testing.T) {
 			t.Fatalf("store %d: %v", i, err)
 		}
 	}
-	if c.Len() != maxEntries {
-		t.Fatalf("expected %d entries, got %d", maxEntries, c.Len())
+	if memoryOf(t, c).Len() != maxEntries {
+		t.Fatalf("expected %d entries, got %d", maxEntries, memoryOf(t, c).Len())
 	}
 
 	// Adding one more must not grow beyond maxEntries.
@@ -1044,8 +1056,8 @@ func TestResponseCache_MaxEntriesMany(t *testing.T) {
 	if err := c.Execute(context.Background(), overflow); err != nil {
 		t.Fatalf("store overflow: %v", err)
 	}
-	if c.Len() != maxEntries {
-		t.Fatalf("expected %d entries after overflow, got %d", maxEntries, c.Len())
+	if memoryOf(t, c).Len() != maxEntries {
+		t.Fatalf("expected %d entries after overflow, got %d", maxEntries, memoryOf(t, c).Len())
 	}
 }
 
@@ -1163,13 +1175,13 @@ func TestExecute_StandsDownOnNonChatSurfaces(t *testing.T) {
 	if err := c.Execute(context.Background(), store); err != nil {
 		t.Fatalf("Execute (after_request): %v", err)
 	}
-	if _, ok := c.Get(cacheKey(surfaceRequest, "")); ok {
+	if _, ok := c.store.Get(cacheKey(surfaceRequest, "")); ok {
 		t.Error("the surface response was stored; the next chat request with this text is served an empty completion")
 	}
 
 	// before_request on the surface must not serve one either, even when the
 	// chat side has primed that key with a real answer.
-	c.Set(cacheKey(chatRequest, ""), &providers.Response{
+	c.store.Set(cacheKey(chatRequest, ""), &providers.Response{
 		Choices: []providers.Choice{{Message: providers.Message{Role: "assistant", Content: "a real answer"}}},
 	})
 	lookup := plugin.NewContext(surfaceRequest)
@@ -1328,5 +1340,27 @@ func TestResponseCache_HitWithoutAMetadataMap(t *testing.T) {
 	}
 	if !pctx.SkipProvider || pctx.Response == nil {
 		t.Fatal("an identical request missed a primed cache")
+	}
+}
+
+// A cache whose Init never ran holds no store. Execute stands down on it at
+// both stages instead of dereferencing a nil store — the embedded store it
+// used to carry turned that into a panic in a fail-closed transform.
+func TestResponseCache_UninitialisedStandsDown(t *testing.T) {
+	t.Parallel()
+
+	c := &ResponseCache{}
+	for _, stage := range []plugin.Stage{plugin.StageBeforeRequest, plugin.StageAfterRequest} {
+		pctx := plugin.NewContext(testRequest("gpt-4", "hello"))
+		pctx.Stage = stage
+		if stage == plugin.StageAfterRequest {
+			pctx.Response = testResponse()
+		}
+		if err := c.Execute(context.Background(), pctx); err != nil {
+			t.Fatalf("Execute at %s: %v", stage, err)
+		}
+		if pctx.SkipProvider {
+			t.Fatalf("an uninitialised cache served a hit at %s", stage)
+		}
 	}
 }
