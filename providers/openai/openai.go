@@ -512,6 +512,7 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 		defer func() { _ = httpResp.Body.Close() }()
 
 		scanner := core.NewSSEScanner(httpResp.Body)
+		delivered := false
 		for scanner.Scan() {
 			data, ok := strings.CutPrefix(scanner.Text(), "data:")
 			if !ok {
@@ -533,6 +534,7 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 			if !core.SendChunk(ctx, ch, sc) {
 				return
 			}
+			delivered = true
 			// A mid-stream error ends the stream; nothing valid follows it.
 			if sc.Error != nil {
 				return
@@ -540,6 +542,13 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 		}
 		if err := scanner.Err(); err != nil {
 			core.SendChunk(ctx, ch, core.StreamChunk{Error: err})
+			return
+		}
+		// A 200 that ended with no frame and no [DONE] — an HTML page behind a
+		// misconfigured OPENAI_BASE_URL, an empty body — is a failure, the same
+		// rule the shared OpenAI-compatible reader applies.
+		if !delivered {
+			core.SendChunk(ctx, ch, core.StreamChunk{Error: openaicompat.ErrNoStreamFrame})
 		}
 	}()
 

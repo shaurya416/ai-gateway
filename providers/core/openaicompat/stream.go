@@ -86,11 +86,12 @@ func streamError(typ, msg string) error {
 	return fmt.Errorf("stream error (%s): %s", typ, msg)
 }
 
-// errNoStreamFrame is a 200 whose body ended without a single decodable frame
+// ErrNoStreamFrame is a 200 whose body ended without a single decodable frame
 // and without the [DONE] sentinel — an HTML page, an empty body, nothing but
 // keep-alives. No completion is that short, so it is a failure, not an empty
-// answer.
-var errNoStreamFrame = errors.New("stream ended before any chunk: the upstream answered 200 without a stream frame")
+// answer. It is exported for OpenAI-wire providers that read their own stream,
+// so every OpenAI-wire stream ends such a body the same way.
+var ErrNoStreamFrame = errors.New("stream ended before any chunk: the upstream answered 200 without a stream frame")
 
 // StreamSSE consumes an OpenAI-compatible SSE response body and returns a channel
 // of decoded chunks. Frames are read with core.SSEDataLines, so the space after
@@ -101,7 +102,7 @@ var errNoStreamFrame = errors.New("stream ended before any chunk: the upstream a
 // healthy stream; a scanner read error is surfaced as a final chunk. A frame
 // carrying an error envelope is forwarded with Error set and ends the stream —
 // nothing valid follows it. A body that reaches EOF having delivered no chunk
-// at all ends with errNoStreamFrame rather than as an empty success.
+// at all ends with ErrNoStreamFrame rather than as an empty success.
 //
 // Callers must perform the non-200 status check before handing the body over.
 // ctx cancellation stops the reader promptly: a pending send is abandoned and
@@ -135,7 +136,7 @@ func StreamSSE(ctx context.Context, body io.ReadCloser) <-chan core.StreamChunk 
 			return
 		}
 		if !delivered {
-			core.SendChunk(ctx, ch, core.StreamChunk{Error: errNoStreamFrame})
+			core.SendChunk(ctx, ch, core.StreamChunk{Error: ErrNoStreamFrame})
 		}
 	}()
 	return ch
