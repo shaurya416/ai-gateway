@@ -153,6 +153,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   vacuously, and it was sent to that rule's target. The no-match answer is now
   the strategy these surfaces route through under `content-based`, built from
   the same read of the config as the mode.
+- An HTTP MCP server's `timeout_seconds` above two minutes is now honoured. The
+  MCP client was built on the gateway's shared HTTP transport, which stops
+  waiting for a response's headers after 120 seconds, so against a server that
+  answers a tool call with a JSON body — sending no header until the tool has
+  finished — every call running past two minutes failed with `timeout awaiting
+  response headers`, whatever `timeout_seconds` said, while the same tool over
+  stdio ran to its configured timeout. A client whose timeout is longer than
+  that bound now uses a transport that leaves the wait to the timeout. A webhook
+  `timeout` above two minutes is honoured the same way.
 - A streamed chat request no longer has its target drawn over providers that
   cannot stream. Every other surface narrows a strategy's candidates to the
   targets able to serve it, but the stream order was drawn over every

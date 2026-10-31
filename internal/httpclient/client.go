@@ -33,12 +33,23 @@ func ForProvider(name string) *http.Client {
 
 // New returns a client that reuses the shared transport policy with an
 // optional request timeout. A non-positive timeout reuses the shared client.
+//
+// A positive timeout bounds the whole exchange, the wait for response headers
+// included. The shared transport stops waiting for headers after a bound of its
+// own, so a timeout longer than that bound rides the shared streaming
+// transport, which sets none: a server that sends no header until its work is
+// done — an MCP server answering a long tool call with a JSON body — would
+// otherwise be cut off at the transport's bound, whatever timeout was asked for.
 func New(timeout time.Duration) *http.Client {
 	if timeout <= 0 {
 		return manager.DefaultClient()
 	}
+	rt := manager.DefaultTransport()
+	if bound := rt.ResponseHeaderTimeout; bound > 0 && timeout > bound {
+		rt = manager.StreamTransport()
+	}
 	return &http.Client{
-		Transport: manager.DefaultTransport(),
+		Transport: rt,
 		Timeout:   timeout,
 		// Redirects are surfaced, not followed: this client carries MCP and
 		// discovery credentials, and Go replays custom auth headers on a
