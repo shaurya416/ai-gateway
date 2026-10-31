@@ -615,20 +615,21 @@ storing one triggers the stored-literal warning.
 closed, so an error from it would be a `500` on every request while Redis is
 down. A lookup that cannot be answered is a miss instead, a write that cannot be
 made is dropped, and `gateway_response_cache_store_failures_total{backend,op,reason}`
-counts each — `reason` is `error` (sent and failed), `unavailable` (not sent) or
-`undecodable` (an entry this gateway cannot read). After three consecutive
-failures the store sends nothing for five seconds and answers at once, so an
-unreachable Redis costs a request no latency; one operation then probes it. The
-outage is logged once at `WARN` as it starts and once at `INFO` when Redis answers
-again; any other failure is logged at most once a minute. Nothing connects at
-startup, so a Redis that is down when the gateway starts or reloads costs misses,
-not a refused config.
+counts each — `reason` is `error` (sent and failed, or an entry that cannot be
+written), `unavailable` (not sent) or `undecodable` (an entry this gateway cannot
+read). After three consecutive failures the store sends nothing for five seconds
+and answers at once, so an unreachable Redis costs a request no latency; one
+operation then probes it. The outage is logged once at `WARN` as it starts and
+once at `INFO` when Redis answers again; any other failure is logged at most once
+a minute. Nothing connects at startup, so a Redis that is down when the gateway
+starts or reloads costs misses, not a refused config.
 
 An entry is stored in a versioned format of its own rather than the client JSON,
 which loses fields a cache must keep (`Usage` is folded on decode, `Content`
 beside `ContentParts` is dropped, `OverheadMs` is not encoded), so a hit from
 Redis is the same response a hit from memory is. An entry in any other format —
-another writer under the prefix, a later gateway — is a miss.
+another writer under the prefix, a later gateway — is a miss. An entry larger than
+64 MiB, the largest reply the store reads back, is not written.
 
 Not supported: Redis Cluster, Sentinel, and TLS client certificates. Point
 `redis_url` at a single primary, or at a proxy or managed endpoint that fronts

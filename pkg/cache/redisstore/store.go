@@ -96,6 +96,9 @@ type Store struct {
 	prefix  string
 	px      []byte // the PX argument; nil when nothing is to be stored
 	breaker *circuitbreaker.CircuitBreaker
+	// maxValue is the largest entry Set writes: the largest bulk reply Get
+	// reads back, so nothing is stored that every later lookup would fail on.
+	maxValue int
 
 	log      *logger.Logger // nil: logger.Default()
 	now      func() time.Time
@@ -140,11 +143,12 @@ func New(opts Options) (*Store, error) {
 	}
 
 	s := &Store{
-		client:  newClient(ep, timeout, poolSize, tlsConf),
-		ep:      ep,
-		prefix:  opts.KeyPrefix,
-		breaker: circuitbreaker.New(failuresToTrip, 1, 1, unavailableFor),
-		now:     time.Now,
+		client:   newClient(ep, timeout, poolSize, tlsConf),
+		ep:       ep,
+		prefix:   opts.KeyPrefix,
+		breaker:  circuitbreaker.New(failuresToTrip, 1, 1, unavailableFor),
+		maxValue: maxBulk,
+		now:      time.Now,
 	}
 	if ms := opts.TTL.Milliseconds(); ms > 0 {
 		s.px = []byte(strconv.FormatInt(ms, 10))
@@ -192,6 +196,13 @@ func (s *Store) Set(key string, resp *providers.Response) {
 	if err != nil {
 		s.count(opSet, reasonError)
 		s.warn("response-cache: response not cached: it cannot be encoded", "error", err)
+		return
+	}
+	// Stored, it would come back as a reply the parser refuses, and every
+	// lookup of the key would count as a Redis failure toward the breaker.
+	if len(value) > s.maxValue {
+		s.count(opSet, reasonError)
+		s.warn("response-cache: response not cached: its entry is larger than the store reads back", "bytes", len(value), "limit", s.maxValue)
 		return
 	}
 	adm, ok := s.breaker.Admit()

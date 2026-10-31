@@ -253,7 +253,8 @@ var (
 	// ResponseCacheStoreFailures counts response-cache store operations that
 	// did not complete, labelled by backend ("redis"), operation ("get",
 	// "set", "delete") and reason: "error" (the operation was sent and failed —
-	// unreachable, timed out, or refused with an error reply), "unavailable"
+	// unreachable, timed out, or refused with an error reply — or a set whose
+	// entry cannot be encoded or is too large to read back), "unavailable"
 	// (not sent, because consecutive failures marked the store unavailable and
 	// it has not answered a probe since), or "undecodable" (Redis answered
 	// with an entry this gateway cannot read). A failed get is served as a

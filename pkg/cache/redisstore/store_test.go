@@ -517,6 +517,43 @@ func TestStore_ClosedStoreClosesItsConnections(t *testing.T) {
 	}
 }
 
+// An entry larger than the reply parser reads back is not written. Stored, it
+// would make every lookup of its key a protocol error counted against Redis,
+// and a request repeated often enough would mark the store unavailable for
+// every key.
+func TestStore_EntryTooLargeToReadBackIsNotStored(t *testing.T) {
+	srv := redisstub.New(t)
+	s := newStore(t, Options{URL: srv.URL()})
+	logs := captureLog(s)
+	if s.maxValue != maxBulk {
+		t.Fatalf("maxValue = %d, want maxBulk (%d), the bound the reply parser enforces", s.maxValue, maxBulk)
+	}
+
+	value, err := encodeEntry(sampleResponse("resp-1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.maxValue = len(value) - 1
+
+	before := failures(t, opSet, reasonError)
+	s.Set("k", sampleResponse("resp-1"))
+	if got := failures(t, opSet, reasonError) - before; got != 1 {
+		t.Fatalf("set failures = %v, want 1", got)
+	}
+	if slices.Contains(srv.Commands(), "SET") {
+		t.Fatal("an entry too large to read back was sent")
+	}
+	if got := logs.lines(t, "WARN", "larger than the store reads back"); len(got) != 1 {
+		t.Fatalf("oversize warnings = %d, want 1", len(got))
+	}
+
+	s.maxValue = len(value)
+	s.Set("k", sampleResponse("resp-1"))
+	if _, ok := s.Get("k"); !ok {
+		t.Fatal("miss for an entry exactly at the bound")
+	}
+}
+
 func TestNew_RefusesABadURL(t *testing.T) {
 	t.Parallel()
 
