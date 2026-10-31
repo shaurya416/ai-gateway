@@ -72,10 +72,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   segment: a proxy root written the way every other provider's is,
   `https://proxy.example.com/cohere/v2`, reached `/cohere/v2/v2/chat`, a path
   Cohere does not serve. Chat, embeddings and rerank now append only `/chat`,
-  `/embed` and `/rerank` to the configured root. With the variable unset nothing changes,
-  and a bare host still works: `https://api.cohere.com`, or any value with no
-  path, resolves to `/v2` as before. **Action required only if** the value
-  carries a path: add the `/v2`, so `https://proxy.example.com/cohere` becomes
+  `/embed` and `/rerank` to the configured root. With the variable unset
+  nothing changes, and a bare host still works: `https://api.cohere.com`, or
+  any value with no path, resolves to `/v2` as before. **Action required only
+  if** the value carries a path: add the `/v2`, so
+  `https://proxy.example.com/cohere` becomes
   `https://proxy.example.com/cohere/v2`. A value carrying a query string or
   fragment is now refused at startup, as it already is for every other
   provider. The `/v1/*` pass-through and `/v1/responses` still refuse Cohere
