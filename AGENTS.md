@@ -1269,7 +1269,11 @@ whether an upstream honours `"Max_Output_Tokens"` depends on its JSON parser,
 so the gateway cannot know which value it would be governing. A
 `max_output_tokens` that is not an integer (`100000.0`, `1e5`, `"100000"`) is
 refused `400` for the same reason, as chat refuses it in `max_tokens`; `null`
-declares no ceiling.
+declares no ceiling. The first two are read from the whole body, wherever in it
+they come, up to `max_request_bytes`; a larger body is never forwarded, however
+it is placed, and is answered `413` unless a content guardrail has already
+refused it as uninspectable. The projection keeps its own 1 MiB cap, past which
+a content guardrail refuses the body as uninspectable.
 
 The stateful **id sub-routes** — `GET`/`DELETE /v1/responses/{id}`,
 `POST /v1/responses/{id}/cancel`, `GET /v1/responses/{id}/input_items` — carry no

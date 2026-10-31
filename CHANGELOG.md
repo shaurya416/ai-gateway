@@ -228,6 +228,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   refuses, and an origin the gateway denies by withholding the header got the
   upstream's `*`. Every forward now drops the upstream's `Access-Control-*`
   response headers.
+- `POST /v1/responses` and `POST /v1/responses/compact` now route and govern a
+  body larger than 1 MiB — an image or a file inlined as base64, a long
+  conversation — by the `model` and `max_output_tokens` it carries. The two
+  fields were read only when the whole body fit in 1 MiB, the content
+  guardrails' projection cap, and a larger body was read as naming neither:
+  placed by its model it was answered `400 model is required` though it named
+  one, and placed by `X-Provider` it reached the `max-token` guardrail with no
+  ceiling, which it approves, and was forwarded carrying the ceiling the
+  gateway never read. Both fields are now read from the whole body, up to
+  `max_request_bytes` — the cap every other data-plane route applies — and a
+  body past that cap is refused before anything is forwarded, with `413
+  request_too_large` unless a content guardrail refuses it first, where it was
+  forwarded unread under `X-Provider`. Raise `max_request_bytes` to accept
+  larger Responses inputs.
 - `make test` runs the tests of the Go client (`client/`) and of the `run`
   and `httpgateway` packages. The target names its packages instead of
   `./...`, and the list named none of the three, so it reported success

@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/url"
 	"path"
 	"strings"
 
+	"github.com/ferro-labs/ai-gateway/config"
 	"github.com/ferro-labs/ai-gateway/internal/apierror"
 	"github.com/ferro-labs/ai-gateway/pkg/logger"
 	"github.com/ferro-labs/ai-gateway/providers"
@@ -48,7 +50,7 @@ func ResponsesCreate(src ResponsesSource) http.HandlerFunc {
 			return
 		}
 
-		model, maxOutputTokens, unreadable, bodyErr := peekResponsesFields(r)
+		model, maxOutputTokens, unreadable, bodyErr := peekResponsesFields(r, responsesBodyCap(src))
 		if unreadable != "" {
 			apierror.WriteOpenAI(w, http.StatusBadRequest, unreadable, "invalid_request_error", "invalid_request")
 			return
@@ -113,10 +115,25 @@ func ResponsesCreate(src ResponsesSource) http.HandlerFunc {
 		defer cancelRequest(nil)
 		watchCallerBody(r, func() { cancelRequest(nil) })
 
+		// A body that ran past the cap during the peek had neither governed
+		// field read, so it is never sent anywhere: a body placed by X-Provider
+		// would otherwise reach the upstream carrying a ceiling no guardrail
+		// saw. It is refused inside the lifecycle, as one that runs past the
+		// cap mid-forward is, so it is still recorded as the caller's failed
+		// request and kept off the breaker.
+		var tooLarge *http.MaxBytesError
+		bodyTooLarge := errors.As(bodyErr, &tooLarge)
+
 		forwarded := false
 		var forwardErr error
 		forward := func(ctx context.Context) error {
 			forwarded = true
+			if bodyTooLarge {
+				forwardErr = bodyErr
+				cancelRequest(nil)
+				writeCallerBodyError(w, bodyErr)
+				return forwardErr
+			}
 			// An upstream error status comes back as a failure for the lifecycle
 			// to record; which statuses the breaker scores is the gateway's call
 			// (see Gateway.RoutePassthrough).
@@ -230,11 +247,37 @@ func resolveResponsesProvider(r *http.Request, src providers.ProviderSource, mod
 	return findModelOwner(src, model)
 }
 
+// configSource is a source that carries the gateway's live config. *Gateway
+// implements it.
+type configSource interface {
+	GetConfig() config.Config
+}
+
+// responsesBodyCap is the most of a Responses create body the gateway reads to
+// find the fields it routes and governs on: max_request_bytes, the cap the
+// other data-plane routes enforce, read per request so a reload applies to the
+// next one. A source without a config gets the default.
+func responsesBodyCap(src any) int64 {
+	if c, ok := src.(configSource); ok {
+		if n := c.GetConfig().MaxRequestBytes; n > 0 {
+			return n
+		}
+	}
+	return config.DefaultMaxRequestBytes
+}
+
 // peekResponsesFields reads the two schema-stable top-level fields the create
 // path governs on — model (routing) and max_output_tokens (the completion
-// ceiling a guardrail caps) — then restores the body so it forwards intact. A
-// body past the projection cap yields zero values; the guardrail projection
-// (projectBody) refuses it separately when a content guardrail is configured.
+// ceiling a guardrail caps) — then restores the body so it forwards intact.
+//
+// The whole body is read, up to limit, because the fields can come anywhere in
+// it: openai-python writes them after the input. A body past limit is reported
+// as an *http.MaxBytesError in bodyErr. The peek used to stop at the guardrail
+// projection's 1 MiB cap and read such a body as naming no model and no
+// ceiling, so a request carrying an inlined image or file was answered "model
+// is required", and one placed by X-Provider reached the max-token guardrail
+// with no ceiling, which it approves. The projection's own cap is unchanged:
+// projectBody still reports a larger body uninspectable to a content guardrail.
 //
 // The keys are matched exactly, and a body that also carries another spelling
 // of either is reported ambiguous rather than read. Decoded into a struct,
@@ -255,17 +298,17 @@ func resolveResponsesProvider(r *http.Request, src providers.ProviderSource, mod
 //
 // unreadable is the refusal to answer with, empty when both fields were read.
 // bodyErr is the failure reading the body, when the peek could not read it.
-func peekResponsesFields(r *http.Request) (model string, maxOutputTokens int, unreadable string, bodyErr error) {
+func peekResponsesFields(r *http.Request, limit int64) (model string, maxOutputTokens int, unreadable string, bodyErr error) {
 	if r.Body == nil || r.ContentLength == 0 {
 		return "", 0, "", nil
 	}
-	buf, err := io.ReadAll(io.LimitReader(r.Body, projectionCap+1))
+	buf, err := io.ReadAll(io.LimitReader(r.Body, limit+1))
 	r.Body = io.NopCloser(io.MultiReader(bytes.NewReader(buf), r.Body))
 	if err != nil {
 		return "", 0, "", err
 	}
-	if len(buf) > projectionCap {
-		return "", 0, "", nil
+	if int64(len(buf)) > limit {
+		return "", 0, "", &http.MaxBytesError{Limit: limit}
 	}
 	var fields map[string]json.RawMessage
 	if json.Unmarshal(buf, &fields) != nil {

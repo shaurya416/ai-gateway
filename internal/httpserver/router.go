@@ -626,8 +626,11 @@ func mountOpenAIRoutes(r chi.Router, gw *aigateway.Gateway, store repository.Sto
 	})
 
 	// Responses. POST /v1/responses is model-routed and GOVERNED + PRICED (usage
-	// is teed off the response/stream); it sits outside the shared body limit
-	// because a Responses input can be up to ~10 MiB and the forward streams it.
+	// is teed off the response/stream). It sits outside the shared body-limit
+	// middleware because the create handler applies max_request_bytes itself:
+	// it reads the whole body to find the model and max_output_tokens, and
+	// refuses a larger one with 413 before anything is forwarded, so an
+	// embedder mounting it through httpgateway gets the same bound.
 	// The stateful id sub-routes (retrieve/delete/cancel/input_items) carry no
 	// model and pin to responses_target. Static/prefixed paths win over /v1/*.
 	r.Group(func(r chi.Router) {
