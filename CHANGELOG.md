@@ -69,6 +69,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A streamed chat request to an OpenAI-compatible provider whose upstream
+  answers `200` without a stream is now a failure, not an empty success. An
+  HTML page from a catch-all route behind a misconfigured `<PROVIDER>_BASE_URL`,
+  an empty body, or a body of nothing but keep-alives yielded no frame and no
+  `[DONE]`, and the shared SSE reader ended it cleanly: the client got an empty
+  stream, the request log wrote an `after_request` row with zero tokens, the
+  success counter rose and the circuit breaker counted a healthy call. A body
+  that ends having delivered no chunk now ends with an error chunk, so the
+  request takes the error path — an `on_error` row, an error metric, and a
+  breaker failure. A stream that delivered any chunk, or that ended with
+  `[DONE]`, is unchanged.
 - An HTTP MCP server that stops answering is now withdrawn, and a `required` one
   takes `/readyz` to `503`. Death after the handshake was detected for stdio
   servers only: an HTTP server that went away — a crash, a redeploy, a network
