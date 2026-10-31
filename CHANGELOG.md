@@ -192,6 +192,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   offending field reached the caller as a bare `Unprocessable Entity`. The
   error is now built from the response body by the constructor the chat path
   uses.
+- A config reload that changes the `budget` plugin's `max_keys` now takes
+  effect. Spend is kept in a process-level store per `store_id` that survives
+  a reload, and that store kept the cap of the first instance that opened it,
+  so raising `max_keys` — the documented remedy for keys whose spend is being
+  evicted — changed nothing until a restart: keys past the old cap went on
+  evicting each other, and every evicted key's cap restarted at `$0`. Each
+  write now applies the cap of the configuration making it, from the next key
+  the store tracks; a lowered cap trims the lowest-spend keys, and recorded
+  spend is otherwise kept across the reload.
 - `make test` runs the tests of the Go client (`client/`) and of the `run`
   and `httpgateway` packages. The target names its packages instead of
   `./...`, and the list named none of the three, so it reported success

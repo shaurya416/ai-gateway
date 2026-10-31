@@ -284,7 +284,7 @@ func TestBudget_MaxKeys_EvictsMinSpend(t *testing.T) {
 	// Adding a third key must evict "low-spend" (min spend).
 	recordCost("new-key", 5)
 
-	store := getStore("test-max-keys", 2)
+	store := getStore("test-max-keys")
 	if store.get("low-spend") != 0 {
 		t.Error("low-spend key should have been evicted")
 	}
@@ -349,7 +349,7 @@ func TestBudget_ConcurrentAddNoLostUpdate(t *testing.T) {
 	const storeID = "test-concurrent-no-lost-update"
 	defer ResetStore(storeID)
 
-	store := getStore(storeID, defaultMaxKeys)
+	store := getStore(storeID)
 	apiKey := "key-concurrent"
 
 	// c = 0.25 = 1/4 is exactly representable in float64, so N*c is exact and
@@ -364,7 +364,7 @@ func TestBudget_ConcurrentAddNoLostUpdate(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			store.add(apiKey, c)
+			store.add(apiKey, c, defaultMaxKeys)
 		}()
 	}
 	wg.Wait()
@@ -392,10 +392,10 @@ func TestBudget_CheckBudget_BoundaryAndReason(t *testing.T) {
 		"output_per_m_tokens": 0.0,
 	})
 	apiKey := "key-boundary"
-	store := getStore(storeID, defaultMaxKeys)
+	store := getStore(storeID)
 
 	// Below the limit: must pass.
-	store.add(apiKey, 0.75)
+	store.add(apiKey, 0.75, defaultMaxKeys)
 	pass := pctxWithKey(apiKey)
 	if err := p.Execute(context.Background(), pass); err != nil {
 		t.Fatalf("below limit should pass, got: %v", err)
@@ -405,7 +405,7 @@ func TestBudget_CheckBudget_BoundaryAndReason(t *testing.T) {
 	}
 
 	// At exactly the limit: must reject (spend >= limit).
-	store.add(apiKey, 0.25) // committed now 1.00
+	store.add(apiKey, 0.25, defaultMaxKeys) // committed now 1.00
 	reject := pctxWithKey(apiKey)
 	if err := p.Execute(context.Background(), reject); err != nil {
 		t.Fatalf("hitting the limit is a verdict, not a plugin malfunction: %v", err)
@@ -682,7 +682,7 @@ func TestBudget_RejectsAMaxKeysThatIsNotAWholeNumber(t *testing.T) {
 		}
 		p := &Plugin{}
 		if err := p.Init(config); err == nil {
-			t.Errorf("Init accepted max_keys: %v, and the store's cap is %d", value, p.store.maxKeys)
+			t.Errorf("Init accepted max_keys: %v, and the cap is %d", value, p.maxKeys)
 		}
 	}
 

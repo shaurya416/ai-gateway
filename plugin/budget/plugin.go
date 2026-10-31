@@ -85,8 +85,10 @@
 // evicted to make room — and an evicted key restarts at $0, so under a churn of
 // more than max_keys distinct keys a key's accumulated spend can be discarded
 // and its cap silently reset. Raise max_keys above the number of keys in
-// circulation if that matters. Use [ResetStore] or [ResetStoreKey] for explicit
-// cleanup, e.g. on API key rotation or periodic housekeeping.
+// circulation if that matters; a config reload's max_keys applies from the next
+// key the store tracks, and spend already recorded is kept. Use [ResetStore] or
+// [ResetStoreKey] for explicit cleanup, e.g. on API key rotation or periodic
+// housekeeping.
 //
 // The API key is read from pctx.Metadata["api_key"]. Requests without a key
 // are not subject to per-key spend tracking (they will not be rejected by
@@ -97,6 +99,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"sort"
 	"sync"
 
 	"github.com/ferro-labs/ai-gateway/plugin"
@@ -115,9 +118,14 @@ const defaultMaxKeys = 10_000
 // globalStores is the process-level registry of spend stores, keyed by store_id.
 var globalStores sync.Map // map[string]*spendStore
 
-// spendStore accumulates per-key committed USD spend with an optional key
-// count cap. All access is serialized through mu so that the read in
-// checkBudget and the read-modify-write in add never interleave.
+// spendStore accumulates per-key committed USD spend. All access is
+// serialized through mu so that the read in checkBudget and the
+// read-modify-write in add never interleave.
+//
+// The store holds no key cap of its own. It outlives the plugin instances that
+// write to it — a config reload builds new ones over the same store — so a cap
+// fixed when the store was opened ignored every later max_keys. Each write
+// passes the cap of the instance making it instead.
 type spendStore struct {
 	mu    sync.Mutex
 	spend map[string]float64 // api_key -> committed USD
@@ -126,13 +134,25 @@ type spendStore struct {
 	// spend map's lifetime: a key leaves it when it is next admitted, reset or
 	// evicted.
 	refusing map[string]struct{}
-	maxKeys  int // 0 = unlimited
 }
 
-// evictMinLocked removes the key with the lowest committed spend to make
-// room for a new key.  Must be called with s.mu held.
-func (s *spendStore) evictMinLocked(newKey string) {
-	if _, exists := s.spend[newKey]; !exists && s.maxKeys > 0 && len(s.spend) >= s.maxKeys {
+// evictMinLocked makes room for newKey under a cap of maxKeys tracked keys (0
+// is unlimited) by removing the keys with the lowest committed spend. Must be
+// called with s.mu held.
+//
+// At most one key goes in steady state. More go only when the store holds more
+// keys than maxKeys allows — a reload lowered the cap — and then all of them
+// go in one pass, lowest spend first, which is the order single evictions at
+// the cap would have taken them in.
+func (s *spendStore) evictMinLocked(newKey string, maxKeys int) {
+	if _, exists := s.spend[newKey]; exists || maxKeys <= 0 {
+		return
+	}
+	excess := len(s.spend) - maxKeys + 1
+	if excess <= 0 {
+		return
+	}
+	if excess == 1 {
 		minKey, minVal := "", math.MaxFloat64
 		for k, v := range s.spend {
 			if v < minVal {
@@ -143,16 +163,27 @@ func (s *spendStore) evictMinLocked(newKey string) {
 			delete(s.spend, minKey)
 			delete(s.refusing, minKey)
 		}
+		return
+	}
+	keys := make([]string, 0, len(s.spend))
+	for k := range s.spend {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool { return s.spend[keys[i]] < s.spend[keys[j]] })
+	for _, k := range keys[:excess] {
+		delete(s.spend, k)
+		delete(s.refusing, k)
 	}
 }
 
 // add records usd worth of committed spend for key as a single atomic
-// read-modify-write under the store mutex. Concurrent completions for the
-// same key therefore never lose an increment (no lost-update race).
-func (s *spendStore) add(key string, usd float64) {
+// read-modify-write under the store mutex, tracking at most maxKeys keys (0 is
+// unlimited). Concurrent completions for the same key therefore never lose an
+// increment (no lost-update race).
+func (s *spendStore) add(key string, usd float64, maxKeys int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.evictMinLocked(key)
+	s.evictMinLocked(key, maxKeys)
 	s.spend[key] += usd
 }
 
@@ -197,11 +228,10 @@ func (s *spendStore) resetAll() {
 	s.refusing = make(map[string]struct{})
 }
 
-func getStore(id string, maxKeys int) *spendStore {
+func getStore(id string) *spendStore {
 	v, _ := globalStores.LoadOrStore(id, &spendStore{
 		spend:    make(map[string]float64),
 		refusing: make(map[string]struct{}),
-		maxKeys:  maxKeys,
 	})
 	return v.(*spendStore) //nolint:forcetypeassert // globalStores only ever holds *spendStore values
 }
@@ -240,7 +270,10 @@ type Plugin struct {
 	// cached tokens as free; see the package documentation.
 	cacheReadPerMTokens  *float64
 	cacheWritePerMTokens *float64
-	store                *spendStore
+	// maxKeys caps the keys this instance's writes leave tracked in store; 0
+	// is unlimited.
+	maxKeys int
+	store   *spendStore
 	// limitSink receives the first refusal of each run of refusals for a key.
 	// Installed by the gateway before Init; nil when nothing listens.
 	limitSink func(plugin.LimitExceeded)
@@ -400,7 +433,8 @@ func (p *Plugin) Init(config map[string]any) error {
 	p.outputPerMTokens = s.outputPerMTokens
 	p.cacheReadPerMTokens = s.cacheReadPerMTokens
 	p.cacheWritePerMTokens = s.cacheWritePerMTokens
-	p.store = getStore(s.storeID, s.maxKeys)
+	p.maxKeys = s.maxKeys
+	p.store = getStore(s.storeID)
 	return nil
 }
 
@@ -530,7 +564,7 @@ func (p *Plugin) checkBudget(pctx *plugin.Context, key string) error {
 		// to the cap, was refused with "budget exceeded", and the next one was
 		// admitted to spend it again.
 		if pctx.Measurements.HasCost && pctx.Measurements.CostUSD > 0 {
-			p.store.add(key, pctx.Measurements.CostUSD)
+			p.store.add(key, pctx.Measurements.CostUSD, p.maxKeys)
 			markRecorded(pctx, p.storeID)
 		}
 		pctx.Reject = true
@@ -599,6 +633,6 @@ func (p *Plugin) recordCost(pctx *plugin.Context, key string) {
 		perM(rate(p.cacheReadPerMTokens), usage.CacheReadTokens) +
 		perM(rate(p.cacheWritePerMTokens), usage.CacheWriteTokens)
 	if actual > 0 {
-		p.store.add(key, actual)
+		p.store.add(key, actual, p.maxKeys)
 	}
 }
