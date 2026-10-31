@@ -603,8 +603,10 @@ plugins:
 
 A Redis-only setting under `backend: memory` is a load error too: an operator who
 wrote `redis_url` and not `backend: redis` would otherwise run a per-replica cache
-believing it shared. A `${VAR}` reference in any of these is passed by `ferrogw
-validate` and judged when the plugin is constructed.
+believing it shared. A `${VAR}` reference in `backend`, `redis_url`, `key_prefix`
+or `redis_timeout` is passed by `ferrogw validate` and judged when the plugin is
+constructed. `max_age` and `max_entries` must be numbers, so a reference in
+either is a load error.
 
 Write `redis_url` as a `${VAR}` reference. It is resolved at construction, never
 at load, so the password reaches neither the config store nor `GET /admin/config`.

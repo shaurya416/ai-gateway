@@ -102,7 +102,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   provider. The `/v1/*` pass-through and `/v1/responses` still refuse Cohere
   with `501`, so no pass-through URL changes.
 - **Breaking (Go API):** `plugin/cache.ResponseCache` no longer embeds
-  `*pkg/cache.Memory`, so `Get`, `Set`, `Len`, `TTL` and `Capacity` are no
+  `*pkg/cache.Memory`, so its `Memory` field is gone and `Get`, `Set`,
+  `Delete`, `Clear`, `Len`, `SetNowForTest`, `TTL` and `Capacity` are no
   longer promoted onto the plugin. The embedding welded the plugin to one
   in-process store; it now holds the new `pkg/cache.Store` interface, which
   `Memory` satisfies unchanged, so the entries can live outside the process
