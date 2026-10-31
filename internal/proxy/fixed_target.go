@@ -21,7 +21,8 @@ import (
 // buildRewrite, so the gateway's own /v1 prefix is stripped, the client
 // credential is replaced by the provider's, the caller-identity headers that
 // address the gateway are dropped, and trace context is injected when
-// propagateTrace is set. An upstream that echoes the injected credential is
+// propagateTrace is set. An upstream's own CORS grant is dropped (see
+// stripUpstreamCORSHeaders), an upstream that echoes the injected credential is
 // redacted (bounded by sanitizeScanBudget), and the streaming idle bound
 // replaces the WriteTimeout that WrapResponseWriter clears. The caller has
 // already validated the path (unsafeProxyPath) and resolved target/authHeaders.
@@ -77,6 +78,7 @@ func forwardFixedTarget(w http.ResponseWriter, r *http.Request, target *url.URL,
 		Rewrite:       rewrite,
 		ModifyResponse: func(resp *http.Response) error {
 			upstreamErr = relayedStatusError(providerName, resp)
+			stripUpstreamCORSHeaders(resp.Header)
 			resp.Header.Set("X-Gateway-Provider", providerName)
 			scanTimer := time.AfterFunc(sanitizeScanBudget, func() { cancelUpstream(nil) })
 			sanitizeErr := sanitizeResponse(resp, secrets)

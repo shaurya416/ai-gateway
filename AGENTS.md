@@ -803,6 +803,12 @@ report the missing header, which names `CORS_ORIGINS`.
 really is a question about the resource's methods, so the route answers it with
 its own `405` and an accurate `Allow`.
 
+The forwards (`/v1/*`, `/v1/responses`, `/v1/files`, `/v1/batches`) answer under
+this policy alone: they send no `Origin` upstream and drop every
+`Access-Control-*` header an upstream puts on its response, so an upstream that
+grants CORS on every response cannot add a second `Access-Control-Allow-Origin`
+to an allowed origin's answer or grant one the gateway withheld.
+
 ### Provider base URLs
 
 Every provider that talks HTTP declares a `<PROVIDER>_BASE_URL` override —

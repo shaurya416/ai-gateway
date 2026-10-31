@@ -216,6 +216,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   request log, and an upstream that drops a trailing slash served it as a
   create; with `responses_target` unset it answered `501`. It is now served by
   the create handler, as `POST /v1/responses/compact` already is.
+- A browser application calling the `/v1/*` pass-through, `POST /v1/responses`
+  or its id sub-routes, `/v1/files` or `/v1/batches` is now answered under the
+  gateway's CORS policy alone when the upstream grants CORS on every response —
+  the default of the `cors` package for Express, or an nginx `add_header
+  Access-Control-Allow-Origin *` in front of a server. The forwards stopped
+  sending the browser's `Origin` upstream, which silences only an upstream that
+  grants CORS when asked; one that grants it unconditionally still had its
+  `Access-Control-*` headers added to the gateway's, so an origin on
+  `CORS_ORIGINS` got two `Access-Control-Allow-Origin` values, which a browser
+  refuses, and an origin the gateway denies by withholding the header got the
+  upstream's `*`. Every forward now drops the upstream's `Access-Control-*`
+  response headers.
 - `make test` runs the tests of the Go client (`client/`) and of the `run`
   and `httpgateway` packages. The target names its packages instead of
   `./...`, and the list named none of the three, so it reported success

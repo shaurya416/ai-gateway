@@ -60,6 +60,29 @@ func stripGatewayIdentityHeaders(pr *httputil.ProxyRequest) {
 	}
 }
 
+// stripUpstreamCORSHeaders deletes the CORS grant an upstream put on its
+// response — every Access-Control-* header — before the reverse proxy copies
+// the response's headers onto the client's.
+//
+// Whether a browser may read a gateway response is the gateway's CORS policy
+// alone (middleware.CORS), and that policy has already written its answer by
+// the time a forward runs. The reverse proxy ADDS the upstream's headers to
+// it rather than replacing them, so an upstream that grants CORS on every
+// response — the default of the cors package for Express, an nginx add_header
+// in front of a server — gave an origin on CORS_ORIGINS two
+// Access-Control-Allow-Origin values, which a browser refuses, and gave an
+// origin the gateway denies by withholding the header the upstream's "*".
+// Not sending Origin upstream (gatewayIdentityHeaders) covers only an
+// upstream that grants CORS when asked. The routed surfaces never relay an
+// upstream header at all.
+func stripUpstreamCORSHeaders(h http.Header) {
+	for name := range h {
+		if strings.HasPrefix(http.CanonicalHeaderKey(name), "Access-Control-") {
+			delete(h, name)
+		}
+	}
+}
+
 // buildRewrite returns the ReverseProxy.Rewrite func for one resolved
 // pass-through: point the request at target, drop headers that address the
 // gateway rather than the provider, install the provider's own credential,
@@ -359,6 +382,7 @@ func passThroughHandler(src providers.ProviderSource) http.HandlerFunc {
 				// 500 the upstream actually sent. The status is reported to the
 				// lifecycle after the fact so the circuit breaker can score it.
 				upstreamErr = relayedStatusError(providerName, resp)
+				stripUpstreamCORSHeaders(resp.Header)
 				resp.Header.Set("X-Gateway-Provider", providerName)
 				// Redact before wrapping: an upstream that quotes the credential
 				// this proxy injected must not have that quote relayed to the
