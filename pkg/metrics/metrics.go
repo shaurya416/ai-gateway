@@ -250,6 +250,22 @@ var (
 		[]string{"subject"},
 	)
 
+	// ResponseCacheStoreFailures counts response-cache store operations that
+	// did not complete, labelled by backend ("redis"), operation ("get",
+	// "set", "delete") and reason: "error" (the operation was sent and failed —
+	// unreachable, timed out, or refused with an error reply), "unavailable"
+	// (not sent, because consecutive failures marked the store unavailable and
+	// it has not answered a probe since), or "undecodable" (Redis answered
+	// with an entry this gateway cannot read). A failed get is served as a
+	// cache miss and a failed set drops the write; neither fails the request.
+	ResponseCacheStoreFailures = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "gateway_response_cache_store_failures_total",
+			Help: "Response-cache store operations that did not complete, served as a miss or a dropped write, by backend, operation and reason.",
+		},
+		[]string{"backend", "op", "reason"},
+	)
+
 	// CatalogLoadsTotal counts model catalog load attempts, labelled by source
 	// ("remote", "fallback") and result ("success", "error").
 	CatalogLoadsTotal = promauto.NewCounterVec(
