@@ -8,7 +8,7 @@ see [CHANGELOG.md](CHANGELOG.md).
 What's next, roughly in priority order:
 
 - **Plugin SDK & vendor observability bridges** — external guardrail and transform plugins, plus bridges for LangSmith, Langfuse, Datadog, New Relic, Honeycomb, Grafana, and more, shipped from a companion `ai-gateway-plugins` repo so the core binary stays slim.
-- **Semantic & Redis-backed caching** — beyond the built-in in-memory cache.
+- **Semantic caching** — serve a cached answer to a request that means the same thing, not only to one written the same way.
 - **Broader provider coverage**, driven by community demand.
 - **Deeper deployment guidance** — Kubernetes operators and Terraform modules.
 
@@ -57,6 +57,7 @@ Everything below is available today.
 
 - Built-in: word-filter, max-token, regex-guard, pii-redact, secret-scan, prompt-shield, schema-guard, rate-limit, budget, response-cache, request-logger — the catalog `GET /admin/plugins/catalog` serves
 - Staged middleware (before / after / on-error) with an explicit deny-versus-fail policy
+- A response cache shared by every replica through Redis (`backend: redis`) — a standard-library RESP2 client with AUTH, TLS and key prefixes, and a Redis outage served as cache misses rather than failed requests
 
 ### MCP (Model Context Protocol)
 

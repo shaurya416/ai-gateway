@@ -36,6 +36,7 @@
 - **Request identity (v1.5.4)** — `observability.RequestIdentity` (end-user id, session id, request metadata) is set on the request context by `internal/otel.Middleware` from `X-User-ID`, `X-Session-ID` and the W3C `baggage` entries `user.id` / `session.id`, or by an embedder through `observability.ContextWithRequestIdentity`; the gateway overlays the OpenAI body `user`. It is recorded as `enduser.id` / `session.id` / `ferro.request.metadata.<key>` on the request span, on `RequestAttrs`, `Event` and `RoutingAttempt`, and as `user_id` / `session_id` on request-log rows. `observability.tracing.attempt_spans` opens one `gateway.routing.attempt` CLIENT span per routing attempt through the optional `observability.AttemptSpanProvider`; `observability.tracing.propagate_passthrough` (default true) injects `traceparent` on `/v1/*` pass-through forwards and on the fixed-target forwards (`/v1/responses` create and its id sub-routes, `/v1/files`, `/v1/batches`). Nothing is inferred and no identity is a body field other than `user`.
 - **Webhook notifications (Unreleased)** — `notifications.webhooks[]` posts `circuit.opened` / `circuit.half_open` / `circuit.closed` (from a state-change hook on each target's breaker, `circuitbreaker.SetStateChangeHook`), `budget.exceeded` (the budget plugin's first refusal of a key, through `plugin.LimitReporter`), and `error_rate.high` (a sliding-window tracker fed from every routing attempt in `attemptTarget`), each once per transition. `internal/notify` owns delivery: a bounded drop-oldest queue and one worker per webhook, HMAC-SHA256 signing, bounded retries on 5xx/transport errors only, and a grace-bounded drain inside `Gateway.Close`. See [Webhook notifications](#webhook-notifications-notificationswebhooks).
 - **Go client (Unreleased)** — `client/` (`github.com/ferro-labs/ai-gateway/client`) is the official Go client for the gateway's HTTP API: chat (unary and streamed), embeddings, `/v1/models`, `/v1/capabilities`. Its non-test files import the standard library only — `TestPackageImportsOnlyStandardLibrary` holds that — so it defines its own wire types rather than reusing `providers/core`. Every result and error exposes the attribution headers; see [Go client](#go-client).
+- **Shared response cache (Unreleased)** — `response-cache` takes `backend: redis`, so every replica pointed at one Redis serves the entries any of them cached. `pkg/cache.Store` is the seam (`Memory`, the default, satisfies it unchanged); `pkg/cache/redisstore` speaks RESP2 over `net` and `crypto/tls`, so the gateway gains no module dependency. A Redis outage is a cache miss or a dropped write, never a request failure. See [Shared response cache](#shared-response-cache-response-cache-with-backend-redis).
 
 ---
 
@@ -87,13 +88,13 @@ ai-gateway/
 │   └── version/
 ├── plugin/               # Public plugin framework (interfaces + manager + registry) + built-in plugins
 │   ├── budget/           # Budget guardrail
-│   ├── cache/            # Request/response caching
+│   ├── cache/            # Response cache — in memory, or shared through Redis (backend: redis)
 │   ├── logger/           # Request/response logging
 │   ├── maxtoken/         # Token/message limit guardrail
 │   ├── ratelimit/        # Rate limiting
 │   └── wordfilter/       # Blocked word guardrail
 ├── pkg/                  # Public reusable libraries
-│   ├── cache/            # In-memory TTL cache (used by the cache plugin)
+│   ├── cache/            # cache.Store + in-memory LRU; redisstore/ is the Redis-backed store (stdlib RESP2 client)
 │   ├── logger/           # Structured slog-backed logging service
 │   ├── circuitbreaker/   # Per-provider circuit breaker
 │   ├── metrics/          # Prometheus metrics
@@ -172,6 +173,8 @@ point into `deploy/`.
 | `gateway_retry.go` | `retryPolicyFor` — the single place `targets[].retry` is resolved; it does not consult the routing mode |
 | `gateway_notify.go` | Webhook event sources: the breaker transition hook, the budget limit sink, and the per-attempt error-rate feed; notifier swap on reload |
 | `internal/notify/notify.go` | Webhook delivery — `Notifier.Publish` never blocks; per-webhook queue, signing, retries, outcome metric, `Close` drain |
+| `pkg/cache/store.go` | `cache.Store` — the response cache's backend seam; it reports no error, so a store that cannot answer is a miss, never a failed request |
+| `pkg/cache/redisstore/store.go` | Redis-backed `cache.Store`: bounded RESP2 connection pool, per-operation timeout, outages served as misses and logged once per transition |
 | `gateway_strategy.go` | `buildStrategy` — `StrategyMode` → `strategies.Strategy`; every error it returns is one `config.ValidateConfig` already rejects |
 | `plugin/catalog.go` | `plugin.Builtins()` — the built-in plugin catalog served by `GET /admin/plugins/catalog`, so the dashboard keeps no copy of it |
 | `test/conformance/conformance_test.go` | Cross-provider conformance suite + coverage drift guard |
@@ -556,6 +559,80 @@ drains queued events inside its five-second budget, then cancels what is left
 and waits for every worker to exit. A reload that changes the block swaps in a
 new notifier and drains the old one in the background; an unchanged block keeps
 the running one and its error-rate windows.
+
+### Shared response cache (`response-cache` with `backend: redis`)
+
+The response cache keeps its entries in process memory by default, so each
+replica has a cache of its own and a request one replica answered is a provider
+call on the next. `backend: redis` keeps them in a Redis every replica shares.
+The cache key, the per-credential scoping and what counts as a hit are
+unchanged — only where an entry lives moves.
+
+```yaml
+plugins:
+  - name: response-cache
+    type: transform
+    stage: before_request
+    enabled: true
+    config:
+      backend: redis
+      redis_url: ${REDIS_URL}    # redis://[[user]:password@]host[:port][/db]; rediss:// for TLS
+      key_prefix: "prod:cache:"  # default ferrogw:response-cache:
+      redis_timeout: 500ms       # each operation, end to end; default 500ms
+      max_age: 300               # seconds, written as SET ... PX
+  - name: response-cache         # the after_request entry stores; identical config
+    type: transform
+    stage: after_request
+    enabled: true
+    config:
+      backend: redis
+      redis_url: ${REDIS_URL}
+      key_prefix: "prod:cache:"
+      redis_timeout: 500ms
+      max_age: 300
+```
+
+| Setting | Behaviour |
+|---------|-----------|
+| `backend` | `memory` (default) or `redis`; anything else is a load error |
+| `redis_url` | Required under `redis`. The database is the path (`/2`); AUTH sends `user password`, or the password alone for `redis://:password@host`. `rediss://` verifies the server against the system roots. A query string or fragment is refused — no URL option is read, so none would take effect — as is a username with no password; reserved characters in the password are percent-encoded. No error quotes the URL |
+| `key_prefix` | Prepended to every key. Give each environment sharing a Redis its own: entries scope by `api_key_id`, which two key stores can repeat, and unauthenticated requests share one bucket |
+| `redis_timeout` | A Go duration bounding each operation — waiting for one of the 16 pooled connections, dialling, and the round trip |
+| `max_age` | The entry's TTL, as `PX`. Must be at least 1 under `redis`: Redis refuses an expiry of zero |
+| `max_entries` | The memory backend's LRU bound, and **refused under `redis`**, which it cannot bound. Size Redis with `maxmemory` and an eviction policy instead |
+
+A Redis-only setting under `backend: memory` is a load error too: an operator who
+wrote `redis_url` and not `backend: redis` would otherwise run a per-replica cache
+believing it shared. A `${VAR}` reference in any of these is passed by `ferrogw
+validate` and judged when the plugin is constructed.
+
+Write `redis_url` as a `${VAR}` reference. It is resolved at construction, never
+at load, so the password reaches neither the config store nor `GET /admin/config`.
+A literal URL is served there with its password replaced by `[REDACTED]`, and
+storing one triggers the stored-literal warning.
+
+**A Redis outage never fails a request.** The plugin is a transform, which fails
+closed, so an error from it would be a `500` on every request while Redis is
+down. A lookup that cannot be answered is a miss instead, a write that cannot be
+made is dropped, and `gateway_response_cache_store_failures_total{backend,op,reason}`
+counts each — `reason` is `error` (sent and failed), `unavailable` (not sent) or
+`undecodable` (an entry this gateway cannot read). After three consecutive
+failures the store sends nothing for five seconds and answers at once, so an
+unreachable Redis costs a request no latency; one operation then probes it. The
+outage is logged once at `WARN` as it starts and once at `INFO` when Redis answers
+again; any other failure is logged at most once a minute. Nothing connects at
+startup, so a Redis that is down when the gateway starts or reloads costs misses,
+not a refused config.
+
+An entry is stored in a versioned format of its own rather than the client JSON,
+which loses fields a cache must keep (`Usage` is folded on decode, `Content`
+beside `ContentParts` is dropped, `OverheadMs` is not encoded), so a hit from
+Redis is the same response a hit from memory is. An entry in any other format —
+another writer under the prefix, a later gateway — is a miss.
+
+Not supported: Redis Cluster, Sentinel, and TLS client certificates. Point
+`redis_url` at a single primary, or at a proxy or managed endpoint that fronts
+one.
 
 ### Key Environment Variables
 
@@ -975,7 +1052,8 @@ setting. **An unrecognised key is withheld.**
 | any map field added later | nothing, until something declares it |
 
 A shown key is still run through the value rules, so a credential inlined under
-a declared setting is caught on its shape.
+a declared setting is caught on its shape — `response-cache`'s `redis_url` is
+served with its password replaced.
 
 Two named scalars are withheld rather than shape-scrubbed:
 `notifications.webhooks[].url` is served as its scheme and host alone, because a
@@ -1409,7 +1487,9 @@ gateway's `CORS_ORIGINS`.
 
 ### 1. Unit tests (default, no build tag)
 
-Live alongside implementation as `*_test.go`.
+Live alongside implementation as `*_test.go`. The Redis store and the response
+cache's `backend: redis` run against `test/redisstub`, an in-process RESP2
+server on the loopback interface with injectable faults — no Docker, no network.
 
 ```bash
 make test           # go test -v -short -race ./...

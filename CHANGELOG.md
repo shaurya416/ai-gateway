@@ -51,6 +51,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   32 entries, a non-scalar value, or an encoded value over 4 KiB. The default
   HTTP client returns a redirect as an `*APIError` instead of following it, so
   the API key is never sent to a location the caller did not name.
+- **A response cache shared by every replica.** `response-cache` kept its
+  entries in each process's memory, so N replicas were N cold caches and a
+  request one replica had answered was a provider call — and a bill — on the
+  next. `backend: redis` keeps them in a Redis the replicas share: `redis_url`
+  (`redis://` or `rediss://`, with AUTH and the database read from the URL),
+  `key_prefix` (default `ferrogw:response-cache:`) so several gateways or
+  environments can share one Redis, and `redis_timeout` (default `500ms`)
+  bounding each operation. The cache key, the per-credential scoping and
+  `max_age` behave as before; `max_entries` bounds only the memory backend and
+  is refused under `redis`. A Redis outage never fails a request: a lookup is a
+  miss and a write is dropped, each counted in
+  `gateway_response_cache_store_failures_total{backend,op,reason}`, and after
+  three consecutive failures nothing is sent for five seconds, so an
+  unreachable Redis adds no latency. The outage is logged once as it starts and
+  once as it ends. `redis_url` belongs in a `${VAR}` reference, resolved when
+  the plugin is built and never stored; a literal one is served by
+  `GET /admin/config` with its password redacted. An unknown backend, a URL
+  that is malformed or carries a query string, or a Redis setting under
+  `backend: memory` is refused at load and by `ferrogw validate`. The client is
+  written against the standard library, so the gateway gains no dependency.
 
 ### Changed
 

@@ -108,8 +108,8 @@ var builtins = []BuiltinPlugin{
 	{
 		Name:     "response-cache",
 		Type:     TypeTransform,
-		Summary:  "Serves an identical request from memory instead of calling a provider again, scoped to the API key that primed it — one credential's response is never served to another.",
-		Settings: []string{"max_age", "max_entries"},
+		Summary:  "Serves an identical request from the cache instead of calling a provider again — in memory, or with backend redis from a Redis every replica shares — scoped to the API key that primed it, so one credential's response is never served to another.",
+		Settings: []string{"max_age", "max_entries", "backend", "redis_url", "key_prefix", "redis_timeout"},
 	},
 	{
 		Name:     "request-logger",

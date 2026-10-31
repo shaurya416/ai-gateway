@@ -1,6 +1,8 @@
 // Package cache provides a response-cache plugin that stores LLM responses
-// in memory and serves them on exact-match cache hits, reducing provider cost
-// and latency for repeated requests. Register it with a blank import:
+// and serves them on exact-match cache hits, reducing provider cost and
+// latency for repeated requests. Entries live in memory by default; with
+// backend: redis they live in a Redis every replica shares. Register it with a
+// blank import:
 //
 //	_ "github.com/ferro-labs/ai-gateway/plugin/cache"
 package cache
@@ -11,14 +13,19 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"hash"
 	"math"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
+	"github.com/ferro-labs/ai-gateway/internal/envref"
 	cachestore "github.com/ferro-labs/ai-gateway/pkg/cache"
+	"github.com/ferro-labs/ai-gateway/pkg/cache/redisstore"
+	"github.com/ferro-labs/ai-gateway/pkg/logger"
 	"github.com/ferro-labs/ai-gateway/plugin"
 	"github.com/ferro-labs/ai-gateway/providers"
 )
@@ -32,12 +39,15 @@ func init() {
 // ResponseCache is a transform plugin that caches LLM responses using
 // exact-match hashing of the request fields that can affect provider output.
 type ResponseCache struct {
-	// store holds the entries. It is the in-memory LRU unless the config
-	// selects another backend.
+	// store holds the entries: the in-memory LRU, or a Redis store under
+	// backend: redis.
 	store cachestore.Store
 	// writes is false when nothing may be stored: max_entries 0 on the memory
 	// backend, which the operator writes to turn storing off.
 	writes bool
+	// closer releases what the store holds open — the Redis connections —
+	// and is nil for the memory backend.
+	closer func() error
 }
 
 var _ plugin.ModelPreserving = (*ResponseCache)(nil)
@@ -52,10 +62,26 @@ func (c *ResponseCache) Type() plugin.PluginType {
 	return plugin.TypeTransform
 }
 
+// The backends a config block can select.
+const (
+	backendMemory = "memory"
+	backendRedis  = "redis"
+)
+
+// defaultKeyPrefix namespaces this gateway's entries in a Redis it may share
+// with other applications.
+const defaultKeyPrefix = "ferrogw:response-cache:"
+
 // settings are the values one response-cache config block resolves to.
 type settings struct {
 	ttl      time.Duration
 	capacity int
+	backend  string
+
+	// Read only by backend redis.
+	redisURL  string
+	keyPrefix string
+	timeout   time.Duration
 }
 
 // maxAgeSeconds is the longest max_age a time.Duration can carry.
@@ -65,7 +91,7 @@ const maxAgeSeconds = math.MaxInt64 / int64(time.Second)
 // single place the plugin's rules live, shared by Init and ValidateConfig so a
 // value the gateway would refuse to start on is the same value `ferrogw
 // validate` reports. An absent or null key keeps its default (max_age 300,
-// max_entries 1000).
+// max_entries 1000, backend memory).
 //
 // A value that is not a whole number of zero or more is a load error. A quoted
 // number, or a ${VAR} reference, which resolves to a string, used to be skipped
@@ -73,9 +99,21 @@ const maxAgeSeconds = math.MaxInt64 / int64(time.Second)
 // minute kept answers for five. A negative max_age, or one under a second,
 // expired every entry as it was stored — a cache that loaded, reported itself
 // enabled and never served a hit — and a negative or fractional max_entries
-// was read as a size other than the one written. Zero is accepted for either.
-func parseSettings(config map[string]any) (settings, error) {
-	s := settings{ttl: 300 * time.Second, capacity: 1000}
+// was read as a size other than the one written. Zero is accepted for either
+// on the memory backend.
+//
+// atLoad is true for ValidateConfig. A string setting carrying a ${VAR}
+// reference is then passed rather than judged, because it resolves when the
+// plugin is constructed and never at load (see plugin.ValidateAction); Init
+// judges the resolved value. The checks that depend on the backend are skipped
+// with it when the backend itself is a reference.
+func parseSettings(config map[string]any, atLoad bool) (settings, error) {
+	s := settings{
+		ttl:       300 * time.Second,
+		capacity:  1000,
+		keyPrefix: defaultKeyPrefix,
+		timeout:   redisstore.DefaultTimeout,
+	}
 	if v, ok := config["max_age"]; ok && v != nil {
 		n, err := wholeNumber("max_age", v, maxAgeSeconds)
 		if err != nil {
@@ -83,14 +121,117 @@ func parseSettings(config map[string]any) (settings, error) {
 		}
 		s.ttl = time.Duration(n) * time.Second
 	}
-	if v, ok := config["max_entries"]; ok && v != nil {
-		n, err := wholeNumber("max_entries", v, math.MaxInt)
+	entries := config["max_entries"]
+	if entries != nil {
+		n, err := wholeNumber("max_entries", entries, math.MaxInt)
 		if err != nil {
 			return settings{}, err
 		}
 		s.capacity = int(n)
 	}
+
+	backend, err := stringSetting(config["backend"], "backend", atLoad)
+	if err != nil {
+		return settings{}, err
+	}
+	redisURL, err := stringSetting(config["redis_url"], "redis_url", atLoad)
+	if err != nil {
+		return settings{}, err
+	}
+	// Judged whatever the backend, since a malformed URL is wrong under
+	// either. The error never quotes the URL, which can carry a password.
+	if redisURL.value != "" && !redisURL.deferred {
+		if _, err := redisstore.ParseURL(redisURL.value); err != nil {
+			return settings{}, fmt.Errorf("response-cache: redis_url: %w", err)
+		}
+	}
+	prefix, err := stringSetting(config["key_prefix"], "key_prefix", atLoad)
+	if err != nil {
+		return settings{}, err
+	}
+	if prefix.set {
+		s.keyPrefix = prefix.value
+	}
+	timeout, err := durationSetting(config["redis_timeout"], "redis_timeout", atLoad)
+	if err != nil {
+		return settings{}, err
+	}
+	if timeout > 0 {
+		s.timeout = timeout
+	}
+
+	if backend.deferred {
+		return s, nil
+	}
+	switch strings.ToLower(strings.TrimSpace(backend.value)) {
+	case "", backendMemory:
+		s.backend = backendMemory
+		// A Redis setting under the memory backend is the mistake this
+		// catches: an operator who wrote redis_url and not backend: redis
+		// has a cache per replica while believing it shared.
+		for _, redisOnly := range []struct {
+			key string
+			set bool
+		}{
+			{"redis_url", redisURL.value != ""},
+			{"key_prefix", prefix.set},
+			{"redis_timeout", config["redis_timeout"] != nil},
+		} {
+			if redisOnly.set {
+				return settings{}, fmt.Errorf("response-cache: %s is read only by backend redis; set backend: redis, or remove it", redisOnly.key)
+			}
+		}
+	case backendRedis:
+		s.backend = backendRedis
+		if entries != nil {
+			return settings{}, errors.New("response-cache: max_entries bounds the memory backend and does not apply to backend redis; size Redis with its own maxmemory and an eviction policy, and remove max_entries")
+		}
+		if s.ttl <= 0 {
+			return settings{}, errors.New("response-cache: backend redis needs max_age of at least 1: Redis refuses an expiry of zero")
+		}
+		if redisURL.value == "" {
+			return settings{}, errors.New("response-cache: backend redis needs redis_url, such as redis://redis:6379/0 or ${REDIS_URL}")
+		}
+		s.redisURL = redisURL.value
+	default:
+		return settings{}, fmt.Errorf("response-cache: backend must be %q or %q, got %q", backendMemory, backendRedis, backend.value)
+	}
 	return s, nil
+}
+
+// stringValue is one optional string setting as read.
+type stringValue struct {
+	value string
+	// set is true when the key holds a value rather than being absent or null.
+	set bool
+	// deferred is true at load for a value carrying a ${VAR} reference, which
+	// cannot be judged until the plugin is constructed.
+	deferred bool
+}
+
+func stringSetting(raw any, key string, atLoad bool) (stringValue, error) {
+	v, err := plugin.StringSetting(raw, key)
+	if err != nil {
+		return stringValue{}, fmt.Errorf("response-cache: %w", err)
+	}
+	return stringValue{value: v, set: raw != nil, deferred: atLoad && envref.HasReference(v)}, nil
+}
+
+// durationSetting reads a Go duration string such as "500ms". Absent, null or
+// deferred is zero.
+func durationSetting(raw any, key string, atLoad bool) (time.Duration, error) {
+	if _, err := plugin.ToFloat64(raw); err == nil {
+		return 0, fmt.Errorf("response-cache: %s must be a duration such as 500ms; a bare number has no unit", key)
+	}
+	v, err := stringSetting(raw, key, atLoad)
+	if err != nil || !v.set || v.deferred {
+		return 0, err
+	}
+	d, err := time.ParseDuration(strings.TrimSpace(v.value))
+	if err != nil || d <= 0 {
+		return 0, fmt.Errorf("response-cache: %s must be a positive duration such as 500ms, got %q", key, v.value)
+	}
+	return d, nil
 }
 
 // wholeNumber converts one configured value and rejects anything that is not a
@@ -110,19 +251,41 @@ func wholeNumber(key string, v any, limit int64) (int64, error) {
 // `ferrogw validate` and `ferrogw doctor` reject a value this plugin would
 // reject at startup. See plugin.ConfigValidator.
 func (c *ResponseCache) ValidateConfig(config map[string]any) error {
-	_, err := parseSettings(config)
+	_, err := parseSettings(config, true)
 	return err
 }
 
 // Init configures the plugin from the provided options map. See parseSettings
-// for the rules both settings follow.
+// for the rules every setting follows.
+//
+// The redis backend does not connect here. Its first lookup dials, so a Redis
+// that is down when the gateway starts or reloads costs cache misses rather
+// than a refused config — the same answer an outage later gets.
 func (c *ResponseCache) Init(config map[string]any) error {
-	s, err := parseSettings(config)
+	s, err := parseSettings(config, false)
 	if err != nil {
 		return err
 	}
-	c.store = cachestore.NewMemory(s.capacity, s.ttl)
-	c.writes = s.capacity > 0
+	// A second Init releases what the first one opened.
+	if err := c.Close(); err != nil {
+		return err
+	}
+	if s.backend == backendRedis {
+		store, err := redisstore.New(redisstore.Options{
+			URL:       s.redisURL,
+			KeyPrefix: s.keyPrefix,
+			TTL:       s.ttl,
+			Timeout:   s.timeout,
+		})
+		if err != nil {
+			return fmt.Errorf("response-cache: redis_url: %w", err)
+		}
+		c.store, c.writes, c.closer = store, true, store.Close
+		logger.Default().Info("response-cache: entries shared through redis",
+			"store", store.String(), "key_prefix", s.keyPrefix, "max_age", s.ttl.String(), "redis_timeout", s.timeout.String())
+		return nil
+	}
+	c.store, c.writes, c.closer = cachestore.NewMemory(s.capacity, s.ttl), s.capacity > 0, nil
 	return nil
 }
 
@@ -222,8 +385,14 @@ const metaLookupKey = "response-cache.lookup_key"
 // way to a 404.
 func (c *ResponseCache) PreservesModel() {}
 
-// Close releases plugin resources.
-func (c *ResponseCache) Close() error { return nil }
+// Close releases the store's connections, if it holds any. A lookup after
+// Close is a miss and a store is dropped.
+func (c *ResponseCache) Close() error {
+	if c.closer == nil {
+		return nil
+	}
+	return c.closer()
+}
 
 // cloneResponse returns a shallow copy of resp so each cache hit gets its own
 // top-level struct. Route/RouteStream stamp Object/Created/OverheadMs on the
