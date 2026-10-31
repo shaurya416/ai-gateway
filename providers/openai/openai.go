@@ -157,22 +157,27 @@ func (g redirectGuard) RoundTrip(req *http.Request) (*http.Response, error) {
 //
 // It is the openai-go half of the adapter pattern bedrock uses for smithy
 // (providers/bedrock.bedrockInvokeError): only the package that imports an SDK
-// can name that SDK's error type, so each SDK gets a three-line adapter here and
+// can name that SDK's error type, so each SDK gets a small adapter here and
 // they all build the same core.HTTPStatusError. Nothing about the shared
 // contract is re-decided per provider.
 //
-// Two deliberate omissions:
+// "Exactly" means the same constructor over the same bytes. The SDK reads the
+// error body and puts it back on the response, so it is handed to
+// core.APIErrorFromResponse, which the chat path calls: the message comes out of
+// the same allow-listed envelopes, and the provider's code and type are kept.
+// Those two are part of the classification, not decoration — a context-window
+// refusal is told apart from every other 400 by them (core.IsContextLengthError),
+// and that decides whether a pool fails the request over and whether the
+// target's circuit breaker counts it. Building the error from the SDK's Message
+// alone dropped both, so the same refusal failed over on chat and stopped, and
+// counted against the breaker, on embeddings.
 //
-//   - The SDK error is NOT wrapped with %w. "Wrapping an error makes that error
-//     part of your API. Do not wrap an error when doing so would expose
-//     implementation details" (go.dev/blog/go1.13-errors). Exposing
-//     *openai.Error would commit the gateway to openai-go's error type
-//     permanently, and its Error() renders the full request URL plus the raw
-//     response JSON — text that would then ride out through every %v of the
-//     chain.
-//   - Only apiErr.Message is taken, never apiErr.RawJSON(). Message is the
-//     field the SDK decoded out of OpenAI's documented envelope; RawJSON is
-//     whatever the upstream sent.
+// The SDK error is NOT wrapped with %w. "Wrapping an error makes that error part
+// of your API. Do not wrap an error when doing so would expose implementation
+// details" (go.dev/blog/go1.13-errors). Exposing *openai.Error would commit the
+// gateway to openai-go's error type permanently, and its Error() renders the
+// full request URL plus the raw response JSON — text that would then ride out
+// through every %v of the chain.
 //
 // An error with no HTTP response — a dial failure, a cancelled context — is
 // returned untouched. It genuinely has no status, and inventing one would put
@@ -182,8 +187,28 @@ func sdkError(err error) error {
 	if !errors.As(err, &apiErr) || apiErr.Response == nil {
 		return err
 	}
-	return core.StatusError(Name, apiErr.StatusCode, apiErr.Message).
+	if body := sdkErrorBody(apiErr.Response); len(body) > 0 {
+		return core.APIErrorFromResponse(Name, apiErr.Response, body)
+	}
+	// No body to read: the fields the SDK decoded from OpenAI's envelope are
+	// all there is.
+	statusErr := core.StatusError(Name, apiErr.StatusCode, apiErr.Message).
 		WithRetryAfter(apiErr.Response.Header)
+	statusErr.Code, statusErr.Type = apiErr.Code, apiErr.Type
+	return statusErr
+}
+
+// sdkErrorBody returns the error body openai-go read and restored on resp, read
+// under the same bound as every other provider response.
+func sdkErrorBody(resp *http.Response) []byte {
+	if resp.Body == nil {
+		return nil
+	}
+	body, err := core.ReadResponseBody(resp.Body, core.MaxProviderResponseBytes)
+	if err != nil {
+		return nil
+	}
+	return body
 }
 
 // Name implements core.Provider.

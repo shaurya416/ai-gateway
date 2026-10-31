@@ -156,6 +156,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the drained one, whose credential is the one being revoked. A drained target
   is now not a candidate at all, so such a request is answered with the
   weighted target's own failure.
+- An `openai` target's refusal of an embeddings or image request now
+  classifies exactly as the same refusal of a chat request does. Those two
+  surfaces go through the OpenAI SDK, and the error was rebuilt from the SDK's
+  message alone, dropping the provider's error `code` and `type` — the fields
+  that tell a context-window refusal apart from every other `400`. So an input
+  longer than the embedding model's window stopped at that target under
+  `fallback` and every other pool mode instead of moving to a sibling, and it
+  counted toward the target's circuit breaker: a run of over-long inputs opened
+  the circuit and refused the target's chat traffic too. A compatible server
+  behind `OPENAI_BASE_URL` also lost its own words on these surfaces when it
+  wrote the error as a string or as a `detail` list, so a `422` naming the
+  offending field reached the caller as a bare `Unprocessable Entity`. The
+  error is now built from the response body by the constructor the chat path
+  uses.
 - `make test` runs the tests of the Go client (`client/`) and of the `run`
   and `httpgateway` packages. The target names its packages instead of
   `./...`, and the list named none of the three, so it reported success
