@@ -227,6 +227,53 @@ describe('PlaygroundPage', () => {
     ])
   })
 
+  it('hands the prompt back when a reply is stopped, so the next send does not carry two user turns', async () => {
+    // Stop discards the unfinished reply. Keeping the prompt as a turn of its
+    // own left a user turn with no answer after it, and every later send in
+    // the conversation carried two user turns in a row.
+    const user = userEvent.setup()
+    const encoder = new TextEncoder()
+    rawRequestMock
+      .mockImplementationOnce((_path: string, init: RequestInit) => {
+        let reads = 0
+        return Promise.resolve({
+          headers: new Headers(),
+          body: {
+            getReader: () => ({
+              read: () => {
+                if (reads++ === 0) {
+                  return Promise.resolve({ done: false, value: encoder.encode('data: {"choices":[{"delta":{"content":"Partial"}}]}\n') })
+                }
+                return new Promise((_resolve, reject) => {
+                  init.signal?.addEventListener('abort', () => reject(new DOMException('The operation was aborted.', 'AbortError')))
+                })
+              },
+            }),
+          },
+        } as unknown as Response)
+      })
+      .mockResolvedValueOnce(
+        streamResponse(['data: {"choices":[{"delta":{"content":"Second answer."}}]}\n', 'data: [DONE]\n']),
+      )
+    renderPage()
+
+    await user.type(await screen.findByLabelText('Message'), 'first')
+    await user.click(screen.getByRole('button', { name: /send/i }))
+    expect(await screen.findByText('Partial')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: /stop/i }))
+
+    expect(await screen.findByText(/Generation stopped/)).toBeInTheDocument()
+    expect(screen.getByLabelText('Message')).toHaveValue('first')
+
+    await user.clear(screen.getByLabelText('Message'))
+    await user.type(screen.getByLabelText('Message'), 'second')
+    await user.click(screen.getByRole('button', { name: /send/i }))
+    expect(await screen.findByText('Second answer.')).toBeInTheDocument()
+    expect(bodyOf(rawRequestMock.mock.calls[1] as unknown[]).messages).toEqual([
+      { role: 'user', content: 'second' },
+    ])
+  })
+
   it('names the target that served a streamed answer, from the header the gateway sends before the first chunk', async () => {
     // Streaming is the default, and the gateway names the serving target on
     // every routed response, streamed or not. The page used to say a streamed

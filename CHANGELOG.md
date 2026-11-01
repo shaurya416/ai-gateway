@@ -205,6 +205,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   as "The gateway did not respond in time" and the message rolled back while
   the gateway was still producing the reply. A streamed send is now unbounded
   like the non-streamed one, and Stop is what ends it early.
+- Stopping a Playground reply no longer leaves the conversation with an
+  unanswered user turn. Stop discarded the partial reply but kept the prompt
+  as a turn of its own and cleared the message box, so every later send in
+  that conversation carried two user turns in a row — which providers that
+  require alternating roles, Perplexity among them, refuse — exactly as a
+  failed or empty reply did before those were fixed. A stopped reply is now
+  undone like them: the turn comes off and the prompt goes back in the box.
 - A streamed chat request no longer has its target drawn over providers that
   cannot stream. Every other surface narrows a strategy's candidates to the
   targets able to serve it, but the stream order was drawn over every

@@ -51,6 +51,8 @@ type Turn = ChatMessage & { servedBy?: string }
 /** The controls this panel exposes, as the capability matrix names them. */
 const ADJUSTED_PARAMS = ['temperature', 'max_tokens'] as const
 
+const STOPPED_MESSAGE = 'Generation stopped. The message is back in the box to send again.'
+
 export function PlaygroundChat({
   models,
   loadingModels,
@@ -245,23 +247,19 @@ export function PlaygroundChat({
         elapsed: performance.now() - started,
       })
     } catch (streamError) {
-      if (streamError instanceof DOMException && streamError.name === 'AbortError') {
-        // The prompt really did reach the model; only the reply is
-        // incomplete. Clear the unfinished reply so the visible transcript
-        // matches what a retry would actually send — nothing, since it was
-        // never committed to messages.
-        setError('Generation stopped.')
-        setResponse('')
-      } else {
-        // Nothing usable came back — undo the optimistic user turn and hand
-        // the prompt back. Otherwise a retry builds on an orphaned "You"
-        // bubble and sends two consecutive user turns, which several
-        // providers reject outright.
-        setMessages((current) => current.slice(0, -1))
-        setPrompt(userText)
-        setResponse('')
-        setError(errorMessage(streamError, 'The completion request failed.'))
-      }
+      const stopped = streamError instanceof DOMException && streamError.name === 'AbortError'
+      setResponse('')
+      // Reset detaches the send before aborting it: the conversation it
+      // belonged to is gone, so nothing is restored into the new one.
+      if (stopped && requestController.current !== controller) return
+      // A stopped reply is discarded, so it is undone exactly like a failed
+      // one: the optimistic user turn comes off and the prompt goes back in
+      // the box. Otherwise a retry builds on an orphaned "You" bubble and
+      // sends two consecutive user turns, which several providers reject
+      // outright.
+      setMessages((current) => current.slice(0, -1))
+      setPrompt(userText)
+      setError(stopped ? STOPPED_MESSAGE : errorMessage(streamError, 'The completion request failed.'))
     } finally {
       setBusy(false)
       requestController.current = null
@@ -269,7 +267,9 @@ export function PlaygroundChat({
   }
 
   const reset = () => {
-    stop()
+    const pending = requestController.current
+    requestController.current = null
+    pending?.abort()
     setMessages([])
     setResponse('')
     setUsage(null)
@@ -287,7 +287,7 @@ export function PlaygroundChat({
 
   return (
     <div className="flex flex-col gap-3">
-      {error ? <Notice tone={error === 'Generation stopped.' ? 'warning' : 'error'}>{error}</Notice> : null}
+      {error ? <Notice tone={error === STOPPED_MESSAGE ? 'warning' : 'error'}>{error}</Notice> : null}
       <UnsupportedParams params={unsupported} provider={provider} />
 
       {/*
