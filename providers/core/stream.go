@@ -3,8 +3,15 @@ package core
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 )
+
+// ErrNoStreamFrame is a 200 whose stream ended before it delivered a single
+// chunk — an HTML page, an empty body, nothing but keep-alives. No completion
+// is that short, so it is a failure, not an empty answer. Every stream reader,
+// OpenAI-wire or native, ends such a body with it.
+var ErrNoStreamFrame = errors.New("stream ended before any chunk: the upstream answered 200 without a stream frame")
 
 // SendChunk sends c on ch unless ctx is done. It returns false when ctx was
 // cancelled before the send completed, signalling the producer goroutine to

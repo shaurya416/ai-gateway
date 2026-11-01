@@ -46,12 +46,14 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 
 		dec := anthropicwire.NewStreamDecoder("anthropic", "")
 		lines, scanErr := core.SSEDataLines(httpResp.Body)
+		delivered := false
 		for data := range lines {
 			chunks, evtErr := dec.Event([]byte(data))
 			for _, c := range chunks {
 				if !core.SendChunk(ctx, ch, c) {
 					return
 				}
+				delivered = true
 			}
 			if evtErr != nil {
 				core.SendChunk(ctx, ch, core.StreamChunk{Error: evtErr})
@@ -60,6 +62,12 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 		}
 		if err := scanErr(); err != nil {
 			core.SendChunk(ctx, ch, core.StreamChunk{Error: err})
+			return
+		}
+		// A 200 that delivered no chunk — an HTML page behind a misconfigured
+		// ANTHROPIC_BASE_URL, an empty body — is a failure, not an empty answer.
+		if !delivered {
+			core.SendChunk(ctx, ch, core.StreamChunk{Error: core.ErrNoStreamFrame})
 		}
 	}()
 

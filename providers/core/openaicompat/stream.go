@@ -3,7 +3,6 @@ package openaicompat
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 
@@ -89,9 +88,9 @@ func streamError(typ, msg string) error {
 // ErrNoStreamFrame is a 200 whose body ended without a single decodable frame
 // and without the [DONE] sentinel — an HTML page, an empty body, nothing but
 // keep-alives. No completion is that short, so it is a failure, not an empty
-// answer. It is exported for OpenAI-wire providers that read their own stream,
-// so every OpenAI-wire stream ends such a body the same way.
-var ErrNoStreamFrame = errors.New("stream ended before any chunk: the upstream answered 200 without a stream frame")
+// answer. It is core.ErrNoStreamFrame, the one every stream reader ends such a
+// body with, so errors.Is matches either name.
+var ErrNoStreamFrame = core.ErrNoStreamFrame
 
 // StreamSSE consumes an OpenAI-compatible SSE response body and returns a channel
 // of decoded chunks. Frames are read with core.SSEDataLines, so the space after

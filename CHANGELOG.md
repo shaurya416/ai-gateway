@@ -126,6 +126,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A streamed chat request to Anthropic, Gemini, Cohere or a Claude model on
+  Bedrock whose upstream answers `200` without a stream is now a failure, as
+  it already is on OpenAI and the OpenAI-compatible providers. These providers
+  read their own event streams, and none had the rule: an HTML page from a
+  catch-all route behind a misconfigured `<PROVIDER>_BASE_URL`, an empty body,
+  or nothing but keep-alives ended as an empty, successful stream — the
+  request log wrote a zero-token success row and the circuit breaker counted
+  a healthy call, while the same misconfiguration unstreamed failed to decode
+  and was reported as the failure it is. A stream that ends having delivered
+  no chunk now ends with an error chunk and takes the error path; a stream
+  that delivered any chunk is unchanged. `core.ErrNoStreamFrame` is the
+  error, and `openaicompat.ErrNoStreamFrame` is the same value.
 - A Gemini tool or `json_schema` response format whose object has a property
   named `definitions`, `additionalProperties`, `$ref` or another JSON Schema
   keyword Gemini rejects now reaches Gemini with that property. The schema

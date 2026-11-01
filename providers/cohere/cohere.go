@@ -462,6 +462,15 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 		// correlate the stream with the id, and with the model it asked for —
 		// Cohere echoes neither on the later events.
 		var msgID string
+		// send forwards one chunk and records that the stream delivered one.
+		delivered := false
+		send := func(c core.StreamChunk) bool {
+			if !core.SendChunk(ctx, ch, c) {
+				return false
+			}
+			delivered = true
+			return true
+		}
 		for data := range lines {
 
 			var event cohereStreamEvent
@@ -478,7 +487,7 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 				if json.Unmarshal(event.Delta, &delta) != nil {
 					continue
 				}
-				if !core.SendChunk(ctx, ch, core.StreamChunk{
+				if !send(core.StreamChunk{
 					ID:    msgID,
 					Model: req.Model,
 					Choices: []core.StreamChoice{
@@ -501,7 +510,7 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 				if !ok {
 					continue
 				}
-				if !core.SendChunk(ctx, ch, core.StreamChunk{
+				if !send(core.StreamChunk{
 					ID:    msgID,
 					Model: req.Model,
 					Choices: []core.StreamChoice{
@@ -524,7 +533,7 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 				if !ok {
 					continue
 				}
-				if !core.SendChunk(ctx, ch, core.StreamChunk{
+				if !send(core.StreamChunk{
 					ID:    msgID,
 					Model: req.Model,
 					Choices: []core.StreamChoice{
@@ -576,6 +585,12 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 		}
 		if err := scanErr(); err != nil {
 			core.SendChunk(ctx, ch, core.StreamChunk{Error: err})
+			return
+		}
+		// A 200 that delivered no chunk — an HTML page behind a misconfigured
+		// COHERE_BASE_URL, an empty body — is a failure, not an empty answer.
+		if !delivered {
+			core.SendChunk(ctx, ch, core.StreamChunk{Error: core.ErrNoStreamFrame})
 		}
 	}()
 

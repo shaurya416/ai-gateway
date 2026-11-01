@@ -823,6 +823,7 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 			wantFinished = *req.N
 		}
 		var lastID string
+		delivered := false
 		for data := range lines {
 
 			var chunk geminiStreamResponse
@@ -891,6 +892,7 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 			if !core.SendChunk(ctx, ch, sc) {
 				return
 			}
+			delivered = true
 		}
 		if err := scanErr(); err != nil {
 			core.SendChunk(ctx, ch, core.StreamChunk{Error: err, Usage: usage})
@@ -898,6 +900,12 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 		}
 		if usage != nil && !usageSent {
 			core.SendChunk(ctx, ch, core.StreamChunk{ID: lastID, Model: req.Model, Usage: usage})
+			return
+		}
+		// A 200 that delivered no chunk — an HTML page behind a misconfigured
+		// GEMINI_BASE_URL, an empty body — is a failure, not an empty answer.
+		if !delivered {
+			core.SendChunk(ctx, ch, core.StreamChunk{Error: core.ErrNoStreamFrame})
 		}
 	}()
 

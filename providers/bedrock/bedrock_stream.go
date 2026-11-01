@@ -60,6 +60,7 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 		// Anthropic's internal model name on message_start, which callers do not
 		// use for Bedrock routing.
 		dec := anthropicwire.NewStreamDecoder(Name, req.Model)
+		delivered := false
 		for event := range stream.Events() {
 			e, ok := event.(*types.ResponseStreamMemberChunk)
 			if !ok {
@@ -70,6 +71,7 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 				if !core.SendChunk(ctx, ch, c) {
 					return
 				}
+				delivered = true
 			}
 			if evtErr != nil {
 				core.SendChunk(ctx, ch, core.StreamChunk{Error: evtErr})
@@ -78,6 +80,12 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 		}
 		if err := stream.Err(); err != nil {
 			core.SendChunk(ctx, ch, core.StreamChunk{Error: err})
+			return
+		}
+		// An event stream that ended having delivered no chunk carried no
+		// answer, so it is a failure rather than an empty success.
+		if !delivered {
+			core.SendChunk(ctx, ch, core.StreamChunk{Error: core.ErrNoStreamFrame})
 		}
 	}()
 

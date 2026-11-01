@@ -93,3 +93,25 @@ func TestCompleteStream_ClientCancelMidStream_NoGoroutineLeak(t *testing.T) {
 	// pending send, close the event stream (stopping the feeder), and exit.
 	cancel()
 }
+
+// TestCompleteStream_NoChunkIsAFailure pins that an event stream which ends
+// without a single chunk is a failure, as it is on every other stream reader:
+// no completion is that short, and ending it cleanly recorded an empty
+// success and counted a healthy call against the target's breaker.
+func TestCompleteStream_NoChunkIsAFailure(t *testing.T) {
+	p := &Provider{name: Name, client: &fakeBedrockRuntimeClient{}}
+	ch, err := p.CompleteStream(context.Background(), core.Request{
+		Model:    "anthropic.claude-3-5-sonnet-20241022-v2:0",
+		Messages: []core.Message{{Role: core.RoleUser, Content: "hi"}},
+	})
+	if err != nil {
+		t.Fatalf("CompleteStream() error: %v", err)
+	}
+	var chunks []core.StreamChunk
+	for c := range ch {
+		chunks = append(chunks, c)
+	}
+	if len(chunks) != 1 || !errors.Is(chunks[0].Error, core.ErrNoStreamFrame) {
+		t.Fatalf("got %d chunks (%+v), want exactly one ErrNoStreamFrame chunk", len(chunks), chunks)
+	}
+}
