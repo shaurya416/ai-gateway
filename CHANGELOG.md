@@ -246,6 +246,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   header's `docker run` line also named an image the release does not publish
   and published no port; it now runs `ghcr.io/ferro-labs/ai-gateway:latest`
   with `-p 8080:8080`.
+- The image's `HEALTHCHECK` now probes the port the gateway listens on. The
+  server binds `PORT` (default `8080`), but both the source-built and the
+  release image checked `localhost:8080/readyz` whatever `PORT` said, so a
+  container started with `-e PORT=9000` served traffic on 9000 while Docker
+  reported it unhealthy — under Swarm, or behind a Compose `depends_on:
+  condition: service_healthy`, a ready gateway was replaced or waited on
+  forever. The check now reads `${PORT:-8080}` when it runs.
 - A tool declared with `"parameters": null` now reaches Anthropic and Claude
   on Bedrock with the empty object schema, as a tool with no `parameters`
   already did. Anthropic requires `input_schema` to be a schema object, and

@@ -28,7 +28,12 @@ USER ferro
 # /readyz, not /livez: an orchestrator that only knows the process is alive will
 # route traffic to an instance whose every target is unroutable. wget is in
 # busybox, so this adds no package.
+#
+# The port follows PORT, as the server does: Docker runs a shell-form CMD with
+# /bin/sh -c in the container's environment, so the expansion happens per
+# check. A fixed 8080 marked a gateway started with -e PORT=9000 unhealthy
+# while it served traffic.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD wget -qO- http://localhost:8080/readyz || exit 1
+    CMD wget -qO- "http://localhost:${PORT:-8080}/readyz" || exit 1
 
 ENTRYPOINT ["/bin/ferrogw"]
