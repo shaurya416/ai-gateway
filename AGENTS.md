@@ -1446,7 +1446,9 @@ disagreeing entries at gateway construction and **startup fails**, because two
 instances that never see each other's state both log "plugin registered" and neither
 does its job. Instance identity is `name` plus the JSON encoding of the whole
 `config` block — the same `store_id` with any other key differing is still two
-configs. `ferrogw validate` and `ferrogw doctor` both catch this.
+configs. `ferrogw validate` and `ferrogw doctor` both catch this. A block must
+therefore have a JSON form: a YAML mapping key that is not a string, `.nan` and
+`.inf` are load errors (`config/json_form.go`), anywhere in the config.
 
 Add such a plugin's name to `multiStagePlugins` in `config/example_plugin_stages_test.go`
 and give it both entries in `config.example.yaml` and `config.example.json`; the test

@@ -458,7 +458,7 @@ func ValidateConfig(cfg Config) error {
 		return err
 	}
 
-	return nil
+	return validateJSONForm(cfg)
 }
 
 // validateRequestBounds checks the two per-request bounds: max_request_bytes
@@ -492,6 +492,16 @@ func validateRequestBounds(cfg Config) error {
 // ValidateConfig — an admin reload, or an embedder assembling one in Go. A rule
 // added here is inherited by both.
 func ValidatePlugins(configs []PluginConfig) error {
+	// An entry with no JSON form has no sharing key, so it could not be told
+	// apart from, or matched with, its entry at another stage.
+	for i, pc := range configs {
+		if !pc.Enabled {
+			continue
+		}
+		if err := pluginJSONForm(i, pc); err != nil {
+			return err
+		}
+	}
 	if err := ValidateMultiStagePlugins(configs); err != nil {
 		return err
 	}
@@ -570,9 +580,11 @@ func validatePluginInstanceIDs(configs []PluginConfig) error {
 // what is being spread across, and the declared type is never consumed at
 // construction — a plugin reports its own Type.
 //
-// A config that cannot be encoded (only reachable for a config assembled in Go
-// rather than parsed from YAML or JSON) is reported unshareable, so it gets its
-// own instance instead of silently merging with another entry it may differ from.
+// A config that cannot be encoded is reported unshareable. YAML can produce one
+// — a mapping key that is not a string, .nan, .inf — and ValidatePlugins refuses
+// such an entry, so only a caller that skips it reaches this case; the entry
+// then gets its own instance instead of silently merging with another entry it
+// may differ from.
 //
 // ValidateMultiStagePlugins is what makes this identity safe to rely on: entries
 // that name one plugin across several stages must produce one key, or the config

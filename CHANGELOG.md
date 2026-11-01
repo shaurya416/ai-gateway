@@ -126,6 +126,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A YAML config carrying a value JSON cannot hold — a mapping key that is not
+  a string (`notes: {2026: raised}`), or `.nan` / `.inf` — is now refused at
+  load, naming where the value is. yaml.v3 decodes both without complaint,
+  but plugin entries are matched across stages by the JSON encoding of their
+  blocks, so a `response-cache` or `budget` listed at `before_request` and
+  `after_request` with such a value in its block became two instances that
+  never saw each other's state — the cache never served a hit and the budget
+  never recorded spend — and the check meant to refuse disagreeing entries
+  skipped them. A non-finite `targets[].weight` under a mode that ignores
+  weights loaded too, and `GET /admin/config` then answered with an empty
+  `200`.
 - With live model discovery on (`FERRO_MODEL_DISCOVERY_INTERVAL`), a
   discovered model in `/v1/models` is now owned by the target that serves it
   and carries that target's catalog metadata, as every catalog-sourced and
