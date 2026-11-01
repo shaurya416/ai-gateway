@@ -333,6 +333,10 @@ func TestGatewayContractUpstream429(t *testing.T) {
 // gateway's conditional strategy, and holds the client's limits to the ones
 // the gateway enforces: what the client accepts the gateway reads, and one
 // entry or one byte more is refused by both.
+// contractPriority is a caller's own numeric type, which encodes as a JSON
+// number like the int it is defined on.
+type contractPriority int
+
 func TestGatewayContractRoutingMetadata(t *testing.T) {
 	cfg := config.Config{
 		Strategy: config.StrategyConfig{
@@ -367,6 +371,9 @@ func TestGatewayContractRoutingMetadata(t *testing.T) {
 	}
 	if got := target(t, client.WithRoutingMetadata(map[string]any{"priority": 42})); got != "smart" {
 		t.Errorf("a numeric metadata value routed to %q, want smart", got)
+	}
+	if got := target(t, client.WithRoutingMetadata(map[string]any{"priority": contractPriority(42)})); got != "smart" {
+		t.Errorf("a metadata value of a defined numeric type routed to %q, want smart", got)
 	}
 	if got := target(t, client.WithRoutingMetadata(map[string]any{"tier": "bronze"})); got != "fast" {
 		t.Errorf("a non-matching value routed to %q, want fast", got)

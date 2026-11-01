@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"reflect"
 	"unicode/utf8"
 )
 
@@ -30,6 +31,8 @@ var ErrInvalidRoutingMetadata = errors.New("invalid routing metadata")
 //
 // Every value must be a string, a bool, or a finite number of any Go numeric
 // type (json.Number included); a nested object, an array or a nil is refused.
+// A type defined on one of those — time.Duration, a caller's own string enum —
+// is accepted when it encodes as a JSON string, number or boolean.
 // At most MaxRoutingMetadataEntries entries are allowed, and the encoded value
 // must fit in MaxRoutingMetadataBytes. A rule matches a value as a string, so
 // 42 and "42" select the same rule.
@@ -67,21 +70,13 @@ func EncodeRoutingMetadata(md map[string]any) (string, error) {
 
 // checkMetadataValue accepts the scalar kinds the gateway accepts: a JSON
 // string, number or boolean.
+//
+// The kind is read, not the type, so a type defined on one of those kinds — a
+// caller's own enum, time.Duration — is accepted as the value it encodes as.
+// Such a type may carry its own MarshalJSON or MarshalText, so its encoding is
+// checked as well: that, not the Go type, is what the gateway judges.
 func checkMetadataValue(value any) error {
 	switch v := value.(type) {
-	case string:
-		if !utf8.ValidString(v) {
-			return errors.New("is not valid UTF-8")
-		}
-		return nil
-	case bool,
-		int, int8, int16, int32, int64,
-		uint, uint8, uint16, uint32, uint64:
-		return nil
-	case float32:
-		return checkFinite(float64(v))
-	case float64:
-		return checkFinite(v)
 	case json.Number:
 		s := v.String()
 		if s == "" || (s[0] != '-' && (s[0] < '0' || s[0] > '9')) || !json.Valid([]byte(s)) {
@@ -90,8 +85,48 @@ func checkMetadataValue(value any) error {
 		return nil
 	case nil:
 		return errors.New("is null; values must be a string, number or boolean")
+	}
+	rv := reflect.ValueOf(value)
+	switch rv.Kind() {
+	case reflect.String:
+		if !utf8.ValidString(rv.String()) {
+			return errors.New("is not valid UTF-8")
+		}
+	case reflect.Bool,
+		reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+	case reflect.Float32, reflect.Float64:
+		if err := checkFinite(rv.Float()); err != nil {
+			return err
+		}
 	default:
 		return fmt.Errorf("is a %T; values must be a string, number or boolean", value)
+	}
+	if rv.Type().PkgPath() == "" {
+		// A predeclared type, whose encoding is the scalar itself.
+		return nil
+	}
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return fmt.Errorf("cannot be encoded: %w", err)
+	}
+	if !isJSONScalar(raw) {
+		return fmt.Errorf("is a %T, which encodes as %s; values must be a string, number or boolean", value, raw)
+	}
+	return nil
+}
+
+// isJSONScalar reports whether raw, a value json.Marshal produced, is a JSON
+// string, number or boolean.
+func isJSONScalar(raw []byte) bool {
+	if len(raw) == 0 {
+		return false
+	}
+	switch c := raw[0]; {
+	case c == '"', c == 't', c == 'f', c == '-':
+		return true
+	default:
+		return c >= '0' && c <= '9'
 	}
 }
 

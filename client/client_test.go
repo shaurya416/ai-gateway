@@ -566,6 +566,48 @@ func TestEncodeRoutingMetadata(t *testing.T) {
 	}
 }
 
+// Defined types over the scalar kinds, as callers name their own enums and
+// quantities.
+type (
+	metadataTier  string
+	metadataFlag  bool
+	metadataRatio float64
+	// metadataObject encodes as an object whatever its underlying kind.
+	metadataObject string
+)
+
+func (metadataObject) MarshalJSON() ([]byte, error) { return []byte(`{"nested":true}`), nil }
+
+// TestEncodeRoutingMetadataDefinedTypes covers values of a type defined on a
+// string, bool or numeric type — a caller's own enum, or time.Duration. Each
+// encodes as the JSON scalar the gateway accepts, so each is accepted; what is
+// judged is the encoding, so a defined type whose own MarshalJSON produces an
+// object is refused as an object is.
+func TestEncodeRoutingMetadataDefinedTypes(t *testing.T) {
+	got, err := EncodeRoutingMetadata(map[string]any{
+		"tier":    metadataTier("gold"),
+		"beta":    metadataFlag(true),
+		"ratio":   metadataRatio(0.25),
+		"timeout": 2 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("EncodeRoutingMetadata: %v", err)
+	}
+	if want := `{"beta":true,"ratio":0.25,"tier":"gold","timeout":2000000000}`; got != want {
+		t.Fatalf("got %s, want %s", got, want)
+	}
+
+	for name, value := range map[string]any{
+		"encodes as an object": metadataObject("x"),
+		"NaN":                  metadataRatio(nanValue()),
+		"invalid UTF-8":        metadataTier("\xff"),
+	} {
+		if got, err := EncodeRoutingMetadata(map[string]any{"k": value}); !errors.Is(err, ErrInvalidRoutingMetadata) {
+			t.Errorf("%s: got %q, %v; want ErrInvalidRoutingMetadata", name, got, err)
+		}
+	}
+}
+
 func nanValue() float64 {
 	zero := 0.0
 	return zero / zero

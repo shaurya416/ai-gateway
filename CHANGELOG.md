@@ -238,6 +238,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   one whose admin key was cut back to `read_only` was still listed as `admin`.
   A session minted from a stored key is now listed with that key's scopes; one
   minted from `MASTER_KEY` keeps `admin`.
+- The Go client's `WithRoutingMetadata` and `EncodeRoutingMetadata` accept a
+  value of a type defined on a string, bool or numeric type — a caller's own
+  `type Tier string`, a protobuf enum, `time.Duration`. The check matched the
+  predeclared types alone, so such a value was refused as "not a string, number
+  or boolean" and the call failed before any request was made, though it
+  encodes as exactly the JSON scalar the gateway accepts and routes on. The
+  check now reads the value's kind and, for a defined type, the JSON it
+  encodes as, so one whose own `MarshalJSON` produces an object or an array is
+  still refused.
 - The Go client reports a stream whose connection is cut before `[DONE]` as
   `ErrStreamTruncated`. Only a body that ended in a clean end-of-file was
   treated as truncated, but a connection that drops mid-stream — a gateway
