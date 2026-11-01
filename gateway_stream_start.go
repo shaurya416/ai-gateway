@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"runtime/trace"
 
+	"github.com/ferro-labs/ai-gateway/internal/strategies"
 	"github.com/ferro-labs/ai-gateway/pkg/circuitbreaker"
 	"github.com/ferro-labs/ai-gateway/providers"
 	"github.com/ferro-labs/ai-gateway/providers/core"
@@ -38,13 +39,13 @@ import (
 // already-successful stream the moment the clock ran out.
 // The third return is what the successful start hands the end of its stream —
 // see streamStart. The zero streamStart on failure.
-func (g *Gateway) startStreamWithStrategy(startCtx, streamCtx context.Context, req providers.Request) (routedTarget, <-chan providers.StreamChunk, streamStart, error) {
+func (g *Gateway) startStreamWithStrategy(startCtx, streamCtx context.Context, s strategies.Strategy, req providers.Request) (routedTarget, <-chan providers.StreamChunk, streamStart, error) {
 	g.mu.Lock()
 	g.ensureCircuitBreakersLocked()
 	g.ensureProviderLimitersLocked()
 	g.mu.Unlock()
 
-	plan, err := g.streamingPlan(req)
+	plan, err := g.streamingPlan(s, req)
 	if err != nil {
 		return routedTarget{}, nil, streamStart{}, err
 	}
@@ -245,20 +246,14 @@ func raceCompleteStream(waitCtx, streamCtx context.Context, sp providers.StreamP
 	}
 }
 
-// streamingPlan resolves the strategy — built from the same config Route
-// executes, with chat's rules — and plans the walk of the streaming target
-// order it selects, so both paths share one ordering implementation. It is
-// built over the targets that can stream (see strategyFor): a target that
-// cannot is not a candidate for a stream, so it must not win a weighted draw,
-// an A/B variant draw or a ranking slot it can never serve and hand the request
-// to whichever streaming target follows it. A strategy error surfaces
-// identically on both paths; for ValidateConfig-passing gateways it does not
-// error here.
-func (g *Gateway) streamingPlan(req providers.Request) (targetPlan, error) {
-	s, err := g.strategyFor(surfaceStream)
-	if err != nil {
-		return targetPlan{}, err
-	}
+// streamingPlan plans the walk of the streaming target order s selects for
+// req. s is the strategy strategyFor builds for surfaceStream — from the same
+// config Route executes, with chat's rules — so both paths share one ordering
+// implementation. It is built over the targets that can stream (see
+// strategyFor): a target that cannot is not a candidate for a stream, so it
+// must not win a weighted draw, an A/B variant draw or a ranking slot it can
+// never serve and hand the request to whichever streaming target follows it.
+func (g *Gateway) streamingPlan(s strategies.Strategy, req providers.Request) (targetPlan, error) {
 	keys, err := s.SelectTargets(req)
 	if err != nil {
 		return targetPlan{}, err

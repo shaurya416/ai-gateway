@@ -10,6 +10,7 @@ import (
 	"github.com/ferro-labs/ai-gateway/internal/latency"
 	"github.com/ferro-labs/ai-gateway/internal/strategies"
 	"github.com/ferro-labs/ai-gateway/models"
+	"github.com/ferro-labs/ai-gateway/plugin"
 	"github.com/ferro-labs/ai-gateway/providers"
 )
 
@@ -47,6 +48,40 @@ const surfaceStream = "chat.stream"
 func (g *Gateway) strategyFor(surface string) (strategies.Strategy, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	return g.strategyForLocked(surface)
+}
+
+// governedStrategy returns the strategy a request on surface is routed by and
+// the plugin manager it is governed by, acquired for the request, read under
+// one hold of the lock so both belong to one config.
+//
+// A request runs its before_request stage first and is routed afterwards, but
+// what it is routed by has to be decided when its plugins are: a reload
+// installs a config's plugins and its targets together, and a request handed
+// the plugins of one and the strategy of the next reached the new config's
+// targets having been screened by none of its guardrails. The strategy is
+// still asked for an order only after the stage, on the request the stage
+// settled on.
+//
+// The returned release must be called once the request has finished with the
+// plugins, whether or not err is nil.
+func (g *Gateway) governedStrategy(surface string) (strategies.Strategy, *plugin.Manager, func(), error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.governedStrategyLocked(surface)
+}
+
+// governedStrategyLocked is governedStrategy for a caller holding g.mu for
+// writing, so it can take the rest of its request snapshot in the same hold.
+func (g *Gateway) governedStrategyLocked(surface string) (strategies.Strategy, *plugin.Manager, func(), error) {
+	plugins := g.plugins
+	release := acquirePluginManager(plugins)
+	s, err := g.strategyForLocked(surface)
+	return s, plugins, release, err
+}
+
+// strategyForLocked is strategyFor for a caller holding g.mu for writing.
+func (g *Gateway) strategyForLocked(surface string) (strategies.Strategy, error) {
 	if s, ok := g.strategies[surface]; ok {
 		return s, nil
 	}

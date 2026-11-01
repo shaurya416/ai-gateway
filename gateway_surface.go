@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/ferro-labs/ai-gateway/internal/redact"
+	"github.com/ferro-labs/ai-gateway/internal/strategies"
 	"github.com/ferro-labs/ai-gateway/models"
 	"github.com/ferro-labs/ai-gateway/observability"
 	"github.com/ferro-labs/ai-gateway/pkg/logger"
@@ -225,15 +226,21 @@ func elapsedMs(start time.Time) float64 {
 // handed the model the stage settled on. user is the request body's `user`, ""
 // on a surface whose body has none. On failure the record is returned alongside
 // the error so the caller can still label metrics with the target that failed.
-func (g *Gateway) runSurfaceGovernance(ctx context.Context, surface string, span observability.Span, start time.Time, model, user string, content any, call func(context.Context, string) (surfaceRecord, error)) (surfaceRecord, error) {
-	g.mu.RLock()
-	plugins := g.plugins
-	release := acquirePluginManager(plugins)
-	g.mu.RUnlock()
+func (g *Gateway) runSurfaceGovernance(ctx context.Context, surface string, span observability.Span, start time.Time, model, user string, content any, call func(context.Context, strategies.Strategy, string) (surfaceRecord, error)) (surfaceRecord, error) {
+	// call routes by the strategy read with the plugins, so the request is
+	// governed and routed by one config (see governedStrategy). A strategy that
+	// cannot be built fails the call, at the point the call would have built it.
+	strategy, plugins, release, strategyErr := g.governedStrategy(surface)
 	defer release()
+	route := func(ctx context.Context, model string) (surfaceRecord, error) {
+		if strategyErr != nil {
+			return surfaceRecord{routedModel: model}, strategyErr
+		}
+		return call(ctx, strategy, model)
+	}
 
 	if !plugins.HasPlugins() {
-		return call(ctx, model)
+		return route(ctx, model)
 	}
 
 	// The surface's request in the only request shape the seam can hold: the
@@ -312,7 +319,7 @@ func (g *Gateway) runSurfaceGovernance(ctx context.Context, surface string, span
 	pctx.SkipProvider = false
 	pctx.Response = nil
 
-	record, err := call(ctx, model)
+	record, err := route(ctx, model)
 	// Set on both paths from the same field: on success it is the target that
 	// answered, on failure the last one attempted. These two surfaces had the
 	// same blind spot chat did — a failed embeddings request left a row that
@@ -395,9 +402,9 @@ func (g *Gateway) Embed(ctx context.Context, req providers.EmbeddingRequest) (*p
 	req.Model = g.resolveModelAlias(req.Model)
 
 	var resp *providers.EmbeddingResponse
-	record, err := g.runSurfaceGovernance(ctx, surfaceEmbeddings, span, start, req.Model, req.User, req.Input, func(ctx context.Context, model string) (surfaceRecord, error) {
+	record, err := g.runSurfaceGovernance(ctx, surfaceEmbeddings, span, start, req.Model, req.User, req.Input, func(ctx context.Context, s strategies.Strategy, model string) (surfaceRecord, error) {
 		req.Model = model
-		embedded, target, routeErr := g.routeEmbedding(ctx, req)
+		embedded, target, routeErr := g.routeEmbedding(ctx, s, req)
 		if routeErr != nil {
 			// target still names the last target attempted, which is what a
 			// per-provider error series needs to be worth anything.
@@ -468,9 +475,9 @@ func (g *Gateway) GenerateImage(ctx context.Context, req providers.ImageRequest)
 	req.Model = g.resolveModelAlias(req.Model)
 
 	var resp *providers.ImageResponse
-	record, err := g.runSurfaceGovernance(ctx, surfaceImages, span, start, req.Model, req.User, req.Prompt, func(ctx context.Context, model string) (surfaceRecord, error) {
+	record, err := g.runSurfaceGovernance(ctx, surfaceImages, span, start, req.Model, req.User, req.Prompt, func(ctx context.Context, s strategies.Strategy, model string) (surfaceRecord, error) {
 		req.Model = model
-		generated, target, routeErr := g.routeImage(ctx, req)
+		generated, target, routeErr := g.routeImage(ctx, s, req)
 		if routeErr != nil {
 			return surfaceRecord{provider: target.key, attempts: target.attempts, routedModel: req.Model, abVariantLabel: target.abVariantLabel, hasABVariant: target.hasABVariant}, routeErr
 		}
@@ -542,9 +549,9 @@ func (g *Gateway) Rerank(ctx context.Context, req providers.RerankRequest) (*pro
 	content = append(content, req.Documents...)
 
 	var resp *providers.RerankResponse
-	record, err := g.runSurfaceGovernance(ctx, surfaceRerank, span, start, req.Model, "", content, func(ctx context.Context, model string) (surfaceRecord, error) {
+	record, err := g.runSurfaceGovernance(ctx, surfaceRerank, span, start, req.Model, "", content, func(ctx context.Context, s strategies.Strategy, model string) (surfaceRecord, error) {
 		req.Model = model
-		reranked, target, routeErr := g.routeRerank(ctx, req)
+		reranked, target, routeErr := g.routeRerank(ctx, s, req)
 		if routeErr != nil {
 			// target still names the last target attempted, which a per-provider
 			// error series needs to be worth anything.
@@ -610,9 +617,9 @@ func (g *Gateway) Moderate(ctx context.Context, req providers.ModerationRequest)
 	req.Model = g.resolveModelAlias(req.Model)
 
 	var resp *providers.ModerationResponse
-	record, err := g.runSurfaceGovernance(ctx, surfaceModeration, span, start, req.Model, "", moderationContent(req.Input), func(ctx context.Context, model string) (surfaceRecord, error) {
+	record, err := g.runSurfaceGovernance(ctx, surfaceModeration, span, start, req.Model, "", moderationContent(req.Input), func(ctx context.Context, s strategies.Strategy, model string) (surfaceRecord, error) {
 		req.Model = model
-		moderated, target, routeErr := g.routeModeration(ctx, req)
+		moderated, target, routeErr := g.routeModeration(ctx, s, req)
 		if routeErr != nil {
 			return surfaceRecord{provider: target.key, attempts: target.attempts, routedModel: req.Model, abVariantLabel: target.abVariantLabel, hasABVariant: target.hasABVariant}, routeErr
 		}
@@ -675,9 +682,9 @@ func (g *Gateway) Transcribe(ctx context.Context, req providers.TranscriptionReq
 	req.Model = g.resolveModelAlias(req.Model)
 
 	var resp *providers.TranscriptionResponse
-	record, err := g.runSurfaceGovernance(ctx, surfaceTranscription, span, start, req.Model, "", req.Prompt, func(ctx context.Context, model string) (surfaceRecord, error) {
+	record, err := g.runSurfaceGovernance(ctx, surfaceTranscription, span, start, req.Model, "", req.Prompt, func(ctx context.Context, s strategies.Strategy, model string) (surfaceRecord, error) {
 		req.Model = model
-		transcribed, target, routeErr := g.routeTranscription(ctx, req)
+		transcribed, target, routeErr := g.routeTranscription(ctx, s, req)
 		if routeErr != nil {
 			return surfaceRecord{provider: target.key, attempts: target.attempts, routedModel: req.Model, abVariantLabel: target.abVariantLabel, hasABVariant: target.hasABVariant}, routeErr
 		}
@@ -739,9 +746,9 @@ func (g *Gateway) Speech(ctx context.Context, req providers.SpeechRequest) (*pro
 	req.Model = g.resolveModelAlias(req.Model)
 
 	var resp *providers.SpeechResponse
-	record, err := g.runSurfaceGovernance(ctx, surfaceSpeech, span, start, req.Model, "", req.Input, func(ctx context.Context, model string) (surfaceRecord, error) {
+	record, err := g.runSurfaceGovernance(ctx, surfaceSpeech, span, start, req.Model, "", req.Input, func(ctx context.Context, s strategies.Strategy, model string) (surfaceRecord, error) {
 		req.Model = model
-		synthesized, target, routeErr := g.routeSpeech(ctx, req)
+		synthesized, target, routeErr := g.routeSpeech(ctx, s, req)
 		if routeErr != nil {
 			return surfaceRecord{provider: target.key, attempts: target.attempts, routedModel: req.Model, abVariantLabel: target.abVariantLabel, hasABVariant: target.hasABVariant}, routeErr
 		}
@@ -1001,8 +1008,8 @@ func speak(ctx context.Context, p providers.Provider, req providers.SpeechReques
 // EmbeddingProvider, not registered) the request is refused: targets is an
 // allowlist, so a provider that is registered but not listed never serves a
 // request, on this surface or any other.
-func (g *Gateway) routeEmbedding(ctx context.Context, req providers.EmbeddingRequest) (*providers.EmbeddingResponse, routedTarget, error) {
-	plan, err := g.surfacePlan(providers.Request{Model: req.Model, User: req.User}, surfaceEmbeddings)
+func (g *Gateway) routeEmbedding(ctx context.Context, s strategies.Strategy, req providers.EmbeddingRequest) (*providers.EmbeddingResponse, routedTarget, error) {
+	plan, err := g.surfacePlan(s, providers.Request{Model: req.Model, User: req.User})
 	if err != nil {
 		return nil, routedTarget{}, err
 	}
@@ -1011,8 +1018,8 @@ func (g *Gateway) routeEmbedding(ctx context.Context, req providers.EmbeddingReq
 
 // routeImage is routeEmbedding's counterpart for image generation; see its doc
 // comment for the shared pipeline it attaches to.
-func (g *Gateway) routeImage(ctx context.Context, req providers.ImageRequest) (*providers.ImageResponse, routedTarget, error) {
-	plan, err := g.surfacePlan(providers.Request{Model: req.Model, User: req.User}, surfaceImages)
+func (g *Gateway) routeImage(ctx context.Context, s strategies.Strategy, req providers.ImageRequest) (*providers.ImageResponse, routedTarget, error) {
+	plan, err := g.surfacePlan(s, providers.Request{Model: req.Model, User: req.User})
 	if err != nil {
 		return nil, routedTarget{}, err
 	}
@@ -1021,8 +1028,8 @@ func (g *Gateway) routeImage(ctx context.Context, req providers.ImageRequest) (*
 
 // routeRerank is routeEmbedding's counterpart for reranking; see its doc comment
 // for the shared pipeline it attaches to.
-func (g *Gateway) routeRerank(ctx context.Context, req providers.RerankRequest) (*providers.RerankResponse, routedTarget, error) {
-	plan, err := g.surfacePlan(providers.Request{Model: req.Model}, surfaceRerank)
+func (g *Gateway) routeRerank(ctx context.Context, s strategies.Strategy, req providers.RerankRequest) (*providers.RerankResponse, routedTarget, error) {
+	plan, err := g.surfacePlan(s, providers.Request{Model: req.Model})
 	if err != nil {
 		return nil, routedTarget{}, err
 	}
@@ -1031,8 +1038,8 @@ func (g *Gateway) routeRerank(ctx context.Context, req providers.RerankRequest) 
 
 // routeModeration is routeEmbedding's counterpart for moderation; see its doc
 // comment for the shared pipeline it attaches to.
-func (g *Gateway) routeModeration(ctx context.Context, req providers.ModerationRequest) (*providers.ModerationResponse, routedTarget, error) {
-	plan, err := g.surfacePlan(providers.Request{Model: req.Model}, surfaceModeration)
+func (g *Gateway) routeModeration(ctx context.Context, s strategies.Strategy, req providers.ModerationRequest) (*providers.ModerationResponse, routedTarget, error) {
+	plan, err := g.surfacePlan(s, providers.Request{Model: req.Model})
 	if err != nil {
 		return nil, routedTarget{}, err
 	}
@@ -1041,8 +1048,8 @@ func (g *Gateway) routeModeration(ctx context.Context, req providers.ModerationR
 
 // routeTranscription is routeEmbedding's counterpart for audio transcription;
 // see its doc comment for the shared pipeline it attaches to.
-func (g *Gateway) routeTranscription(ctx context.Context, req providers.TranscriptionRequest) (*providers.TranscriptionResponse, routedTarget, error) {
-	plan, err := g.surfacePlan(providers.Request{Model: req.Model}, surfaceTranscription)
+func (g *Gateway) routeTranscription(ctx context.Context, s strategies.Strategy, req providers.TranscriptionRequest) (*providers.TranscriptionResponse, routedTarget, error) {
+	plan, err := g.surfacePlan(s, providers.Request{Model: req.Model})
 	if err != nil {
 		return nil, routedTarget{}, err
 	}
@@ -1051,8 +1058,8 @@ func (g *Gateway) routeTranscription(ctx context.Context, req providers.Transcri
 
 // routeSpeech is routeEmbedding's counterpart for text-to-speech; see its doc
 // comment for the shared pipeline it attaches to.
-func (g *Gateway) routeSpeech(ctx context.Context, req providers.SpeechRequest) (*providers.SpeechResponse, routedTarget, error) {
-	plan, err := g.surfacePlan(providers.Request{Model: req.Model}, surfaceSpeech)
+func (g *Gateway) routeSpeech(ctx context.Context, s strategies.Strategy, req providers.SpeechRequest) (*providers.SpeechResponse, routedTarget, error) {
+	plan, err := g.surfacePlan(s, providers.Request{Model: req.Model})
 	if err != nil {
 		return nil, routedTarget{}, err
 	}
@@ -1069,28 +1076,27 @@ func (g *Gateway) routeSpeech(ctx context.Context, req providers.SpeechRequest) 
 // strategyFor); whether the walk advances past a failure is planFor's
 // question. Order is all this decides.
 func (g *Gateway) surfaceTargetOrder(req providers.Request, surface string) ([]string, error) {
-	plan, err := g.surfacePlan(req, surface)
-	return plan.keys, err
-}
-
-// surfacePlan is surfaceTargetOrder's order planned for the walk, from the one
-// strategy that produced it.
-func (g *Gateway) surfacePlan(req providers.Request, surface string) (targetPlan, error) {
 	// Content-based routing on these surfaces is part of the strategy itself
 	// (see firstServingTarget), so the mode that decides it is read under the
 	// same hold of the lock the strategy is built under: a reload that switches
 	// modes cannot send one request down the path of a config no longer in
-	// force. The walk's own settings travel with the strategy for the same
-	// reason (see builtStrategy).
+	// force.
 	strategy, err := g.strategyFor(surface)
 	if err != nil {
-		return targetPlan{}, err
+		return nil, err
 	}
-	keys, err := strategy.SelectTargets(req)
+	plan, err := g.surfacePlan(strategy, req)
+	return plan.keys, err
+}
+
+// surfacePlan is the walk of the candidate order s selects for req, planned
+// under the settings s was built with (see builtStrategy).
+func (g *Gateway) surfacePlan(s strategies.Strategy, req providers.Request) (targetPlan, error) {
+	keys, err := s.SelectTargets(req)
 	if err != nil {
 		return targetPlan{}, err
 	}
-	return g.planFor(strategy, req.Model, keys), nil
+	return g.planFor(s, req.Model, keys), nil
 }
 
 func providerSupportsSurface(p providers.Provider, surface string) bool {

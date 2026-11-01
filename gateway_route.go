@@ -214,7 +214,10 @@ func (g *Gateway) route(ctx context.Context, req providers.Request, held *mcpHol
 
 	// Start the observability root span. NoOp provider makes this a
 	// zero-allocation call when tracing is disabled.
-	g.mu.RLock()
+	//
+	// The write lock, because the strategy is built under it by the first
+	// request after a reload.
+	g.mu.Lock()
 	strategyMode := string(g.config.Strategy.Mode)
 	compatMode := g.config.Compatibility.OnUnsupportedParam
 	requestTimeout := g.config.RequestTimeout
@@ -226,9 +229,10 @@ func (g *Gateway) route(ctx context.Context, req providers.Request, held *mcpHol
 		mcpRegistrySnapshot, mcpExecutorSnapshot = held.registry, held.executor
 	}
 	releaseMCP := acquireMCPRegistry(mcpRegistrySnapshot)
-	plugins := g.plugins
-	releasePlugins := acquirePluginManager(plugins)
-	g.mu.RUnlock()
+	// The plugins and the strategy are read in this one hold, so the request is
+	// governed and routed by one config (see governedStrategy).
+	s, plugins, releasePlugins, strategyErr := g.governedStrategyLocked("")
+	g.mu.Unlock()
 	defer releasePlugins()
 	defer releaseMCP()
 
@@ -280,10 +284,10 @@ func (g *Gateway) route(ctx context.Context, req providers.Request, held *mcpHol
 	// caller who was entitled to a real stream.
 	callerSentTools := len(req.Tools) > 0
 
-	s, err := g.getStrategy()
-	if err != nil {
-		return nil, err
+	if strategyErr != nil {
+		return nil, strategyErr
 	}
+	var err error
 
 	// Run before-request plugins (guardrails, transforms, rate-limit).
 	pctx := g.newPluginContext(ctx, plugins, span, &req)

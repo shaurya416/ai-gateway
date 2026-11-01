@@ -52,7 +52,10 @@ func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-cha
 	// streamwrap.Meter when the stream drains (via the SpanFinisher
 	// closure below). On the synchronous error paths below we end it
 	// explicitly. streamEnded prevents a double-End.
-	g.mu.RLock()
+	//
+	// The write lock, because the strategy is built under it by the first
+	// request after a reload.
+	g.mu.Lock()
 	strategyMode := string(g.config.Strategy.Mode)
 	compatMode := g.config.Compatibility.OnUnsupportedParam
 	requestTimeout := g.config.RequestTimeout
@@ -67,9 +70,12 @@ func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-cha
 	// whole life would keep a retired registry's subprocesses running.
 	releaseMCP := acquireMCPRegistry(mcpRegistrySnapshot)
 	defer releaseMCP()
-	plugins := g.plugins
-	releasePlugins := acquirePluginManager(plugins)
-	g.mu.RUnlock()
+	// The plugins and the strategy are read in this one hold, so the stream is
+	// governed and routed by one config: the strategy is asked for an order only
+	// after the before_request stage, and fetched then, it was the strategy of
+	// whatever config a reload had installed meanwhile (see governedStrategy).
+	stream, plugins, releasePlugins, strategyErr := g.governedStrategyLocked(surfaceStream)
+	g.mu.Unlock()
 
 	ctx = withUnsupportedParamMode(ctx, compatMode)
 	var releasePluginsOnce sync.Once
@@ -174,7 +180,14 @@ func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-cha
 	// timer, deferred here purely so a panic can't leak it.
 	startCtx, cancelStart := withRequestDeadline(ctx, requestTimeout)
 	defer cancelStart()
-	target, rawCh, started, err := g.startStreamWithStrategy(startCtx, ctx, req)
+	var (
+		target  routedTarget
+		rawCh   <-chan providers.StreamChunk
+		started streamStart
+	)
+	if err = strategyErr; err == nil {
+		target, rawCh, started, err = g.startStreamWithStrategy(startCtx, ctx, stream, req)
+	}
 	providerName := target.key
 	span.SetAttribute(observability.AttrGenAISystem, providerName)
 	// Stamp the resolved target key (virtual key = provider name in this routing layer).

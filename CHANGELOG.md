@@ -147,6 +147,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   skipped them. A non-finite `targets[].weight` under a mode that ignores
   weights loaded too, and `GET /admin/config` then answered with an empty
   `200`.
+- A streamed chat request, or an embeddings, image, rerank, moderation or
+  audio request, in flight while a config reload lands is governed and routed
+  by one config. Its plugins were read when the request started and its
+  routing strategy only after the `before_request` stage had run, so a reload
+  landing during the stage sent the request to the new config's targets
+  without the new config's guardrails having read it: a reload from a config
+  routing to `a` to one routing to `b` behind a word filter delivered a prompt
+  the filter blocks to `b`. The strategy is now read in the same hold of the
+  lock as the plugins, as non-streaming chat already did in all but a narrow
+  window, which is closed too.
 - A request in flight while a config reload changes the routing mode is walked
   under the mode of the strategy it started with. A chat request holds its
   strategy from the start of the request — across the `before_request` stage
