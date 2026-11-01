@@ -235,6 +235,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to the container as an optional `env_file`; a value set under `environment:`
   still wins. A direct `docker compose -f deploy/...` invocation has to add
   `--env-file .env` itself to substitute from it.
+- `.env.example` now works with the loaders its own header names. Its
+  commented-out settings carried a trailing `# note` on the same line, which a
+  shell's `source` and Compose drop but `docker run --env-file` and
+  `kubectl create secret --from-env-file` keep as part of the value: an
+  uncommented `GATEWAY_ENV=production        # turns on production-mode …`
+  left production mode off, and the same shape corrupted a Databricks token,
+  an Azure `api-version`, the Replicate and Ollama model lists, the trusted
+  proxy CIDRs and the OTLP endpoint. Every note now sits on its own line. The
+  header's `docker run` line also named an image the release does not publish
+  and published no port; it now runs `ghcr.io/ferro-labs/ai-gateway:latest`
+  with `-p 8080:8080`.
 - A tool declared with `"parameters": null` now reaches Anthropic and Claude
   on Bedrock with the empty object schema, as a tool with no `parameters`
   already did. Anthropic requires `input_schema` to be a schema object, and
