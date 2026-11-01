@@ -433,13 +433,13 @@ func (m *GatewayConfigManager) GetConfig() config.Config {
 // reachable, so it returns nil. A nil manager is not initialized and must
 // fail closed rather than dereference m.store.
 //
-// It also fails once ReloadConfig has recorded a divergence it could not undo,
-// which is not a reachability question but is answered here because readiness
-// is what has to change. An instance running a config its store disagrees with
-// serves traffic under settings that vanish on the next restart — the store
-// wins on boot — so it must leave rotation, and the flag never clears because
-// nothing short of a restart resolves which config is real. Exiting instead
-// would turn one failed write into a crash loop.
+// It also fails once ReloadConfig or ResetConfig has recorded a divergence it
+// could not undo, which is not a reachability question but is answered here
+// because readiness is what has to change. An instance running a config its
+// store disagrees with serves traffic under settings that vanish on the next
+// restart — the store wins on boot — so it must leave rotation, and the flag
+// never clears because nothing short of a restart resolves which config is
+// real. Exiting instead would turn one failed write into a crash loop.
 func (m *GatewayConfigManager) Ping(ctx context.Context) error {
 	if m == nil {
 		return fmt.Errorf("config manager ping: manager not initialized")
@@ -642,6 +642,8 @@ func (m *GatewayConfigManager) ResetConfig(ctx context.Context) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	previousCfg := m.gw.GetConfig()
+
 	if err := m.gw.ReloadConfig(ctx, m.initial); err != nil {
 		return err
 	}
@@ -652,10 +654,29 @@ func (m *GatewayConfigManager) ResetConfig(ctx context.Context) error {
 			// replaced — and a restart would load that override back. Record
 			// what is actually running instead, so the two agree even though
 			// clearing the override failed.
-			if saveErr := m.store.Save(ctx, m.initial); saveErr != nil {
-				return errors.Join(ErrConfigPersistence, err, saveErr)
+			saveErr := m.store.Save(ctx, m.initial)
+			if saveErr == nil {
+				return errors.Join(ErrConfigPersistence, err)
 			}
-			return errors.Join(ErrConfigPersistence, err)
+			// Neither write landed, so the store still holds the override.
+			// Put the gateway back on it, as ReloadConfig does when its
+			// persist fails, rather than run a config the next boot discards.
+			if revertErr := m.gw.ReloadConfig(ctx, previousCfg); revertErr != nil {
+				// See ReloadConfig: no config this process can return to.
+				m.diverged.Store(true)
+				logger.Default().Error(
+					"config reset persist and revert both failed; the running config no longer matches the store and this instance is now reporting not ready",
+					"persist_error", errors.Join(err, saveErr),
+					"revert_error", revertErr,
+				)
+				return errors.Join(
+					ErrConfigPersistence,
+					err,
+					saveErr,
+					fmt.Errorf("revert applied config failed: %w", revertErr),
+				)
+			}
+			return errors.Join(ErrConfigPersistence, err, saveErr)
 		}
 	}
 	return nil

@@ -207,6 +207,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   keeps a config applied through `PUT /admin/config` across a restart — went
   unmentioned. An in-memory config store now names `CONFIG_STORE_BACKEND`, and
   an in-memory key store `API_KEY_STORE_BACKEND`.
+- A `DELETE /admin/config` the config store cannot record no longer leaves the
+  gateway running a config the next start discards. A reset applies the
+  startup config and then clears the persisted override; when the clear failed
+  and recording the startup config in its place failed too — the database
+  unreachable, or the client hanging up, since both writes run on the
+  request's context — the caller was answered `500 failed to reset config`
+  while the gateway served the startup config, the instance stayed ready, and
+  the next start adopted the override back. A failed persist of an update
+  already put the gateway back on its previous config. A reset now does the
+  same, and when that revert fails too the instance stops reporting ready, as
+  an update's double failure does.
 - `GET /admin/sessions` now lists each dashboard session with the scopes it
   authenticates with. A session is admitted under its source key's current
   scopes, so changing that key's scopes takes effect on the session at once,
