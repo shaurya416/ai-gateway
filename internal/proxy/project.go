@@ -3,6 +3,7 @@ package proxy
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -77,44 +78,94 @@ func projectBody(r *http.Request) (text, model string, inspectable bool) {
 		return "", "", false
 	}
 
-	var doc any
-	if err := json.Unmarshal(buf, &doc); err != nil {
+	if !json.Valid(buf) {
 		return "", "", false
 	}
-	if fields, ok := doc.(map[string]any); ok {
-		model, _ = fields["model"].(string)
-	}
-
-	var sb strings.Builder
-	collectStrings(doc, &sb)
-	return sb.String(), model, true
+	return projectJSON(buf)
 }
 
-// collectStrings appends every string value reachable from v to sb, one per
-// line. Numbers, booleans and nulls are skipped: a blocklist is a policy about
-// prose, and no useful rule matches "3.14".
-func collectStrings(v any, sb *strings.Builder) {
-	switch t := v.(type) {
-	case string:
-		if t == "" {
-			return
+// projectJSON joins every non-empty string value of the valid JSON document
+// doc, one per line in document order, and returns its top-level "model".
+// inspectable is false only when doc could not be read to its end.
+//
+// The document is read token by token rather than decoded into a map, because
+// a decoded map keeps only the last value of a key the body names twice. The
+// body is forwarded verbatim, and which of those values the upstream reads is
+// its parser's choice — some keep the first — so a prompt written first and
+// followed by a harmless one under the same key reached the upstream unscreened.
+// Every value is collected instead.
+//
+// model is the last string spelled under a top-level "model" key, the value
+// encoding/json reads into a map: a later non-string spelling reads as none.
+func projectJSON(doc []byte) (text, model string, inspectable bool) {
+	type container struct {
+		object    bool
+		expectKey bool   // object only: the next token is a key
+		key       string // object only: the key the next value belongs to
+	}
+	var (
+		sb    strings.Builder
+		stack []container
+	)
+	// valueRead records that a value has ended: the next token of an
+	// enclosing object is a key again.
+	valueRead := func() {
+		if n := len(stack); n > 0 && stack[n-1].object {
+			stack[n-1].expectKey = true
 		}
-		if sb.Len() > 0 {
-			sb.WriteByte('\n')
+	}
+	dec := json.NewDecoder(bytes.NewReader(doc))
+	// A number is never decoded, so one past float64's range, which is valid
+	// JSON, cannot end the walk early.
+	dec.UseNumber()
+	for {
+		tok, err := dec.Token()
+		if errors.Is(err, io.EOF) {
+			return sb.String(), model, true
 		}
-		sb.WriteString(t)
-	case []any:
-		for _, item := range t {
-			collectStrings(item, sb)
+		if err != nil {
+			return "", "", false
 		}
-	case map[string]any:
-		// Map iteration order is random, so the projection's ORDER is not
-		// stable between two identical requests. Nothing here depends on order:
-		// a guardrail matches substrings within a single value, and a value is
-		// never split across the join. A plugin that hashed this projection
-		// would be the first thing to care, and none does.
-		for _, item := range t {
-			collectStrings(item, sb)
+		topLevelModel := len(stack) == 1 && stack[0].object && !stack[0].expectKey && stack[0].key == "model"
+		switch t := tok.(type) {
+		case json.Delim:
+			switch t {
+			case '{':
+				if topLevelModel {
+					model = ""
+				}
+				stack = append(stack, container{object: true, expectKey: true})
+			case '[':
+				if topLevelModel {
+					model = ""
+				}
+				stack = append(stack, container{})
+			default:
+				stack = stack[:len(stack)-1]
+				valueRead()
+			}
+			continue
+		case string:
+			if n := len(stack); n > 0 && stack[n-1].object && stack[n-1].expectKey {
+				stack[n-1].key, stack[n-1].expectKey = t, false
+				continue
+			}
+			if topLevelModel {
+				model = t
+			}
+			if t != "" {
+				if sb.Len() > 0 {
+					sb.WriteByte('\n')
+				}
+				sb.WriteString(t)
+			}
+		default:
+			// Numbers, booleans and nulls are skipped: a blocklist is a
+			// policy about prose, and no useful rule matches "3.14".
+			if topLevelModel {
+				model = ""
+			}
 		}
+		valueRead()
 	}
 }

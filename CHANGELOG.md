@@ -126,6 +126,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A content guardrail on the `/v1/*` pass-through and `POST /v1/responses`
+  now reads every value of a key the body names twice. The body is forwarded
+  verbatim, but the text projection guardrails read was built by decoding it
+  into a map, which keeps only the last value, so
+  `{"input":"<blocked prompt>","input":"hello"}` passed `word-filter`,
+  `regex-guard` and the other content guardrails and reached an upstream free
+  to read the first. The body is now read token by token, so every string
+  value is screened, in document order. A body holding a number past
+  float64's range, which is valid JSON, is screened too rather than reported
+  uninspectable.
 - A YAML config carrying a value JSON cannot hold — a mapping key that is not
   a string (`notes: {2026: raised}`), or `.nan` / `.inf` — is now refused at
   load, naming where the value is. yaml.v3 decodes both without complaint,
