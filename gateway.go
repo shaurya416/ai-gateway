@@ -946,6 +946,12 @@ func (g *Gateway) ModelsFor(name string) []providers.ModelInfo {
 // the union of all four — so the invariant this function has always kept holds:
 // a model advertised here is always one the routing index routes, never the
 // reverse.
+//
+// Every entry is owned by name, whichever tier supplied it. A live /models
+// answer carries the upstream's own owned_by — "Groq", "mistralai", "system" —
+// which names no target, and owned_by is what /v1/models keys its catalog
+// metadata on and what the dashboard groups a provider's models by. Discovery
+// contributes the inventory and its created times, not the owner.
 func (s *routingSnapshot) modelsFor(name string) []providers.ModelInfo {
 	p, ok := s.providers[name]
 	if !ok {
@@ -954,26 +960,26 @@ func (s *routingSnapshot) modelsFor(name string) []providers.ModelInfo {
 	var inventory []providers.ModelInfo
 	switch {
 	case len(s.discovered[name]) > 0:
-		inventory = s.discovered[name]
+		// A copy, never the shared slice: every other reader of this snapshot
+		// holds s.discovered too.
+		inventory = slices.Clone(s.discovered[name])
+		for i := range inventory {
+			inventory[i].OwnedBy = name
+		}
 	case len(s.catalogModels[name]) > 0:
 		inventory = core.ModelsFromList(name, s.catalogModels[name])
 	default:
 		inventory = core.ModelsFromList(name, configuredModelsOf(p))
 	}
 
-	declared := s.declaredModels[name]
-	if len(declared) == 0 {
-		return inventory
-	}
-	// Clone before appending: inventory may alias s.discovered's slice, which
-	// every other reader of this snapshot shares.
-	out := slices.Clone(inventory)
-	for _, m := range core.ModelsFromList(name, declared) {
-		if !slices.ContainsFunc(out, func(have providers.ModelInfo) bool { return have.ID == m.ID }) {
-			out = append(out, m)
+	// Every tier above built a fresh slice, so appending cannot reach shared
+	// state.
+	for _, m := range core.ModelsFromList(name, s.declaredModels[name]) {
+		if !slices.ContainsFunc(inventory, func(have providers.ModelInfo) bool { return have.ID == m.ID }) {
+			inventory = append(inventory, m)
 		}
 	}
-	return out
+	return inventory
 }
 
 // GetProvider returns a registered provider by name.

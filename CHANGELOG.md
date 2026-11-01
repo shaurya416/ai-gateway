@@ -126,6 +126,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- With live model discovery on (`FERRO_MODEL_DISCOVERY_INTERVAL`), a
+  discovered model in `/v1/models` is now owned by the target that serves it
+  and carries that target's catalog metadata, as every catalog-sourced and
+  declared entry already did. The listing published the upstream's own
+  `owned_by` — Groq answers `Groq`, Mistral `mistralai`, OpenAI `system` —
+  which names no target, and `/v1/models` looks catalog metadata up by
+  `owned_by` and model id, so every discovered model lost its context window,
+  capabilities and deprecation flag, and the dashboard filed it under a
+  provider that does not exist instead of the target's own. Discovery still
+  supplies the inventory and each model's `created` time.
 - `HUGGING_FACE_ENDPOINT` set to a host with no path — the router's
   `https://router.huggingface.co`, or a dedicated Inference Endpoint's URL —
   now reaches `/v1/chat/completions` and `/v1/models`, as a bare host does on
