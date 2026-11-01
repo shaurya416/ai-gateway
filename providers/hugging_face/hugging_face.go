@@ -47,14 +47,16 @@ var (
 
 // New creates a new Hugging Face provider.
 // If baseURL is empty, the shared Inference Providers router is used.
+//
+// baseURL is the OpenAI-compatible API root, resolved by core.ResolveAPIRoot
+// like every other provider's: a host with no path — the router's, or a
+// dedicated Inference Endpoint's — adopts the default root's /v1, and a value
+// carrying a path is used as written.
 func New(apiKey, baseURL string) (*Provider, error) {
-	baseURL = strings.TrimSpace(baseURL)
-	if baseURL == "" {
-		baseURL = defaultBaseURL
-	} else if err := core.ValidateBaseURL(Name, baseURL); err != nil {
+	baseURL, err := core.ResolveAPIRoot(Name, baseURL, defaultBaseURL)
+	if err != nil {
 		return nil, err
 	}
-	baseURL = strings.TrimRight(baseURL, "/")
 	return &Provider{
 		name:       Name,
 		apiKey:     apiKey,

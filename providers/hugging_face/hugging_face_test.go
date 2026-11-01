@@ -15,7 +15,7 @@ import (
 const (
 	testAPIKey              = "test-key"
 	testBearerAPIKey        = "Bearer test-key"
-	testChatCompletionsPath = "/chat/completions"
+	testChatCompletionsPath = "/v1/chat/completions" // a bare host adopts the default root's /v1
 )
 
 func TestNewHuggingFace(t *testing.T) {
@@ -135,8 +135,8 @@ func TestHuggingFaceProvider_DiscoverModels_MockHTTP(t *testing.T) {
 	listBody := `{"object":"list","data":[{"id":"model-a","owned_by":"acme"},{"id":"model-b"}]}`
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/models" {
-			t.Errorf("request path = %q, want /models", r.URL.Path)
+		if r.URL.Path != "/v1/models" {
+			t.Errorf("request path = %q, want /v1/models", r.URL.Path)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)

@@ -126,6 +126,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `HUGGING_FACE_ENDPOINT` set to a host with no path — the router's
+  `https://router.huggingface.co`, or a dedicated Inference Endpoint's URL —
+  now reaches `/v1/chat/completions` and `/v1/models`, as a bare host does on
+  every other provider. The value was stored verbatim, so chat, streaming and
+  model discovery went to `/chat/completions` and `/models`, which the
+  OpenAI-compatible surface does not serve; only embeddings and images, whose
+  task routes hang off the host, worked. A value carrying a path is still used
+  as written, and one carrying a query string or fragment is now refused at
+  startup, as it is for every other provider's base URL.
 - A tool declared with `"parameters": null` now reaches Anthropic and Claude
   on Bedrock with the empty object schema, as a tool with no `parameters`
   already did. Anthropic requires `input_schema` to be a schema object, and
