@@ -145,6 +145,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   task routes hang off the host, worked. A value carrying a path is still used
   as written, and one carrying a query string or fragment is now refused at
   startup, as it is for every other provider's base URL.
+- `pii-redact` detects a phone number or a card number whose groups are
+  separated by a no-break space or any other Unicode space. Both patterns read
+  the gap with RE2's `\s`, which is ASCII only, so `(555)\u00a0123-4567` — how
+  a web page writes a phone number so it does not wrap, and how it arrives in a
+  fetched page or a tool result — and a card grouped by `U+00A0` or `U+202F`
+  matched neither entity: `block` forwarded them, `redact` left them in the
+  request and `log` recorded nothing. Every character Go's `unicode.IsSpace`
+  reads as a space now separates the groups, as it separates words in
+  `prompt-shield`.
 - `pii-redact` finds a card number written after another four-digit number,
   as in the year column of a pasted spreadsheet row
   (`Jane Doe\t2027\t4111 1111 1111 1111`) or an expiry year on the line above.

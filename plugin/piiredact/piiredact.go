@@ -116,16 +116,29 @@ func isWordByte(b byte) bool {
 // The set is deliberately small and literal: each entry matches a well-known
 // written form rather than guessing from context, because a false positive on
 // this plugin costs a caller their request.
+//
+// A space inside a written form is any character Go's unicode.IsSpace reads as
+// one, not RE2's \s, which is ASCII only: a phone number or a card number
+// grouped by a no-break space — how text that passed through HTML arrives, and
+// how a page writes a phone number so it does not wrap — is the same written
+// form, and \s matched neither.
 var builtinEntities = []entity{
 	{name: "email", re: regexp.MustCompile(`[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}`)},
-	{name: "phone", re: regexp.MustCompile(`(\+1\d{10}|\(\d{3}\)\s?\d{3}-\d{4}|\d{3}[-.]\d{3}[-.]\d{4})`)},
+	{name: "phone", re: regexp.MustCompile(`(\+1\d{10}|\(\d{3}\)` + space + `?\d{3}-\d{4}|\d{3}[-.]\d{3}[-.]\d{4})`)},
 	{name: "ssn", re: regexp.MustCompile(`\b\d{3}-\d{2}-\d{4}\b`)},
 	// Sixteen digits alone also describe an order id or a tracking number, so
 	// a match only counts when its check digit passes Luhn — the test every
 	// issued card number satisfies and a random sixteen-digit string fails
 	// nine times in ten.
-	{name: "credit_card", re: regexp.MustCompile(`\b\d{4}[\s\-]?\d{4}[\s\-]?\d{4}[\s\-]?\d{4}\b`), verify: luhnValid},
+	{name: "credit_card", re: regexp.MustCompile(`\b\d{4}` + cardSeparator + `?\d{4}` + cardSeparator + `?\d{4}` + cardSeparator + `?\d{4}\b`), verify: luhnValid},
 }
+
+// space matches one character unicode.IsSpace reports as space.
+const space = `[\t-\r \x{85}\p{Z}]`
+
+// cardSeparator matches what may stand between two groups of a card number: a
+// space, as space reads one, or a dash.
+const cardSeparator = `[\t-\r \x{85}\p{Z}\-]`
 
 // luhnValid reports whether the digits in s satisfy the Luhn check.
 func luhnValid(s string) bool {

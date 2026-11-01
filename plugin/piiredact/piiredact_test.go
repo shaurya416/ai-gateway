@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
+	"unicode"
 
 	"github.com/ferro-labs/ai-gateway/pkg/logger"
 	"github.com/ferro-labs/ai-gateway/plugin"
@@ -155,6 +157,67 @@ func TestExecute_DoesNotFindACardInsideALongerNumber(t *testing.T) {
 	} {
 		if got := Detect(text); slices.Contains(got, "credit_card") {
 			t.Fatalf("Detect(%q) = %q, want no credit_card", text, got)
+		}
+	}
+}
+
+// RE2's \s is ASCII only, so a phone number or a card number whose groups were
+// separated by a no-break space — how text that passed through HTML arrives, a
+// phone number above all, which a page writes with &nbsp; so it does not wrap —
+// matched neither entity and reached the provider as written.
+func TestExecute_FindsAnEntityWhoseGroupsAreSeparatedByUnicodeSpace(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		entity string
+		text   string
+		want   string
+	}{
+		{"phone after a no-break space", "phone", "call (555)\u00a0123-4567 today", "call [REDACTED] today"},
+		{"card grouped by no-break spaces", "credit_card", "card 4111\u00a01111\u00a01111\u00a01111 on file", "card [REDACTED] on file"},
+		{"card grouped by narrow no-break spaces", "credit_card", "card 5500\u202f0000\u202f0000\u202f0004 on file", "card [REDACTED] on file"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := Detect(tc.text); !slices.Contains(got, tc.entity) {
+				t.Fatalf("Detect(%q) = %q, want %s", tc.text, got, tc.entity)
+			}
+
+			block := &PIIRedact{}
+			if err := block.Init(map[string]any{"entities": []any{tc.entity}}); err != nil {
+				t.Fatalf("Init: %v", err)
+			}
+			pctx := newRequest(tc.text)
+			if err := block.Execute(context.Background(), pctx); err != nil {
+				t.Fatalf("Execute: %v", err)
+			}
+			if !pctx.Reject {
+				t.Fatalf("%s was forwarded: %q", tc.entity, tc.text)
+			}
+
+			redact := &PIIRedact{}
+			if err := redact.Init(map[string]any{"entities": []any{tc.entity}, "action": "redact"}); err != nil {
+				t.Fatalf("Init: %v", err)
+			}
+			pctx = newRequest(tc.text)
+			if err := redact.Execute(context.Background(), pctx); err != nil {
+				t.Fatalf("Execute: %v", err)
+			}
+			if got := pctx.Request.Messages[0].Content; got != tc.want {
+				t.Fatalf("Content = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// The separator class is unicode.IsSpace, character for character, so no space
+// a written form can carry is missed and nothing else is read as one.
+func TestSpaceMatchesExactlyUnicodeIsSpace(t *testing.T) {
+	re := regexp.MustCompile(`^` + space + `$`)
+	for r := rune(0); r <= unicode.MaxRune; r++ {
+		if r >= 0xD800 && r <= 0xDFFF {
+			continue
+		}
+		if got, want := re.MatchString(string(r)), unicode.IsSpace(r); got != want {
+			t.Fatalf("space matches %U = %v, unicode.IsSpace = %v", r, got, want)
 		}
 	}
 }
