@@ -155,6 +155,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   schema while `required` still named it, and the model was never told the
   field existed. Only keyword positions are stripped now; a property keeps its
   name, and the keywords inside its own schema are still removed.
+- An upload to `/v1/files`, `/v1/batches`, `/v1/audio/transcriptions` or
+  `/v1/audio/translations` is no longer cut off at thirty seconds while it is
+  still arriving. These routes accept bodies far larger than a JSON request —
+  a batch input file of hundreds of megabytes, an audio file up to 25 MiB —
+  but the server's 30-second read timeout bounds the whole request, body
+  included, so any upload the caller could not finish sending inside it was
+  answered `400` "i/o timeout" and its truncated body never served: a 25 MiB
+  file needed about 7 Mbit/s of upload bandwidth to be accepted, and a 100 MB
+  batch file about 27. On these routes the timeout now applies to each read of
+  the body instead, so an upload that keeps arriving is read to the end, and
+  an audio route's answer gets the server's whole write timeout from the end of
+  the upload rather than what the upload left of it. An upload that sends
+  nothing for thirty seconds is still refused as before.
 - A streamed chat request served while a config reload runs is no longer
   answered as one buffered chunk with no MCP tools. A stream is diverted into
   the MCP tool loop when the MCP registry it reads has tools to offer, but the

@@ -5,6 +5,7 @@ import (
 	"net/url"
 
 	"github.com/ferro-labs/ai-gateway/internal/apierror"
+	"github.com/ferro-labs/ai-gateway/internal/streamio"
 	"github.com/ferro-labs/ai-gateway/pkg/logger"
 	"github.com/ferro-labs/ai-gateway/providers"
 )
@@ -34,7 +35,9 @@ type BatchSource interface {
 // sanitizeScanBudget, and the streaming idle bound that stands in for the
 // cleared WriteTimeout. A large multipart file upload streams straight through
 // (no body-size cap here — the upstream enforces its own), so this handler must
-// be mounted outside the shared request-body limit.
+// be mounted outside the shared request-body limit. For the same reason the
+// upload is bounded by idleness rather than by the server's whole-request
+// ReadTimeout (see streamio.BoundUploadByIdleness).
 func BatchHandler(src BatchSource) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if unsafeProxyPath(r.URL) {
@@ -75,6 +78,13 @@ func BatchHandler(src BatchSource) http.HandlerFunc {
 			apierror.WriteOpenAI(w, http.StatusInternalServerError, "upstream provider is unavailable", "server_error", "internal_error")
 			return
 		}
+
+		// A batch input file can take longer to arrive than the server's
+		// ReadTimeout allows a whole request, so the upload is bounded by
+		// idleness instead. Released on every path out, a re-raised abort
+		// included, before the handler returns.
+		release := streamio.BoundUploadByIdleness(w, r)
+		defer release()
 
 		// Files/Batches are a straight forward: no governance to score, so the
 		// failure the forwarder reports is unused; only a mid-body abort is

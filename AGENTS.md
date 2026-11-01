@@ -1230,7 +1230,11 @@ is installed, response-credential redaction, and the streaming idle bound — an
 strips the gateway's `/v1` before appending the operation beneath the provider's
 batch root. A file upload streams straight through, so these routes sit **outside
 the shared request-body limit** (a batch input file is far larger than a chat
-body). The gateway credential replaces the client's on the way upstream.
+body), and the upload is bounded by **idleness** rather than by the server's
+whole-request read timeout: a body still arriving is read to the end, one that
+sends nothing for that long is refused (`streamio.BoundUploadByIdleness`; the
+audio upload routes apply the same rule). The gateway credential replaces the
+client's on the way upstream.
 
 The backend is named by a provider's `core.BatchProvider` seam — `BatchBaseURL`
 (the root `/files` and `/batches` hang beneath) and `BatchAuthHeaders`. For most

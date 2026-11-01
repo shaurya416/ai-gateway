@@ -10,6 +10,7 @@ import (
 
 	aigateway "github.com/ferro-labs/ai-gateway"
 	"github.com/ferro-labs/ai-gateway/internal/apierror"
+	"github.com/ferro-labs/ai-gateway/internal/streamio"
 	"github.com/ferro-labs/ai-gateway/providers"
 )
 
@@ -30,8 +31,14 @@ const audioMaxRequestBytes = 25 << 20 // 25 MiB
 // the requested model.
 func Transcriptions(gw *aigateway.Gateway, translate bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// Up to 25 MiB can take longer to arrive than the server's ReadTimeout
+		// allows a whole request, so the upload is bounded by idleness instead,
+		// and the answer's write budget starts once it has arrived.
+		release := streamio.BoundUploadByIdleness(w, r)
+		defer release()
 		r.Body = http.MaxBytesReader(w, r.Body, audioMaxRequestBytes)
 		err := r.ParseMultipartForm(transcriptionMultipartMemory)
+		streamio.RestartWriteTimeout(w, r)
 		// A file part larger than transcriptionMultipartMemory is spilled to a
 		// temporary file. net/http removes those only for the request it
 		// dispatched, and this handler holds a copy of it — every middleware
