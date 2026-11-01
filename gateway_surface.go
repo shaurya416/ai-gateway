@@ -1002,61 +1002,61 @@ func speak(ctx context.Context, p providers.Provider, req providers.SpeechReques
 // allowlist, so a provider that is registered but not listed never serves a
 // request, on this surface or any other.
 func (g *Gateway) routeEmbedding(ctx context.Context, req providers.EmbeddingRequest) (*providers.EmbeddingResponse, routedTarget, error) {
-	keys, err := g.surfaceTargetOrder(providers.Request{Model: req.Model, User: req.User}, surfaceEmbeddings)
+	plan, err := g.surfacePlan(providers.Request{Model: req.Model, User: req.User}, surfaceEmbeddings)
 	if err != nil {
 		return nil, routedTarget{}, err
 	}
-	return routeTargets(ctx, g, g.planFor(req.Model, keys), req, embeddingCapable, embed)
+	return routeTargets(ctx, g, plan, req, embeddingCapable, embed)
 }
 
 // routeImage is routeEmbedding's counterpart for image generation; see its doc
 // comment for the shared pipeline it attaches to.
 func (g *Gateway) routeImage(ctx context.Context, req providers.ImageRequest) (*providers.ImageResponse, routedTarget, error) {
-	keys, err := g.surfaceTargetOrder(providers.Request{Model: req.Model, User: req.User}, surfaceImages)
+	plan, err := g.surfacePlan(providers.Request{Model: req.Model, User: req.User}, surfaceImages)
 	if err != nil {
 		return nil, routedTarget{}, err
 	}
-	return routeTargets(ctx, g, g.planFor(req.Model, keys), req, imageCapable, generateImage)
+	return routeTargets(ctx, g, plan, req, imageCapable, generateImage)
 }
 
 // routeRerank is routeEmbedding's counterpart for reranking; see its doc comment
 // for the shared pipeline it attaches to.
 func (g *Gateway) routeRerank(ctx context.Context, req providers.RerankRequest) (*providers.RerankResponse, routedTarget, error) {
-	keys, err := g.surfaceTargetOrder(providers.Request{Model: req.Model}, surfaceRerank)
+	plan, err := g.surfacePlan(providers.Request{Model: req.Model}, surfaceRerank)
 	if err != nil {
 		return nil, routedTarget{}, err
 	}
-	return routeTargets(ctx, g, g.planFor(req.Model, keys), req, rerankCapable, rerank)
+	return routeTargets(ctx, g, plan, req, rerankCapable, rerank)
 }
 
 // routeModeration is routeEmbedding's counterpart for moderation; see its doc
 // comment for the shared pipeline it attaches to.
 func (g *Gateway) routeModeration(ctx context.Context, req providers.ModerationRequest) (*providers.ModerationResponse, routedTarget, error) {
-	keys, err := g.surfaceTargetOrder(providers.Request{Model: req.Model}, surfaceModeration)
+	plan, err := g.surfacePlan(providers.Request{Model: req.Model}, surfaceModeration)
 	if err != nil {
 		return nil, routedTarget{}, err
 	}
-	return routeTargets(ctx, g, g.planFor(req.Model, keys), req, moderationCapable, moderate)
+	return routeTargets(ctx, g, plan, req, moderationCapable, moderate)
 }
 
 // routeTranscription is routeEmbedding's counterpart for audio transcription;
 // see its doc comment for the shared pipeline it attaches to.
 func (g *Gateway) routeTranscription(ctx context.Context, req providers.TranscriptionRequest) (*providers.TranscriptionResponse, routedTarget, error) {
-	keys, err := g.surfaceTargetOrder(providers.Request{Model: req.Model}, surfaceTranscription)
+	plan, err := g.surfacePlan(providers.Request{Model: req.Model}, surfaceTranscription)
 	if err != nil {
 		return nil, routedTarget{}, err
 	}
-	return routeTargets(ctx, g, g.planFor(req.Model, keys), req, transcriptionCapable, transcribe)
+	return routeTargets(ctx, g, plan, req, transcriptionCapable, transcribe)
 }
 
 // routeSpeech is routeEmbedding's counterpart for text-to-speech; see its doc
 // comment for the shared pipeline it attaches to.
 func (g *Gateway) routeSpeech(ctx context.Context, req providers.SpeechRequest) (*providers.SpeechResponse, routedTarget, error) {
-	keys, err := g.surfaceTargetOrder(providers.Request{Model: req.Model}, surfaceSpeech)
+	plan, err := g.surfacePlan(providers.Request{Model: req.Model}, surfaceSpeech)
 	if err != nil {
 		return nil, routedTarget{}, err
 	}
-	return routeTargets(ctx, g, g.planFor(req.Model, keys), req, speechCapable, speak)
+	return routeTargets(ctx, g, plan, req, speechCapable, speak)
 }
 
 // surfaceTargetOrder resolves the candidate order for one non-chat request
@@ -1069,16 +1069,28 @@ func (g *Gateway) routeSpeech(ctx context.Context, req providers.SpeechRequest) 
 // strategyFor); whether the walk advances past a failure is planFor's
 // question. Order is all this decides.
 func (g *Gateway) surfaceTargetOrder(req providers.Request, surface string) ([]string, error) {
+	plan, err := g.surfacePlan(req, surface)
+	return plan.keys, err
+}
+
+// surfacePlan is surfaceTargetOrder's order planned for the walk, from the one
+// strategy that produced it.
+func (g *Gateway) surfacePlan(req providers.Request, surface string) (targetPlan, error) {
 	// Content-based routing on these surfaces is part of the strategy itself
 	// (see firstServingTarget), so the mode that decides it is read under the
 	// same hold of the lock the strategy is built under: a reload that switches
 	// modes cannot send one request down the path of a config no longer in
-	// force.
+	// force. The walk's own settings travel with the strategy for the same
+	// reason (see builtStrategy).
 	strategy, err := g.strategyFor(surface)
 	if err != nil {
-		return nil, err
+		return targetPlan{}, err
 	}
-	return strategy.SelectTargets(req)
+	keys, err := strategy.SelectTargets(req)
+	if err != nil {
+		return targetPlan{}, err
+	}
+	return g.planFor(strategy, req.Model, keys), nil
 }
 
 func providerSupportsSurface(p providers.Provider, surface string) bool {

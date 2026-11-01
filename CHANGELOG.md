@@ -147,6 +147,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   skipped them. A non-finite `targets[].weight` under a mode that ignores
   weights loaded too, and `GET /admin/config` then answered with an empty
   `200`.
+- A request in flight while a config reload changes the routing mode is walked
+  under the mode of the strategy it started with. A chat request holds its
+  strategy from the start of the request — across the `before_request` stage
+  and every turn of an MCP tool loop — but the rule for walking that
+  strategy's target order (whether to advance past a failure, the extra
+  `failover_on_status_codes`, the A/B variant label) was read from the live
+  config when the walk began. A reload from `fallback` over `[a, b]` to
+  `single` over `[b]` therefore walked the order `[a, b]` by single's rule of
+  attempting only its head, `a`, which no target names any more, and answered
+  `404 model_not_found` for a model both configs serve — on an agentic request,
+  after its first turn had already been billed. The walk settings are now
+  taken from the same read of the config as the strategy, on every surface.
 - With live model discovery on (`FERRO_MODEL_DISCOVERY_INTERVAL`), a
   discovered model in `/v1/models` is now owned by the target that serves it
   and carries that target's catalog metadata, as every catalog-sourced and

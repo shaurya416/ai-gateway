@@ -853,7 +853,7 @@ func (g *Gateway) routingServes(s strategies.Strategy, model string) bool {
 	// inventory would shrink and grow with an outage — see AllModels and
 	// healthyKeys. Everything else about candidacy is asked of the walk's own
 	// code, so the two cannot drift.
-	plan := g.planFor(model, keys)
+	plan := g.planFor(s, model, keys)
 	plan.ignoreCircuitState = true
 	keys = g.eligibleKeys(plan, nil)
 

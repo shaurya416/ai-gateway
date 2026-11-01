@@ -3,6 +3,7 @@ package aigateway
 import (
 	"fmt"
 	"maps"
+	"slices"
 	"time"
 
 	"github.com/ferro-labs/ai-gateway/config"
@@ -121,11 +122,56 @@ func (g *Gateway) strategyFor(surface string) (strategies.Strategy, error) {
 			return nil, err
 		}
 	}
+	built := &builtStrategy{Strategy: s, walk: walkSettingsFor(g.config.Strategy)}
 	if g.strategies == nil {
 		g.strategies = make(map[string]strategies.Strategy)
 	}
-	g.strategies[surface] = s
-	return s, nil
+	g.strategies[surface] = built
+	return built, nil
+}
+
+// builtStrategy is a strategy together with the settings of the strategy block
+// it was built from that decide how its order is walked (see planFor).
+//
+// They travel with the strategy because a request holds its strategy from the
+// moment it starts to the moment it is walked — across the before_request
+// stage, and across every turn of an MCP tool loop — and a reload can replace
+// the config in between. Read from the live config at the walk instead, a
+// request was handed one config's target order and another config's rule for
+// walking it: an order from fallback over [a, b], walked under a reloaded
+// single's "attempt the head only", attempted a target the new config no
+// longer lists and answered 404 for a model both configs serve.
+type builtStrategy struct {
+	strategies.Strategy
+	walk walkSettings
+}
+
+// walkSettings is what planFor reads from a strategy block.
+type walkSettings struct {
+	advance    bool
+	failoverOn []int
+	// abLabels maps a variant's target to its label under ab-test, the first
+	// variant naming a target winning. Nil under every other mode.
+	abLabels map[string]string
+}
+
+// walkSettingsFor resolves the walk settings of one strategy block. The slice
+// and map it returns are its own, so a later change to cfg cannot reach a
+// strategy already built from it.
+func walkSettingsFor(cfg config.StrategyConfig) walkSettings {
+	w := walkSettings{
+		advance:    advancesPastFailure(cfg.Mode),
+		failoverOn: slices.Clone(cfg.FailoverOnStatusCodes),
+	}
+	if cfg.Mode == config.ModeABTest {
+		w.abLabels = make(map[string]string, len(cfg.ABVariants))
+		for _, variant := range cfg.ABVariants {
+			if _, seen := w.abLabels[variant.TargetKey]; !seen {
+				w.abLabels[variant.TargetKey] = variant.Label
+			}
+		}
+	}
+	return w
 }
 
 // buildStrategy maps a validated StrategyConfig onto a strategy.

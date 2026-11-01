@@ -621,24 +621,26 @@ func (g *Gateway) servesSurface(key string, gate capabilityGate) bool {
 
 // planFor pairs a strategy's candidate order with whether that strategy falls
 // back. It is the single point at which a routing mode influences execution.
-func (g *Gateway) planFor(model string, keys []string) targetPlan {
-	g.mu.RLock()
-	mode := g.config.Strategy.Mode
-	advance := advancesPastFailure(mode)
-	failoverOn := g.config.Strategy.FailoverOnStatusCodes
-	label := ""
-	hasABVariant := false
-	if mode == config.ModeABTest && len(keys) > 0 {
-		for _, variant := range g.config.Strategy.ABVariants {
-			if variant.TargetKey == keys[0] {
-				label = variant.Label
-				hasABVariant = true
-				break
-			}
-		}
+//
+// The mode is the one s was built under (see builtStrategy), never the one
+// installed when the walk begins: keys came from s, and a request walks the
+// order it was given by the rule that order was written for. A strategy built
+// anywhere but strategyFor carries no settings, and is planned from the
+// installed config.
+func (g *Gateway) planFor(s strategies.Strategy, model string, keys []string) targetPlan {
+	var walk walkSettings
+	if built, ok := s.(*builtStrategy); ok {
+		walk = built.walk
+	} else {
+		g.mu.RLock()
+		walk = walkSettingsFor(g.config.Strategy)
+		g.mu.RUnlock()
 	}
-	g.mu.RUnlock()
-	return targetPlan{keys: keys, model: model, advance: advance, failoverOn: failoverOn, abVariantLabel: label, hasABVariant: hasABVariant}
+	plan := targetPlan{keys: keys, model: model, advance: walk.advance, failoverOn: walk.failoverOn}
+	if len(keys) > 0 {
+		plan.abVariantLabel, plan.hasABVariant = walk.abLabels[keys[0]]
+	}
+	return plan
 }
 
 // advancesPastFailure splits the routing modes by what their leading candidate
@@ -721,7 +723,7 @@ func (g *Gateway) routeChat(ctx context.Context, s strategies.Strategy, req prov
 	if err != nil {
 		return nil, routedTarget{}, err
 	}
-	resp, target, err := routeTargets(ctx, g, g.planFor(req.Model, keys), req, nil, completeChat)
+	resp, target, err := routeTargets(ctx, g, g.planFor(s, req.Model, keys), req, nil, completeChat)
 	if err != nil {
 		return nil, target, err
 	}
@@ -749,7 +751,7 @@ func (g *Gateway) routeChat(ctx context.Context, s strategies.Strategy, req prov
 //		return provider.Embed(ctx, req)
 //	}
 //
-// then routeTargets(ctx, g, g.planFor(req.Model, keys), req, embeddingProvider, embed).
+// then routeTargets(ctx, g, plan, req, embeddingProvider, embed).
 // The gate has already run when the leaf call executes, so its assertion cannot
 // fail. That replaces routeEmbedding/routeImage and routeSurfaceTarget outright,
 // and the surfaces inherit the four fixes here — uniform retry, a real provider

@@ -44,12 +44,10 @@ func (g *Gateway) startStreamWithStrategy(startCtx, streamCtx context.Context, r
 	g.ensureProviderLimitersLocked()
 	g.mu.Unlock()
 
-	keys, err := g.streamingTargetOrder(req)
+	plan, err := g.streamingPlan(req)
 	if err != nil {
 		return routedTarget{}, nil, streamStart{}, err
 	}
-
-	plan := g.planFor(req.Model, keys)
 	plan.responseOutlivesCall = true
 
 	var started streamStart
@@ -247,20 +245,25 @@ func raceCompleteStream(waitCtx, streamCtx context.Context, sp providers.StreamP
 	}
 }
 
-// streamingTargetOrder resolves the strategy — built from the same config Route
-// executes, with chat's rules — and asks it for the streaming target order, so
-// both paths share one ordering implementation. It is built over the targets
-// that can stream (see strategyFor): a target that cannot is not a candidate
-// for a stream, so it must not win a weighted draw, an A/B variant draw or a
-// ranking slot it can never serve and hand the request to whichever streaming
-// target follows it. A strategy error surfaces identically on both paths; for
-// ValidateConfig-passing gateways it does not error here.
-func (g *Gateway) streamingTargetOrder(req providers.Request) ([]string, error) {
+// streamingPlan resolves the strategy — built from the same config Route
+// executes, with chat's rules — and plans the walk of the streaming target
+// order it selects, so both paths share one ordering implementation. It is
+// built over the targets that can stream (see strategyFor): a target that
+// cannot is not a candidate for a stream, so it must not win a weighted draw,
+// an A/B variant draw or a ranking slot it can never serve and hand the request
+// to whichever streaming target follows it. A strategy error surfaces
+// identically on both paths; for ValidateConfig-passing gateways it does not
+// error here.
+func (g *Gateway) streamingPlan(req providers.Request) (targetPlan, error) {
 	s, err := g.strategyFor(surfaceStream)
 	if err != nil {
-		return nil, err
+		return targetPlan{}, err
 	}
-	return s.SelectTargets(req)
+	keys, err := s.SelectTargets(req)
+	if err != nil {
+		return targetPlan{}, err
+	}
+	return g.planFor(s, req.Model, keys), nil
 }
 
 // suppressUsageForClient reports whether the caller explicitly declined the
