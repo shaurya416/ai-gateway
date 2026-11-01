@@ -167,7 +167,8 @@ type DimensionStat struct {
 	Tokens int
 	// CostUSD is the estimated spend attributed to this group. Rows the catalog
 	// could not price contribute nothing, so this is a floor on real spend
-	// rather than a total — Unpriced reports how many rows were skipped.
+	// rather than a total — Unpriced reports how many rows were skipped. A
+	// failure no provider answered was billed nothing and is not among them.
 	CostUSD  float64
 	Unpriced int
 }
@@ -219,7 +220,8 @@ type StatsResult struct {
 	// TotalCostUSD is the summed estimate over requests the catalog could price.
 	// UnpricedRequests counts the completed requests it could not, so a caller
 	// can say "at least $X, and N requests are not priced" rather than
-	// presenting a floor as a total.
+	// presenting a floor as a total. A failure no provider answered was billed
+	// nothing and is not counted.
 	TotalCostUSD     float64
 	UnpricedRequests int
 	// Latency and TTFT percentiles, in milliseconds, over the same bounded scan
@@ -554,6 +556,17 @@ func (w *SQLWriter) List(ctx context.Context, query Query) (ListResult, error) {
 	return ListResult{Data: entries, Total: total}, nil
 }
 
+// unpricedRowSQL selects the rows whose billed call is missing from the spend
+// floor: a terminal row that carries no cost. An on_error row carrying no
+// tokens either is not one of them. It records a request that failed before
+// any provider answered — a provider error, a plugin denial, a model no
+// target serves — so nothing was billed and there was nothing to price: the
+// logger puts a response's usage on an on_error row whenever a provider
+// answered and no other row of the request holds it. Counted as unpriced,
+// every such failure was reported as spend the catalog could not price, on a
+// model the catalog prices in full.
+const unpricedRowSQL = `cost_usd IS NULL AND stage <> 'before_request' AND (stage <> 'on_error' OR prompt_tokens + completion_tokens + total_tokens > 0)`
+
 // statsQueryTemplate aggregates matching rows across three dimensions in one
 // round trip. SQLite lacks GROUPING SETS, so a UNION ALL stands in. The %[1]s
 // verb is the shared WHERE clause; its bound args repeat once per branch.
@@ -575,7 +588,7 @@ const statsQueryTemplate = `SELECT 'stage' AS dim,
        COALESCE(SUM(prompt_tokens), 0) AS ptoks,
        COALESCE(SUM(completion_tokens), 0) AS ctoks,
        COALESCE(SUM(cost_usd), 0) AS cost,
-       SUM(CASE WHEN cost_usd IS NULL AND stage <> 'before_request' THEN 1 ELSE 0 END) AS unpriced
+       SUM(CASE WHEN ` + unpricedRowSQL + ` THEN 1 ELSE 0 END) AS unpriced
 FROM request_logs%[1]s
 GROUP BY COALESCE(NULLIF(stage, ''), 'unknown')
 UNION ALL
@@ -585,7 +598,7 @@ SELECT 'provider', COALESCE(NULLIF(provider, ''), 'unknown'), COUNT(*),
        COALESCE(SUM(prompt_tokens), 0),
        COALESCE(SUM(completion_tokens), 0),
        COALESCE(SUM(cost_usd), 0),
-       SUM(CASE WHEN cost_usd IS NULL AND stage <> 'before_request' THEN 1 ELSE 0 END)
+       SUM(CASE WHEN ` + unpricedRowSQL + ` THEN 1 ELSE 0 END)
 FROM request_logs%[1]s%[2]s
 GROUP BY COALESCE(NULLIF(provider, ''), 'unknown')
 UNION ALL
@@ -595,7 +608,7 @@ SELECT 'model', COALESCE(NULLIF(model, ''), 'unknown'), COUNT(*),
        COALESCE(SUM(prompt_tokens), 0),
        COALESCE(SUM(completion_tokens), 0),
        COALESCE(SUM(cost_usd), 0),
-       SUM(CASE WHEN cost_usd IS NULL AND stage <> 'before_request' THEN 1 ELSE 0 END)
+       SUM(CASE WHEN ` + unpricedRowSQL + ` THEN 1 ELSE 0 END)
 FROM request_logs%[1]s%[2]s
 GROUP BY COALESCE(NULLIF(model, ''), 'unknown')`
 

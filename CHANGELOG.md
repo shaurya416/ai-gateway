@@ -193,6 +193,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   A request is now recorded into a store at most once, whichever stage
   records it; a response refused by a plugin listed ahead of the budget is
   still recorded at `on_error`, once.
+- The request-log stats no longer count a request that failed before any
+  provider answered as unpriced. `unpriced_requests`, and each provider's,
+  model's and stage's `unpriced`, counted every terminal row without a cost —
+  including the `on_error` row of a provider error, a budget or guardrail
+  denial, or a model no target serves, which carries no cost because nothing
+  was billed. A fully priced model with one failed request read "1 unpriced"
+  beside its spend on the dashboard, and a key retrying against its spend cap
+  added one unpriced request per retry, so the figure meant to say how much
+  spend the floor was missing mostly counted failures. Such a row is no longer
+  counted; an `on_error` row carrying the usage of a call the provider did
+  answer, and every success without a cost, still are.
 - A tool declared with `"parameters": null` now reaches Anthropic and Claude
   on Bedrock with the empty object schema, as a tool with no `parameters`
   already did. Anthropic requires `input_schema` to be a schema object, and
