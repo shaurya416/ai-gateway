@@ -4,6 +4,7 @@ import (
 	"expvar"
 	"net"
 	"net/http"
+	"path"
 	"slices"
 	"strings"
 	"time"
@@ -105,6 +106,75 @@ func rejectUnknownMethod(next http.Handler) http.Handler {
 	})
 }
 
+// nativeV1Routes are the /v1 paths the gateway serves itself, each mounted
+// exactly in mountOpenAIRoutes. nativeV1Prefixes are mounted exactly and with a
+// trailing wildcard, so every path beneath one is served natively too.
+var (
+	nativeV1Routes = map[string]struct{}{
+		"/v1/models":               {},
+		"/v1/capabilities":         {},
+		"/v1/chat/completions":     {},
+		"/v1/completions":          {},
+		"/v1/embeddings":           {},
+		"/v1/images/generations":   {},
+		"/v1/rerank":               {},
+		"/v1/moderations":          {},
+		"/v1/audio/speech":         {},
+		"/v1/audio/transcriptions": {},
+		"/v1/audio/translations":   {},
+	}
+	nativeV1Prefixes = []string{"/v1/files", "/v1/batches", "/v1/responses"}
+)
+
+// servedNatively reports whether routePath reaches a route the gateway serves
+// itself rather than the /v1/* pass-through.
+func servedNatively(routePath string) bool {
+	if _, ok := nativeV1Routes[routePath]; ok {
+		return true
+	}
+	for _, prefix := range nativeV1Prefixes {
+		if routePath == prefix || strings.HasPrefix(routePath, prefix+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+// routeNativeSpellings routes a request on the path an upstream would read
+// when that path is one the gateway serves itself.
+//
+// chi matches the path as written — the escaped form when the request carries
+// one — so /v1/chat/completions/, /v1//chat/completions and
+// /v1/chat/completion%73 matched no native route and fell to the /v1/*
+// pass-through. The pass-through forwards the spelling verbatim, and an upstream
+// decodes it, merges the slashes or drops the trailing one, and serves the very
+// route the gateway owns — past the native pipeline: a max-token guardrail
+// that never saw the ceiling, a budget that never priced the call, a legacy
+// completions stream the gateway refuses, and Files answered by whichever
+// provider the caller named instead of batch_target. A route the gateway owns
+// is not a pass-through candidate however it is spelled, so such a request is
+// routed on its decoded, cleaned path instead. Only the routing path changes:
+// the request itself, and so anything a native handler forwards, is untouched.
+//
+// It must run on the root router, ahead of chimiddleware.GetHead, which reads
+// the routing path this sets.
+func routeNativeSpellings(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if rctx := chi.RouteContext(r.Context()); rctx != nil && rctx.RoutePath == "" {
+			written := r.URL.RawPath
+			if written == "" {
+				written = r.URL.Path
+			}
+			if !servedNatively(written) && strings.HasPrefix(r.URL.Path, "/") {
+				if canonical := path.Clean(r.URL.Path); servedNatively(canonical) {
+					rctx.RoutePath = canonical
+				}
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 // activeMaxRequestBytes returns the body-size cap resolved from the gateway's
 // live config on every call, so an operator who changes max_request_bytes
 // through the admin API gets the value they were told they got.
@@ -195,6 +265,10 @@ func NewRouter(
 	// bare 405 — see rejectUnknownMethod. It sits below SecurityHeaders so the
 	// refusal carries the same hardening headers every other response does.
 	r.Use(rejectUnknownMethod)
+	// A route the gateway serves itself is reached by every spelling of its
+	// path, not only the canonical one — see routeNativeSpellings. Ahead of
+	// GetHead, which routes on the path this settles.
+	r.Use(routeNativeSpellings)
 	// chi registers a route per method, so a HEAD reaches only the routes
 	// declared for it: /health, /livez and /readyz are declared GET, and without
 	// this every HEAD-based probe against them is a 405. GetHead re-dispatches a

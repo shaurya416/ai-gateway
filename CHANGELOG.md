@@ -204,6 +204,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   spend the floor was missing mostly counted failures. Such a row is no longer
   counted; an `on_error` row carrying the usage of a call the provider did
   answer, and every success without a cost, still are.
+- A route the gateway serves itself is now reached by every spelling of its
+  path. The router matched `/v1/chat/completions`, `/v1/completions`,
+  `/v1/embeddings` and the rest exactly as written, so
+  `/v1/chat/completions/`, `/v1//chat/completions` or
+  `/v1/chat/completion%73` fell to the `/v1/*` pass-through, which forwarded
+  the spelling to an upstream that decodes it and served the route the
+  gateway owns: a `max-token` guardrail approved a ceiling it never saw, the
+  call went unpriced so no budget was charged, a legacy completions
+  `stream: true` reached the provider's own completions route, and
+  `/v1/file%73` was answered by the provider in `X-Provider` with no
+  `batch_target` set. Such a request is now routed on its decoded, cleaned
+  path, so it is served, governed and priced by the native route. Paths that
+  name no native route are forwarded as before.
 - A tool declared with `"parameters": null` now reaches Anthropic and Claude
   on Bedrock with the empty object schema, as a tool with no `parameters`
   already did. Anthropic requires `input_schema` to be a schema object, and
