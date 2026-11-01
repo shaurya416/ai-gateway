@@ -149,6 +149,44 @@ func surfaceMessages(content any) (msgs []providers.Message, inspectable bool) {
 	}
 }
 
+// moderationContent is the content a moderation input puts in front of a
+// content guardrail. A string or an array of strings is surfaceMessages' to
+// project as it is. OpenAI's multi-modal array — {"type":"text"} and
+// {"type":"image_url"} objects, the shape omni-moderation takes an image in —
+// is its text parts: an image part carries no text, so it is neither screened
+// nor a reason to refuse, exactly as an image part of a chat message is not.
+//
+// Handed over whole, the array was reported uninspectable, so a blocking
+// guardrail refused every such request, text-only ones included, and none of
+// its text was ever screened. An element of any other shape — an unknown part
+// type, a text part with no text — is still left to surfaceMessages, which
+// reports the input uninspectable.
+func moderationContent(input any) any {
+	parts, ok := input.([]any)
+	if !ok || len(parts) == 0 {
+		return input
+	}
+	texts := make([]string, 0, len(parts))
+	for _, part := range parts {
+		obj, ok := part.(map[string]any)
+		if !ok {
+			return input
+		}
+		switch obj["type"] {
+		case "text":
+			text, ok := obj["text"].(string)
+			if !ok {
+				return input
+			}
+			texts = append(texts, text)
+		case "image_url":
+		default:
+			return input
+		}
+	}
+	return texts
+}
+
 func textMessages(texts []string) []providers.Message {
 	if len(texts) == 0 {
 		return nil
@@ -572,7 +610,7 @@ func (g *Gateway) Moderate(ctx context.Context, req providers.ModerationRequest)
 	req.Model = g.resolveModelAlias(req.Model)
 
 	var resp *providers.ModerationResponse
-	record, err := g.runSurfaceGovernance(ctx, surfaceModeration, span, start, req.Model, "", req.Input, func(ctx context.Context, model string) (surfaceRecord, error) {
+	record, err := g.runSurfaceGovernance(ctx, surfaceModeration, span, start, req.Model, "", moderationContent(req.Input), func(ctx context.Context, model string) (surfaceRecord, error) {
 		req.Model = model
 		moderated, target, routeErr := g.routeModeration(ctx, req)
 		if routeErr != nil {

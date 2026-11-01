@@ -168,6 +168,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   an audio route's answer gets the server's whole write timeout from the end of
   the upload rather than what the upload left of it. An upload that sends
   nothing for thirty seconds is still refused as before.
+- A `/v1/moderations` request whose `input` is OpenAI's multi-modal array —
+  `{"type":"text"}` and `{"type":"image_url"}` objects, the shape
+  omni-moderation takes an image in — is no longer refused by every blocking
+  content guardrail. The array was reported to the plugin stage as content
+  the gateway could not read, so `word-filter`, a blocking `regex-guard` or
+  `secret-scan`, or a `max-token` `max_input_length` cap answered `400`
+  "content is not inspectable text" to all of them, a text-only array
+  included, and none of their text was ever screened. Text parts are now
+  screened as a string input is; an image part is neither screened nor a
+  reason to refuse, as on chat. A part of any other type is still refused as
+  uninspectable.
 - A streamed chat request served while a config reload runs is no longer
   answered as one buffered chunk with no MCP tools. A stream is diverted into
   the MCP tool loop when the MCP registry it reads has tools to offer, but the

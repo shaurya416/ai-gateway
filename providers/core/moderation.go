@@ -4,7 +4,7 @@ package core
 // LiteLLM and Portkey expose and the two providers that offer moderation
 // (OpenAI, Mistral) both speak.
 type ModerationRequest struct {
-	Input any    `json:"input"` // string or []string
+	Input any    `json:"input"` // string, []string, or OpenAI's multi-modal text/image_url objects
 	Model string `json:"model,omitempty"`
 }
 
