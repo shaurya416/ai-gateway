@@ -553,7 +553,9 @@ func geminiResponseSchema(raw json.RawMessage) json.RawMessage {
 }
 
 // sanitizeGeminiSchema recursively strips JSON-schema keywords Gemini rejects.
-// Input that isn't a JSON object is forwarded unchanged.
+// A property name is not a keyword, so a property called "definitions" keeps
+// its place under "properties". Input that isn't a JSON object is forwarded
+// unchanged.
 func sanitizeGeminiSchema(raw json.RawMessage) json.RawMessage {
 	if len(raw) == 0 {
 		return raw
@@ -577,6 +579,10 @@ func stripSchemaKeys(v any) any {
 			if geminiUnsupportedSchemaKeys[k] {
 				continue
 			}
+			if k == "properties" {
+				m[k] = stripPropertySchemas(val)
+				continue
+			}
 			m[k] = stripSchemaKeys(val)
 		}
 		return m
@@ -588,6 +594,22 @@ func stripSchemaKeys(v any) any {
 	default:
 		return v
 	}
+}
+
+// stripPropertySchemas sanitizes the schemas under a "properties" object. Its
+// keys are the caller's property names, not keywords, so every one is kept —
+// a field named "definitions" or "additionalProperties" is a field — and only
+// the schema each one maps to is sanitized.
+func stripPropertySchemas(v any) any {
+	props, ok := v.(map[string]any)
+	if !ok {
+		return stripSchemaKeys(v)
+	}
+	m := make(map[string]any, len(props))
+	for name, schema := range props {
+		m[name] = stripSchemaKeys(schema)
+	}
+	return m
 }
 
 func geminiToolConfigFor(choice any) *geminiToolConfig {

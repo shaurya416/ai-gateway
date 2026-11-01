@@ -126,6 +126,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A Gemini tool or `json_schema` response format whose object has a property
+  named `definitions`, `additionalProperties`, `$ref` or another JSON Schema
+  keyword Gemini rejects now reaches Gemini with that property. The schema
+  sanitizer stripped those names wherever they appeared as a key, including
+  under `properties`, where a key is the caller's field name rather than a
+  keyword — so the field vanished from the tool parameters or the response
+  schema while `required` still named it, and the model was never told the
+  field existed. Only keyword positions are stripped now; a property keeps its
+  name, and the keywords inside its own schema are still removed.
 - A streamed chat request served while a config reload runs is no longer
   answered as one buffered chunk with no MCP tools. A stream is diverted into
   the MCP tool loop when the MCP registry it reads has tools to offer, but the

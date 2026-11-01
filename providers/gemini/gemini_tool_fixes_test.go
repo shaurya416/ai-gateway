@@ -126,3 +126,77 @@ func TestComplete_CoalescesParallelToolResults(t *testing.T) {
 		t.Errorf("merged functionResponse names = %v, want [weather clock]", names)
 	}
 }
+
+// TestComplete_KeepsPropertiesNamedLikeStrippedKeywords pins that the schema
+// sanitizer strips keywords, not the caller's property names. A property is
+// named by a key under "properties", and "definitions" or
+// "additionalProperties" there is a field of the caller's object, not the
+// keyword Gemini rejects. Stripping it deleted the field from the schema the
+// model was given while "required" still named it, so a tool parameter or a
+// structured-output field never reached Gemini.
+func TestComplete_KeepsPropertiesNamedLikeStrippedKeywords(t *testing.T) {
+	const schema = `{"type":"object","additionalProperties":false,` +
+		`"properties":{"term":{"type":"string"},` +
+		`"definitions":{"type":"array","items":{"type":"string"},"additionalProperties":false},` +
+		`"additionalProperties":{"type":"string"}},` +
+		`"required":["term","definitions","additionalProperties"]}`
+
+	captured := captureGeminiBody(t, core.Request{
+		Model:    "gemini-2.5-flash",
+		Messages: []core.Message{{Role: core.RoleUser, Content: "define llama"}},
+		Tools: []core.Tool{{
+			Type:     "function",
+			Function: core.Function{Name: "save_glossary", Parameters: json.RawMessage(schema)},
+		}},
+		ResponseFormat: &core.ResponseFormat{
+			Type:       "json_schema",
+			JSONSchema: json.RawMessage(`{"name":"glossary","strict":true,"schema":` + schema + `}`),
+		},
+	})
+
+	var body struct {
+		Tools []struct {
+			FunctionDeclarations []struct {
+				Parameters json.RawMessage `json:"parameters"`
+			} `json:"functionDeclarations"`
+		} `json:"tools"`
+		GenerationConfig struct {
+			ResponseSchema json.RawMessage `json:"responseSchema"`
+		} `json:"generationConfig"`
+	}
+	raw, _ := json.Marshal(captured)
+	if err := json.Unmarshal(raw, &body); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+
+	for where, got := range map[string]json.RawMessage{
+		"tool parameters": body.Tools[0].FunctionDeclarations[0].Parameters,
+		"responseSchema":  body.GenerationConfig.ResponseSchema,
+	} {
+		var s struct {
+			Properties map[string]map[string]any `json:"properties"`
+			Required   []string                  `json:"required"`
+		}
+		if err := json.Unmarshal(got, &s); err != nil {
+			t.Fatalf("%s: %s is not a schema object: %v", where, got, err)
+		}
+		var top map[string]json.RawMessage
+		_ = json.Unmarshal(got, &top)
+		if _, ok := top["additionalProperties"]; ok {
+			t.Errorf("%s: the additionalProperties keyword must still be stripped: %s", where, got)
+		}
+		for _, name := range s.Required {
+			if _, ok := s.Properties[name]; !ok {
+				t.Errorf("%s: required names %q but properties lost it: %s", where, name, got)
+			}
+		}
+		if defs := s.Properties["definitions"]; defs != nil {
+			if _, ok := defs["additionalProperties"]; ok {
+				t.Errorf("%s: the keyword nested inside a property must still be stripped: %s", where, got)
+			}
+			if defs["type"] != "array" {
+				t.Errorf("%s: properties.definitions.type = %v, want array: %s", where, defs["type"], got)
+			}
+		}
+	}
+}
