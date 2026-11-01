@@ -171,6 +171,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   measurement read only the message body and its tool-call arguments, so an
   assistant turn could carry any amount of input in its reasoning past a cap of
   any size. It now counts, whether or not the message is multipart.
+- A chat completion on one of the Gemini image models —
+  `gemini-2.5-flash-image`, `gemini-3-pro-image-preview` and the rest, which
+  answer chat through the same `generateContent` call that generates their
+  images — is now priced on the tokens it reports. Their catalog rows carry a
+  per-image price beside per-token rates, and the per-image price was applied
+  whenever present, so a completion, which counts no image, was priced at zero
+  images: every such request was recorded as a known $0.00 on the request-log
+  row, the span, the cost metric and the completed event although the provider
+  billed it. The per-image price now applies to counted images only; a request
+  that counted none is priced on its tokens at the row's token rates, and one
+  that reported neither is unpriced. `/v1/images/generations`, which counts the
+  images it returns, is priced per image as before.
 - A tool declared with `"parameters": null` now reaches Anthropic and Claude
   on Bedrock with the empty object schema, as a tool with no `parameters`
   already did. Anthropic requires `input_schema` to be a schema object, and

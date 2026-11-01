@@ -32,13 +32,12 @@ type CostResult struct {
 	ModelFound bool
 	// Priced is false when the catalog entry carries no price for the field its
 	// mode bills off: input tokens for chat, responses and completion, embedding
-	// tokens for embeddings, per-tile or (failing that, and only against
-	// reported usage) per-token for images, per-minute or per-character for
-	// audio. Every rate but the per-tile one prices only a reported
-	// measurement — token usage, a duration or a character count — so a request
-	// that reported none is unpriced rather than a priced $0.00. An image priced
-	// per token is priced only when the row carries a rate for every token count
-	// reported.
+	// tokens for embeddings, per-tile against counted images or (failing that)
+	// per-token for images, per-minute or per-character for audio. Every rate
+	// prices only a reported measurement — token usage, an image count, a
+	// duration or a character count — so a request that reported none is
+	// unpriced rather than a priced $0.00. An image priced per token is priced
+	// only when the row carries a rate for every token count reported.
 	Priced bool
 }
 
@@ -135,6 +134,15 @@ func Calculate(catalog Catalog, modelKey string, usage Usage) CostResult {
 		// present — the gemini and vertex-ai image rows carry both — because
 		// per-image is what those providers actually bill.
 		//
+		// Per-tile prices counted images, and only counted images, for the
+		// reason every other rate here prices only a reported measurement. The
+		// Gemini image models answer chat completions through the same call
+		// that generates their images, and a completion counts no image: it
+		// reports tokens. Priced per tile, that zero count recorded every such
+		// completion as a known $0.00. Such a request takes the token arm,
+		// whose rates the gemini and vertex-ai rows carry; one that counted
+		// nothing at all is unpriced.
+		//
 		// The token arm requires reported usage, and that guard is the point of
 		// it. Every image provider but OpenAI and Azure OpenAI reports none, and
 		// pricing a zero count would record $0.00 as though it were the real
@@ -148,11 +156,9 @@ func Calculate(catalog Catalog, modelKey string, usage Usage) CostResult {
 		// at nothing recorded a generation at the cost of its prompt alone —
 		// a fraction of a cent — while flagging that figure complete.
 		switch {
-		case p.ImagePerTile != nil:
+		case p.ImagePerTile != nil && usage.ImageCount > 0:
 			r.Priced = true
-			if usage.ImageCount > 0 {
-				r.ImageUSD = *p.ImagePerTile * float64(usage.ImageCount)
-			}
+			r.ImageUSD = *p.ImagePerTile * float64(usage.ImageCount)
 		case usage.PromptTokens > 0 || usage.CompletionTokens > 0:
 			// A nil rate is unknown, not free (see Pricing).
 			r.Priced = (usage.PromptTokens == 0 || p.InputPerMTokens != nil) &&

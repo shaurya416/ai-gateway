@@ -372,6 +372,47 @@ func TestCalculateImageZeroCount(t *testing.T) {
 	}
 }
 
+// A chat completion on one of the Gemini image models counts no image: it
+// reports tokens, which the row carries rates for beside its per-tile price.
+// The per-tile rate priced the zero image count instead, so the completion was
+// a known $0.00. Counting no image and reporting no token either leaves
+// nothing to bill, which is unpriced rather than free.
+func TestCalculateImageModelWithNoImageCount(t *testing.T) {
+	c, err := loadEmbedded()
+	if err != nil {
+		t.Fatalf("embedded catalog: %v", err)
+	}
+	for _, key := range []string{
+		"gemini/gemini-2.5-flash-image",
+		"gemini/gemini-3-pro-image-preview",
+		"vertex-ai/gemini-2.5-flash-image",
+	} {
+		m, ok := c.GetForPricing(key)
+		if !ok || m.Mode != ModeImage || m.Pricing.ImagePerTile == nil ||
+			m.Pricing.InputPerMTokens == nil || m.Pricing.OutputPerMTokens == nil {
+			t.Fatalf("%s: want an image row carrying a per-tile price and both token rates, got %+v", key, m)
+		}
+		usage := Usage{PromptTokens: 1_000_000, CompletionTokens: 1_000_000}
+		want := *m.Pricing.InputPerMTokens + *m.Pricing.OutputPerMTokens
+
+		got := Calculate(c, key, usage)
+		if !got.Priced || !approxEqual(got.TotalUSD, want, 1e-9) {
+			t.Errorf("%s with tokens and no image: Priced=%v TotalUSD=%v, want priced at %v on its token rates", key, got.Priced, got.TotalUSD, want)
+		}
+
+		if got := Calculate(c, key, Usage{}); got.Priced {
+			t.Errorf("%s with no image and no token: Priced=true at $%v, want unpriced", key, got.TotalUSD)
+		}
+
+		// A generation that counted images is still billed per tile, tokens
+		// or not.
+		got = Calculate(c, key, Usage{ImageCount: 2, PromptTokens: 1_000_000, CompletionTokens: 1_000_000})
+		if tile := 2 * *m.Pricing.ImagePerTile; !got.Priced || !approxEqual(got.TotalUSD, tile, 1e-9) {
+			t.Errorf("%s with two images: Priced=%v TotalUSD=%v, want %v per tile", key, got.Priced, got.TotalUSD, tile)
+		}
+	}
+}
+
 // ---- Audio modes ---------------------------------------------------------
 
 func TestCalculateAudioIn(t *testing.T) {
