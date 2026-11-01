@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 
@@ -91,6 +92,70 @@ func TestExecute_RedactLeavesANumberFailingTheCheckDigitAlone(t *testing.T) {
 	want := "order 1234 5678 9012 3456 and card [REDACTED]"
 	if got != want {
 		t.Fatalf("Content = %q, want %q", got, want)
+	}
+}
+
+// A candidate that fails the check digit does not consume the digits after it.
+// The pattern finds the leftmost run of four four-digit groups, so a card
+// written after any other four-digit number — the year column of a pasted
+// spreadsheet row, an expiry year on the line above — was read together with
+// it as one sixteen-digit candidate that failed Luhn, and the card itself, which
+// begins one group later, was never tested.
+func TestExecute_FindsACardAfterAnotherFourDigitNumber(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		text string
+		want string
+	}{
+		{"a year column before the card", "Jane Doe\t2027\t4111 1111 1111 1111", "Jane Doe\t2027\t[REDACTED]"},
+		{"an expiry year on the line above", "exp 09/2027\n5500-0000-0000-0004", "exp 09/2027\n[REDACTED]"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := Detect(tc.text); !slices.Contains(got, "credit_card") {
+				t.Fatalf("Detect(%q) = %q, want credit_card", tc.text, got)
+			}
+
+			block := &PIIRedact{}
+			if err := block.Init(map[string]any{"entities": []any{"credit_card"}}); err != nil {
+				t.Fatalf("Init: %v", err)
+			}
+			pctx := newRequest(tc.text)
+			if err := block.Execute(context.Background(), pctx); err != nil {
+				t.Fatalf("Execute: %v", err)
+			}
+			if !pctx.Reject {
+				t.Fatalf("a valid card number was forwarded: %q", tc.text)
+			}
+
+			redact := &PIIRedact{}
+			if err := redact.Init(map[string]any{"entities": []any{"credit_card"}, "action": "redact"}); err != nil {
+				t.Fatalf("Init: %v", err)
+			}
+			pctx = newRequest(tc.text)
+			if err := redact.Execute(context.Background(), pctx); err != nil {
+				t.Fatalf("Execute: %v", err)
+			}
+			if got := pctx.Request.Messages[0].Content; got != tc.want {
+				t.Fatalf("Content = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// Retrying after a failed candidate starts only where a card number could
+// start in the text as a whole, so it finds no card inside a longer number: a
+// run of digits is never re-read from its middle as though a word boundary
+// fell there.
+func TestExecute_DoesNotFindACardInsideALongerNumber(t *testing.T) {
+	for _, text := range []string{
+		"order 1234 5678 9012 3456 shipped",
+		// 4111 1111 1111 1111 passes Luhn, but here its first group is the tail
+		// of 12344111, so it is part of a longer number, not one of its own.
+		"acct 12344111 1111 1111 1111",
+	} {
+		if got := Detect(text); slices.Contains(got, "credit_card") {
+			t.Fatalf("Detect(%q) = %q, want no credit_card", text, got)
+		}
 	}
 }
 

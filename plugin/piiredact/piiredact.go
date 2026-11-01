@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/ferro-labs/ai-gateway/pkg/logger"
 	"github.com/ferro-labs/ai-gateway/plugin"
@@ -29,7 +30,8 @@ type entity struct {
 	name string
 	re   *regexp.Regexp
 	// verify, when set, decides whether a regex match is a real instance of
-	// the entity. nil means every match counts.
+	// the entity. nil means every match counts. An entity carrying one must
+	// begin its pattern with \b; see verifiedSpans.
 	verify func(match string) bool
 }
 
@@ -38,7 +40,75 @@ func (e entity) matches(text string) bool {
 	if e.verify == nil {
 		return e.re.MatchString(text)
 	}
-	return slices.ContainsFunc(e.re.FindAllString(text, -1), e.verify)
+	return len(e.verifiedSpans(text)) > 0
+}
+
+// replaceAll replaces every verified instance in text with placeholder,
+// inserted as literal text.
+func (e entity) replaceAll(text, placeholder string) string {
+	if e.verify == nil {
+		return e.re.ReplaceAllStringFunc(text, func(string) string { return placeholder })
+	}
+	var out strings.Builder
+	last := 0
+	for _, span := range e.verifiedSpans(text) {
+		out.WriteString(text[last:span[0]])
+		out.WriteString(placeholder)
+		last = span[1]
+	}
+	out.WriteString(text[last:])
+	return out.String()
+}
+
+// verifiedSpans returns the byte span of every verified instance in text,
+// leftmost first and non-overlapping.
+//
+// A candidate that fails verification does not consume the text it covered.
+// The pattern finds the leftmost candidate, so a card number written after any
+// other four-digit number — the year column of a pasted spreadsheet row, an
+// expiry year on the line above — was read together with it as one
+// sixteen-digit candidate that failed the check digit, and resuming after that
+// candidate, as FindAllString does, never tested the card, which begins one
+// group later. The search resumes instead at the next place a match can begin.
+//
+// Searching a suffix reads its first byte as the start of the text, which
+// changes what \b means there. So a search only resumes where the character
+// before is not a word character: there a boundary at the suffix's start means
+// exactly what it means in the whole text, and a pattern that begins with \b
+// cannot start anywhere else.
+func (e entity) verifiedSpans(text string) [][2]int {
+	var spans [][2]int
+	for pos := 0; pos < len(text); {
+		loc := e.re.FindStringIndex(text[pos:])
+		if loc == nil {
+			break
+		}
+		start, end := pos+loc[0], pos+loc[1]
+		if !e.verify(text[start:end]) {
+			pos = nextMatchStart(text, start)
+			continue
+		}
+		spans = append(spans, [2]int{start, end})
+		pos = nextMatchStart(text, max(start, end-1))
+	}
+	return spans
+}
+
+// nextMatchStart returns the first position after from at which a pattern
+// beginning with \b reads the text as it would read the whole of it: the start
+// of a character, preceded by one that is not an ASCII word character, which
+// is all \b recognises.
+func nextMatchStart(text string, from int) int {
+	for p := from + 1; p < len(text); p++ {
+		if utf8.RuneStart(text[p]) && !isWordByte(text[p-1]) {
+			return p
+		}
+	}
+	return len(text)
+}
+
+func isWordByte(b byte) bool {
+	return b == '_' || '0' <= b && b <= '9' || 'a' <= b && b <= 'z' || 'A' <= b && b <= 'Z'
 }
 
 // builtinEntities are the entity types recognised without configuration.
@@ -436,12 +506,7 @@ func (p *PIIRedact) redactWith(ctx context.Context, pctx *plugin.Context, text, 
 		}
 		logger.Ctx(ctx).Info("pii-redact: redacted request", "entity", e.name)
 		pctx.NoteGuardrailMatch(plugin.ActionRedact)
-		text = e.re.ReplaceAllStringFunc(text, func(match string) string {
-			if e.verify != nil && !e.verify(match) {
-				return match
-			}
-			return placeholder
-		})
+		text = e.replaceAll(text, placeholder)
 	}
 	return text
 }

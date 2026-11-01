@@ -145,6 +145,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   task routes hang off the host, worked. A value carrying a path is still used
   as written, and one carrying a query string or fragment is now refused at
   startup, as it is for every other provider's base URL.
+- `pii-redact` finds a card number written after another four-digit number,
+  as in the year column of a pasted spreadsheet row
+  (`Jane Doe\t2027\t4111 1111 1111 1111`) or an expiry year on the line above.
+  The pattern matched the leftmost run of four four-digit groups, so the other
+  number and the card's first three groups were read as one sixteen-digit
+  candidate; it failed the Luhn check, and the search resumed after it, so the
+  card, which begins one group later, was never tested. `block` forwarded it,
+  `redact` left it in the request and `log` recorded nothing. A candidate that
+  fails the check no longer consumes the digits after it; the search resumes
+  where the next number could begin, so a card is still never found inside a
+  longer number.
 - `max-token` counts a replayed assistant turn's `reasoning_content` toward
   `max_input_length`. The field is written into the request body sent to every
   OpenAI-wire provider, DeepSeek's thinking models among them, but the
