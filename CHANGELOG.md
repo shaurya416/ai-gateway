@@ -183,6 +183,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that counted none is priced on its tokens at the row's token rates, and one
   that reported neither is unpriced. `/v1/images/generations`, which counts the
   images it returns, is priced per image as before.
+- A `budget` also listed at `on_error` now charges a key once for a response
+  that an `after_request` plugin listed after it refused or failed on. The
+  budget's `after_request` stage recorded the call, and the `on_error` stage
+  that followed carried the same response and recorded it again, so every
+  such request — a `word-filter`, `secret-scan`, `regex-guard` or
+  `schema-guard` refusal of the answer, on a unary or a streamed request —
+  was charged twice and a key reached its `spend_limit_usd` at half the spend.
+  A request is now recorded into a store at most once, whichever stage
+  records it; a response refused by a plugin listed ahead of the budget is
+  still recorded at `on_error`, once.
 - A tool declared with `"parameters": null` now reaches Anthropic and Claude
   on Bedrock with the empty object schema, as a tool with no `parameters`
   already did. Anthropic requires `input_schema` to be a schema object, and

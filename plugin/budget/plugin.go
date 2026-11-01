@@ -470,10 +470,15 @@ func (p *Plugin) Execute(_ context.Context, pctx *plugin.Context) error {
 	// Nor twice. A request this plugin refused mid-loop has had its spend
 	// recorded at the refusal (see checkBudget), and the usage the gateway
 	// carries onto the error path for that request is the same spend again.
+	// So has one this plugin recorded at after_request and that then failed
+	// there — an after_request plugin listed after this one refused or broke
+	// on the response — and the on_error stage that follows carries the same
+	// response.
 	if recorded(pctx, p.storeID) {
 		return nil
 	}
 	p.recordCost(pctx, key)
+	markRecorded(pctx, p.storeID)
 	return nil
 }
 
