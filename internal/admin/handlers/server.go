@@ -5,6 +5,8 @@ package handlers
 
 import (
 	"context"
+	"net/http"
+	"strings"
 	"sync"
 
 	"github.com/ferro-labs/ai-gateway/config"
@@ -112,6 +114,7 @@ type Handlers struct {
 // Routes returns a chi.Router with all admin endpoints mounted.
 func (h *Handlers) Routes() chi.Router {
 	r := chi.NewRouter()
+	r.MethodNotAllowed(methodNotAllowed)
 
 	// Read-only endpoints (accessible with read-only or admin scope).
 	r.Group(func(r chi.Router) {
@@ -161,4 +164,45 @@ func (h *Handlers) Routes() chi.Router {
 	})
 
 	return r
+}
+
+// allowCandidates are the methods an admin route can be registered for, in the
+// order a 405's Allow header names them.
+var allowCandidates = []string{http.MethodDelete, http.MethodGet, http.MethodPatch, http.MethodPost, http.MethodPut}
+
+// methodNotAllowed refuses a method an admin route does not serve as every
+// other route the gateway serves does: with the JSON error envelope and an
+// Allow header naming each method the resource accepts. chi's own 405 has an
+// empty body, and its Allow omits HEAD, which the router serves on every GET
+// route (chimiddleware.GetHead) — and RFC 9110 §15.5.6 requires Allow to name
+// the methods the resource supports, not a subset of them.
+func methodNotAllowed(w http.ResponseWriter, r *http.Request) {
+	allowed := allowedMethods(r)
+	w.Header().Set("Allow", strings.Join(allowed, ", "))
+	writeError(w, http.StatusMethodNotAllowed,
+		"Only "+strings.Join(allowed, ", ")+" requests are accepted on "+r.URL.Path+".",
+		"invalid_request_error", "method_not_supported")
+}
+
+// allowedMethods asks the router this request was routed by which methods the
+// request's path is registered for, HEAD alongside GET.
+func allowedMethods(r *http.Request) []string {
+	rctx := chi.RouteContext(r.Context())
+	if rctx == nil || rctx.Routes == nil {
+		return nil
+	}
+	routePath := r.URL.RawPath
+	if routePath == "" {
+		routePath = r.URL.Path
+	}
+	var allowed []string
+	for _, method := range allowCandidates {
+		if rctx.Routes.Match(chi.NewRouteContext(), method, routePath) {
+			allowed = append(allowed, method)
+			if method == http.MethodGet {
+				allowed = append(allowed, http.MethodHead)
+			}
+		}
+	}
+	return allowed
 }

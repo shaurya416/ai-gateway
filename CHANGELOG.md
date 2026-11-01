@@ -204,6 +204,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   spend the floor was missing mostly counted failures. Such a row is no longer
   counted; an `on_error` row carrying the usage of a call the provider did
   answer, and every success without a cost, still are.
+- A wrong method on an `/admin` route is now refused with the JSON error
+  envelope and an `Allow` header naming every method the route accepts, as on
+  every other route. The admin routes answered with the router's bare `405`:
+  an empty body, and an `Allow` that left out `HEAD` on every `GET` route —
+  `PUT /admin/dashboard` said `Allow: GET` while `HEAD /admin/dashboard` is
+  served.
 - A route the gateway serves itself is now reached by every spelling of its
   path. The router matched `/v1/chat/completions`, `/v1/completions`,
   `/v1/embeddings` and the rest exactly as written, so
