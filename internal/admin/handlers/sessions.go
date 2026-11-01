@@ -117,6 +117,10 @@ func (h *Handlers) deleteSession(w http.ResponseWriter, r *http.Request) {
 // request, so listing it reported a departing operator as signed in to the
 // admin who had just revoked their key. Each listed session's source credential
 // is therefore checked the way the auth middleware checks it.
+//
+// A listed session carries the scopes it is admitted under: for a stored key,
+// that key's current scopes, which the middleware presents it downstream with,
+// rather than the ones it was minted with.
 func (h *Handlers) listSessions(w http.ResponseWriter, r *http.Request) {
 	if h.Sessions == nil {
 		writeError(w, http.StatusNotImplemented, "session authentication is not enabled", "not_implemented_error", "not_implemented")
@@ -130,14 +134,21 @@ func (h *Handlers) listSessions(w http.ResponseWriter, r *http.Request) {
 	}
 	sessions := make([]*model.Session, 0, len(stored))
 	for _, sess := range stored {
-		_, live, err := sessionSourceCredential(r.Context(), h.Keys, h.CredentialLive, sess.CredentialID)
+		cred, live, err := sessionSourceCredential(r.Context(), h.Keys, h.CredentialLive, sess.CredentialID)
 		if err != nil {
 			writeKeyStoreError(w, err)
 			return
 		}
-		if live {
-			sessions = append(sessions, sess)
+		if !live {
+			continue
 		}
+		if cred != nil {
+			// The stored scopes are the mint-time snapshot. A synthetic
+			// credential is never re-scoped, so only a stored key's are
+			// replaced.
+			sess.Scopes = append([]string(nil), cred.Scopes...)
+		}
+		sessions = append(sessions, sess)
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")

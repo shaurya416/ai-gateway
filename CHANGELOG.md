@@ -207,6 +207,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   keeps a config applied through `PUT /admin/config` across a restart — went
   unmentioned. An in-memory config store now names `CONFIG_STORE_BACKEND`, and
   an in-memory key store `API_KEY_STORE_BACKEND`.
+- `GET /admin/sessions` now lists each dashboard session with the scopes it
+  authenticates with. A session is admitted under its source key's current
+  scopes, so changing that key's scopes takes effect on the session at once,
+  but the listing — and the Scopes column of the dashboard's sessions panel —
+  served the scopes the session was minted with: an operator whose read-only
+  key was raised to admin was listed as `read_only` while creating keys, and
+  one whose admin key was cut back to `read_only` was still listed as `admin`.
+  A session minted from a stored key is now listed with that key's scopes; one
+  minted from `MASTER_KEY` keeps `admin`.
 - A streamed chat request served while a config reload runs is no longer
   answered as one buffered chunk with no MCP tools. A stream is diverted into
   the MCP tool loop when the MCP registry it reads has tools to offer, but the
