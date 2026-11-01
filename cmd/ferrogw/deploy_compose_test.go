@@ -35,7 +35,7 @@ func copyRepoTree(t *testing.T, dst, rel string) {
 		if err := os.MkdirAll(filepath.Dir(target), 0o750); err != nil {
 			return err
 		}
-		return os.WriteFile(target, data, 0o600)
+		return os.WriteFile(target, data, 0o600) //nolint:gosec // G703: target sits under the test temp dir
 	})
 	if err != nil {
 		t.Fatalf("copy %s: %v", rel, err)
@@ -46,7 +46,7 @@ func copyRepoTree(t *testing.T, dst, rel string) {
 // as `make -n` prints it, with its trailing `up ...` replaced by `config`.
 func composeCommand(t *testing.T, dir, target string) []string {
 	t.Helper()
-	out, err := exec.Command("make", "-n", "-s", "-C", dir, target).CombinedOutput() //nolint:gosec // G204: fixed make target
+	out, err := exec.CommandContext(t.Context(), "make", "-n", "-s", "-C", dir, target).CombinedOutput() //nolint:gosec // G204: fixed make target
 	if err != nil {
 		t.Fatalf("make -n %s: %v\n%s", target, err, out)
 	}
@@ -83,7 +83,7 @@ func TestComposeStacksReadTheRepositoryRootDotEnv(t *testing.T) {
 	if _, err := exec.LookPath("make"); err != nil {
 		t.Skip("make is not installed")
 	}
-	if err := exec.Command("docker", "compose", "version").Run(); err != nil {
+	if err := exec.CommandContext(t.Context(), "docker", "compose", "version").Run(); err != nil {
 		t.Skip("docker compose is not installed")
 	}
 
@@ -121,7 +121,7 @@ func TestComposeStacksReadTheRepositoryRootDotEnv(t *testing.T) {
 			args := composeCommand(t, root, tt.target)
 			// The environment of the test process must not supply what the file
 			// is supposed to.
-			cmd := exec.Command(args[0], args[1:]...) //nolint:gosec // G204: the Makefile's own command
+			cmd := exec.CommandContext(t.Context(), args[0], args[1:]...) //nolint:gosec // G204: the Makefile's own command
 			cmd.Dir = root
 			cmd.Env = slices.DeleteFunc(os.Environ(), func(kv string) bool {
 				name, _, _ := strings.Cut(kv, "=")

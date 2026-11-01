@@ -124,6 +124,7 @@ func TestRouter_NativeRouteSpellingsAreNotPassthroughCandidates(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			before := len(upstream.seen())
 			resp := send(t, tc.method, tc.path, tc.body)
+			defer func() { _ = resp.Body.Close() }()
 			if resp.StatusCode != tc.want {
 				t.Errorf("%s %s = %d, want %d as on the canonical route", tc.method, tc.path, resp.StatusCode, tc.want)
 			}
@@ -140,6 +141,7 @@ func TestRouter_NativeRouteSpellingsAreNotPassthroughCandidates(t *testing.T) {
 		before := len(upstream.seen())
 		resp := send(t, http.MethodPost, "/v1/chat/completion%73",
 			`{"model":"gpt-4o-mini","max_tokens":8,"messages":[{"role":"user","content":"hi"}]}`)
+		defer func() { _ = resp.Body.Close() }()
 		if resp.StatusCode != http.StatusOK {
 			t.Fatalf("status = %d, want 200", resp.StatusCode)
 		}

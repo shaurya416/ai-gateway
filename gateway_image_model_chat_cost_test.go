@@ -60,7 +60,8 @@ func TestRoute_ChatOnImageModelIsPricedOnItsTokens(t *testing.T) {
 		if err != nil {
 			t.Fatalf("RouteStream: %v", err)
 		}
-		for range out {
+		for chunk := range out {
+			_ = chunk
 		}
 		assertImageModelChatCost(t, *measured)
 	})

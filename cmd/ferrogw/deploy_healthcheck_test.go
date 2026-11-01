@@ -76,7 +76,7 @@ func TestDockerHealthcheckProbesThePortTheGatewayListensOn(t *testing.T) {
 				if tt.port != "" {
 					env = append(env, "PORT="+tt.port)
 				}
-				cmd := exec.Command(sh, "-c", cmdline) //nolint:gosec // G204: the Dockerfile's own HEALTHCHECK
+				cmd := exec.CommandContext(t.Context(), sh, "-c", cmdline) //nolint:gosec // G204: the Dockerfile's own HEALTHCHECK
 				cmd.Env = env
 				if out, err := cmd.CombinedOutput(); err != nil {
 					t.Fatalf("HEALTHCHECK %q: %v\n%s", cmdline, err, out)
