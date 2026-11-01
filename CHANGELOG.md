@@ -145,6 +145,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   task routes hang off the host, worked. A value carrying a path is still used
   as written, and one carrying a query string or fragment is now refused at
   startup, as it is for every other provider's base URL.
+- `max-token` counts a replayed assistant turn's `reasoning_content` toward
+  `max_input_length`. The field is written into the request body sent to every
+  OpenAI-wire provider, DeepSeek's thinking models among them, but the
+  measurement read only the message body and its tool-call arguments, so an
+  assistant turn could carry any amount of input in its reasoning past a cap of
+  any size. It now counts, whether or not the message is multipart.
 - A tool declared with `"parameters": null` now reaches Anthropic and Claude
   on Bedrock with the empty object schema, as a tool with no `parameters`
   already did. Anthropic requires `input_schema` to be a schema object, and

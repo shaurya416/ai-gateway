@@ -439,3 +439,39 @@ func TestMaxToken_MaxInputLengthCountsToolCallArguments(t *testing.T) {
 		t.Fatal("5000 characters of tool-call arguments passed a 100-character input cap")
 	}
 }
+
+// A replayed assistant turn's reasoning content travels to the provider with
+// the rest of the conversation — Message.MarshalJSON writes it into the body
+// as reasoning_content — so it counts toward the input length, multipart
+// message or not. Measuring only the body and the tool-call arguments let a
+// request carry any amount of input in that one field past a cap of any size.
+func TestMaxToken_MaxInputLengthCountsReasoningContent(t *testing.T) {
+	reasoning := strings.Repeat("A", 5000)
+	for _, tc := range []struct {
+		name    string
+		message providers.Message
+	}{
+		{"plain content", providers.Message{Role: "assistant", Content: "ok", ReasoningContent: reasoning}},
+		{"content parts", providers.Message{
+			Role:             "assistant",
+			ContentParts:     []providers.ContentPart{{Type: "text", Text: "ok"}},
+			ReasoningContent: reasoning,
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := initMaxToken(t, map[string]any{"max_input_length": 100})
+			req := &providers.Request{Model: "deepseek-reasoner", Messages: []providers.Message{
+				{Role: "user", Content: "hi"},
+				tc.message,
+			}}
+			pctx := plugin.NewContext(req)
+
+			if err := m.Execute(context.Background(), pctx); err != nil {
+				t.Fatalf("Execute error: %v", err)
+			}
+			if !pctx.Reject {
+				t.Fatal("5000 characters of reasoning content passed a 100-character input cap")
+			}
+		})
+	}
+}

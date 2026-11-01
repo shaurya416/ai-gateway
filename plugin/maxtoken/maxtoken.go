@@ -219,8 +219,10 @@ func deny(pctx *plugin.Context, reason string) {
 // The arguments of each tool call the message replays travel with it and are
 // billed as prompt tokens like the rest of it, so they count too. Leaving them
 // out let an assistant turn carry any amount of input past a cap of any size.
+// So does a replayed turn's reasoning content, which is written into the body
+// as reasoning_content whether or not the message is multipart.
 func messageLen(msg providers.Message) int {
-	n := 0
+	n := len(msg.ReasoningContent)
 	for _, call := range msg.ToolCalls {
 		n += len(call.Function.Arguments)
 	}
