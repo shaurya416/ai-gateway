@@ -61,9 +61,10 @@ func isTrustedProxy(host string, trusted []*net.IPNet) bool {
 //
 // XFF selection strategy: when the direct peer is trusted, the chain is
 // walked right-to-left and the first entry that parses as an IP outside every
-// trusted-proxy CIDR is selected. Proxies append, so the rightmost entry is
-// the one written by the hop closest to us and each step leftwards is one
-// step further from anything we can vouch for — the leftmost entry is
+// trusted-proxy CIDR is selected; an entry written "ip:port" or "[ip]:port"
+// parses as its IP (see forwardedHopIP). Proxies append, so the rightmost
+// entry is the one written by the hop closest to us and each step leftwards is
+// one step further from anything we can vouch for — the leftmost entry is
 // whatever the original caller chose to send. Walking from the right
 // therefore stops at the address a trusted proxy actually observed; walking
 // from the left would return a value the caller supplied in its own
@@ -96,10 +97,10 @@ func resolveClientIP(r *http.Request, trusted []*net.IPNet) string {
 	if xff := strings.Join(r.Header.Values("X-Forwarded-For"), ","); xff != "" {
 		hops := strings.Split(xff, ",")
 		for i := len(hops) - 1; i >= 0; i-- {
-			hop := strings.TrimSpace(hops[i])
+			hop, ok := forwardedHopIP(strings.TrimSpace(hops[i]))
 			// A hop that is unparseable, or that is one of our own proxies,
 			// tells us nothing about the caller; keep walking outward.
-			if net.ParseIP(hop) == nil || isTrustedProxy(hop, trusted) {
+			if !ok || isTrustedProxy(hop, trusted) {
 				continue
 			}
 			return hop
@@ -115,6 +116,25 @@ func resolveClientIP(r *http.Request, trusted []*net.IPNet) string {
 
 	// No valid forwarded header; return the direct peer.
 	return host
+}
+
+// forwardedHopIP reads one X-Forwarded-For entry as the address it names.
+//
+// Some proxies append the address they observed together with its source
+// port — Azure Application Gateway writes "client-ip:port", and an IPv6 peer
+// then arrives as "[addr]:port". That entry is the one the proxy vouches for.
+// Read as malformed, it was stepped over, and the walk went on into the
+// entries the caller wrote — and past them to the caller's own X-Real-IP — so
+// the caller chose its own address and a fresh rate-limit bucket per request.
+func forwardedHopIP(hop string) (string, bool) {
+	if net.ParseIP(hop) != nil {
+		return hop, true
+	}
+	host, _, err := net.SplitHostPort(hop)
+	if err != nil || net.ParseIP(host) == nil {
+		return "", false
+	}
+	return host, true
 }
 
 // RealIPMiddleware returns HTTP middleware that rewrites r.RemoteAddr to the

@@ -189,6 +189,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with nothing to say the request had changed on the way. Both are forwarded
   as one `name[]` part per value, the encoding the OpenAI SDKs use; the bare
   field name is accepted too.
+- Behind a trusted proxy that writes `X-Forwarded-For` entries with a port —
+  Azure Application Gateway appends `client-ip:port` — the gateway now keys on
+  the client that proxy observed. That entry did not parse as an IP, so it was
+  stepped over as malformed and the walk went on into the entries the caller
+  wrote, then to the caller's own `X-Real-IP`: a client sending
+  `X-Forwarded-For: 9.9.9.9` was logged as 9.9.9.9 and took a fresh per-IP
+  rate-limit bucket on every request by changing it, and a client sending
+  neither shared one bucket with everyone behind the proxy. An entry written
+  `ip:port` or `[ip]:port` is now read as its IP, both for the client and for
+  matching `TRUSTED_PROXIES`.
 - A streamed chat request served while a config reload runs is no longer
   answered as one buffered chunk with no MCP tools. A stream is diverted into
   the MCP tool loop when the MCP registry it reads has tools to offer, but the
