@@ -169,6 +169,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stdio ran to its configured timeout. A client whose timeout is longer than
   that bound now uses a transport that leaves the wait to the timeout. A webhook
   `timeout` above two minutes is honoured the same way.
+- A sign-in, a session revoke and a sign-out of every operator that the
+  session store refuses now leave a `session.create`, `session.revoke` or
+  `session.revoke_all` error row in the audit trail. Each answered `500` and
+  wrote only a log line, so the trail — which records a refused key, config or
+  log-purge change as an error — could not say that anyone had tried to cut an
+  operator off, or that a credential it accepted had failed to sign in.
 - `GET /admin/sessions` now lists only the dashboard sessions that can still
   authenticate, and `DELETE /admin/sessions` counts only those. A session is
   refused on every request once the key it was minted from is revoked, deleted

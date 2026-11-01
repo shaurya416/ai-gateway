@@ -52,6 +52,10 @@ func (h *Handlers) createSession(w http.ResponseWriter, r *http.Request) {
 
 	sess, token, err := h.Sessions.CreateSession(r.Context(), identity.Name, identity.ID, identity.Scopes, repository.DefaultSessionTTL)
 	if err != nil {
+		// The credential was accepted and the store refused to mint the
+		// session. That is neither a sign-in nor a denial, and it is recorded
+		// as the error it is, attributed to the credential that asked.
+		h.recordAuditAs(r, identity, "session.create", identity.ID, model.AuditError, "error", err.Error())
 		logger.Default().Error("session creation failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "internal server error", "server_error", "internal_error")
 		return
@@ -158,6 +162,10 @@ func (h *Handlers) revokeSession(w http.ResponseWriter, r *http.Request) {
 
 	id := chi.URLParam(r, "id")
 	if err := h.Sessions.DeleteSession(r.Context(), id); err != nil && !errors.Is(err, repository.ErrSessionNotFound) {
+		// A revoke the store refused is recorded too, as every refused
+		// credential change is: the trail is how anyone learns that an
+		// operator's access was meant to be cut off and was not.
+		h.recordAudit(r, "session.revoke", id, model.AuditError, "error", err.Error())
 		logger.Default().Error("session revoke failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "internal server error", "server_error", "internal_error")
 		return
@@ -192,6 +200,7 @@ func (h *Handlers) deleteAllSessions(w http.ResponseWriter, r *http.Request) {
 	}
 	n, err := h.Sessions.DeleteAllSessions(r.Context())
 	if err != nil {
+		h.recordAudit(r, "session.revoke_all", "*", model.AuditError, "error", err.Error())
 		logger.Default().Error("session revoke-all failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "internal server error", "server_error", "internal_error")
 		return
