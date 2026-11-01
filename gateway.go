@@ -252,6 +252,10 @@ func New(cfg config.Config, opts ...Option) (*Gateway, error) {
 	gw.catalog = catalog
 	gw.providers = make(map[string]providers.Provider)
 	gw.plugins = plugin.NewManager(gw.log)
+	// RegisterPlugin adds to this manager until LoadPlugins replaces it, so it
+	// carries the same match sink buildPluginManager installs: a guardrail
+	// registered through the Go API reports its matches like a configured one.
+	gw.plugins.SetGuardrailMatchSink(gw.emitGuardrailMatch)
 	gw.circuitBreakers = make(map[string]*circuitbreaker.CircuitBreaker)
 	gw.limiters = make(map[string]*providerLimiter)
 	gw.cooldowns = make(map[string]time.Time)

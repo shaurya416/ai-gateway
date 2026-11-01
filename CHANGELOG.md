@@ -326,6 +326,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   broken `on_error` plugin showed none. The outcome is now `rejected` only for
   the plugin whose run made the refusal, so an `on_error` plugin reads `ok`,
   or `error` with its failure recorded.
+- A guardrail registered with `Gateway.RegisterPlugin` now reports its matches
+  as `gateway.guardrail.match` events, as one loaded from the `plugins` config
+  does. `RegisterPlugin` adds to the plugin manager the gateway builds in
+  `New`, and only the manager built from config was connected to the
+  observability seam, so a guardrail in `warn` or `log` mode registered through
+  the Go API matched requests with nothing reaching any exporter — the one
+  signal a non-blocking mode exists to produce.
 - `make test` runs the tests of the Go client (`client/`) and of the `run`
   and `httpgateway` packages. The target names its packages instead of
   `./...`, and the list named none of the three, so it reported success
