@@ -199,6 +199,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   neither shared one bucket with everyone behind the proxy. An entry written
   `ip:port` or `[ip]:port` is now read as its IP, both for the client and for
   matching `TRUSTED_PROXIES`.
+- The startup banner now names the variable that persists each store it
+  reports as in-memory. It followed every such warning with
+  `Set API_KEY_STORE_BACKEND=sqlite for persistence`, so a gateway whose key
+  store was already on SQLite or Postgres but whose config store was in memory
+  was told to set the variable it had set, while `CONFIG_STORE_BACKEND` — what
+  keeps a config applied through `PUT /admin/config` across a restart — went
+  unmentioned. An in-memory config store now names `CONFIG_STORE_BACKEND`, and
+  an in-memory key store `API_KEY_STORE_BACKEND`.
 - A streamed chat request served while a config reload runs is no longer
   answered as one buffered chunk with no MCP tools. A stream is diverted into
   the MCP tool loop when the MCP registry it reads has tools to offer, but the

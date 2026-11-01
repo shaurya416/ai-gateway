@@ -876,24 +876,27 @@ func PrintStartupBanner(addr string, registry *providers.Registry, cfg *config.C
 	}
 	fmt.Fprintf(os.Stderr, "\n")
 
-	// Store warnings.
-	hasWarnings := false
+	// Store warnings. Each names the variable that persists that store: the
+	// key store and the config store are configured separately, so one hint
+	// for both told an operator whose config store was the in-memory one to
+	// set the key store's variable.
+	type memoryStore struct{ warning, envVar string }
+	var inMemory []memoryStore
 	if keyStoreBackend == BackendMemory {
-		if !hasWarnings {
-			fmt.Fprintf(os.Stderr, "  Warnings\n")
-			hasWarnings = true
-		}
-		fmt.Fprintf(os.Stderr, "    %s[!] API key store: in-memory (keys lost on restart)%s\n", yellow, reset)
+		inMemory = append(inMemory, memoryStore{"API key store: in-memory (keys lost on restart)", "API_KEY_STORE_BACKEND"})
 	}
 	if configStoreBackend == BackendMemory {
-		if !hasWarnings {
-			fmt.Fprintf(os.Stderr, "  Warnings\n")
-			hasWarnings = true
-		}
-		fmt.Fprintf(os.Stderr, "    %s[!] Config store: in-memory (config lost on restart)%s\n", yellow, reset)
+		inMemory = append(inMemory, memoryStore{"Config store: in-memory (config lost on restart)", "CONFIG_STORE_BACKEND"})
 	}
-	if hasWarnings {
-		fmt.Fprintf(os.Stderr, "    %sSet API_KEY_STORE_BACKEND=sqlite for persistence%s\n", dim, reset)
-		fmt.Fprintf(os.Stderr, "\n")
+	if len(inMemory) == 0 {
+		return
 	}
+	fmt.Fprintf(os.Stderr, "  Warnings\n")
+	for _, store := range inMemory {
+		fmt.Fprintf(os.Stderr, "    %s[!] %s%s\n", yellow, store.warning, reset)
+	}
+	for _, store := range inMemory {
+		fmt.Fprintf(os.Stderr, "    %sSet %s=sqlite for persistence%s\n", dim, store.envVar, reset)
+	}
+	fmt.Fprintf(os.Stderr, "\n")
 }
