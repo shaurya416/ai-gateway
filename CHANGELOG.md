@@ -126,6 +126,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A tool declared with `"parameters": null` now reaches Anthropic and Claude
+  on Bedrock with the empty object schema, as a tool with no `parameters`
+  already did. Anthropic requires `input_schema` to be a schema object, and
+  the adapter substituted one only when the field was missing: an explicit
+  `null` — what a client that serialises unset fields sends for a function
+  taking no arguments, and what an MCP server can advertise as a tool's
+  `inputSchema` — decoded to the literal `null` and was forwarded as
+  `input_schema: null`, so every request offering that tool was refused.
 - A streamed chat request to Anthropic, Gemini, Cohere or a Claude model on
   Bedrock whose upstream answers `200` without a stream is now a failure, as
   it already is on OpenAI and the OpenAI-compatible providers. These providers

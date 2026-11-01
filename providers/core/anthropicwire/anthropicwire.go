@@ -4,6 +4,7 @@
 package anthropicwire
 
 import (
+	"bytes"
 	"encoding/json"
 
 	"github.com/ferro-labs/ai-gateway/providers/core"
@@ -17,8 +18,8 @@ type Tool struct {
 }
 
 // MapTools converts canonical tool definitions to Anthropic's native shape.
-// An empty parameter schema defaults to an empty object, which Anthropic
-// requires (input_schema is mandatory).
+// An empty or null parameter schema defaults to an empty object, which
+// Anthropic requires (input_schema is mandatory and must be an object).
 func MapTools(tools []core.Tool) []Tool {
 	if len(tools) == 0 {
 		return nil
@@ -26,7 +27,9 @@ func MapTools(tools []core.Tool) []Tool {
 	out := make([]Tool, 0, len(tools))
 	for _, t := range tools {
 		schema := t.Function.Parameters
-		if len(schema) == 0 {
+		// "parameters": null decodes to the bytes of the literal, so it is
+		// not empty, and forwarded as written it is an input_schema of null.
+		if trimmed := bytes.TrimSpace(schema); len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
 			schema = json.RawMessage(`{"type":"object","properties":{}}`)
 		}
 		out = append(out, Tool{
