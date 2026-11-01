@@ -366,6 +366,12 @@ type GatewayConfigManager struct {
 	// and now supersedes whatever the gateway was built from. Written once,
 	// before the manager is returned, and read-only afterwards.
 	adoptedStored bool
+	// startedObservability is the boot-only observability section of the
+	// config running once construction is done — the stored config when one
+	// was adopted, the gateway's own otherwise. It is the section the tracing
+	// pipeline is built from at startup (see warnBootOnlyChanges). Written
+	// once, before the manager is returned, and read-only afterwards.
+	startedObservability config.ObservabilityConfig
 	// diverged records that the running config and the persisted one describe
 	// different states and this process can no longer reconcile them. See
 	// Ping, which is what acts on it. Atomic rather than guarded by mu: Ping is
@@ -406,6 +412,7 @@ func NewGatewayConfigManager(gw *aigateway.Gateway, store ConfigStore) (*Gateway
 			m.adoptedStored = true
 		}
 	}
+	m.startedObservability = bootOnlyObservability(gw.GetConfig())
 
 	return m, nil
 }
@@ -508,7 +515,7 @@ func (m *GatewayConfigManager) ReloadConfig(ctx context.Context, cfg config.Conf
 		}
 	}
 
-	warnBootOnlyChanges(previousCfg, cfg)
+	warnBootOnlyChanges(m.startedObservability, previousCfg, cfg)
 
 	return nil
 }
@@ -575,11 +582,17 @@ func warnStoredLiterals(cfg config.Config) {
 // taken effect — warning that it awaits a restart would tell the operator the
 // opposite of what happened.
 //
+// What is pending is a difference from started, the section the pipeline was
+// built from, so an apply that puts that section back reports nothing: it is
+// exactly what the process exports with. An apply that leaves the section as
+// the previous one held is not reported again either.
+//
 // The log line is the weak form of this signal — a durable flag on
 // GET /admin/config beside the value, as pg_settings.pending_restart is, is
 // what an operator should be able to query. That belongs to the admin handler.
-func warnBootOnlyChanges(previous, next config.Config) {
-	if reflect.DeepEqual(bootOnlyObservability(previous), bootOnlyObservability(next)) {
+func warnBootOnlyChanges(started config.ObservabilityConfig, previous, next config.Config) {
+	applied := bootOnlyObservability(next)
+	if reflect.DeepEqual(bootOnlyObservability(previous), applied) || reflect.DeepEqual(started, applied) {
 		return
 	}
 	logger.Default().Warn(
@@ -656,6 +669,7 @@ func (m *GatewayConfigManager) ResetConfig(ctx context.Context) error {
 			// clearing the override failed.
 			saveErr := m.store.Save(ctx, m.initial)
 			if saveErr == nil {
+				warnBootOnlyChanges(m.startedObservability, previousCfg, m.initial)
 				return errors.Join(ErrConfigPersistence, err)
 			}
 			// Neither write landed, so the store still holds the override.
@@ -679,6 +693,7 @@ func (m *GatewayConfigManager) ResetConfig(ctx context.Context) error {
 			return errors.Join(ErrConfigPersistence, err, saveErr)
 		}
 	}
+	warnBootOnlyChanges(m.startedObservability, previousCfg, m.initial)
 	return nil
 }
 

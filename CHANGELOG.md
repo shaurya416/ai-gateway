@@ -207,6 +207,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   keeps a config applied through `PUT /admin/config` across a restart — went
   unmentioned. An in-memory config store now names `CONFIG_STORE_BACKEND`, and
   an in-memory key store `API_KEY_STORE_BACKEND`.
+- The warning that an observability change awaits a restart now compares
+  against the section the process started with, which is the one its tracing
+  pipeline was built from. It compared against the previous apply, so undoing a
+  pending change — putting back the endpoint the process is exporting to —
+  logged `pending_restart=true`, "accepted and persisted but not applied",
+  for a value that was live; and a `DELETE /admin/config` never compared at
+  all, so resetting away from a stored override adopted at start served the
+  file's observability section from `GET /admin/config` while spans went on
+  exporting under the override's, with nothing logged. Both an update and a
+  reset now warn exactly when the section they leave in place differs from the
+  one in force.
 - A `DELETE /admin/config` the config store cannot record no longer leaves the
   gateway running a config the next start discards. A reset applies the
   startup config and then clears the persisted override; when the clear failed
