@@ -59,6 +59,14 @@ func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-cha
 	obs := g.obs
 	obsEventsActive := g.obsEventsActive
 	mcpRegistrySnapshot := g.mcpRegistry
+	mcpExecutorSnapshot := g.mcpExecutor
+	// Held until the decision below has been acted on, so a reload cannot
+	// retire the registry between deciding to divert on it and running the
+	// diverted request against it. Released as soon as the stream goes its
+	// own way: the stream does not use it, and holding it for the stream's
+	// whole life would keep a retired registry's subprocesses running.
+	releaseMCP := acquireMCPRegistry(mcpRegistrySnapshot)
+	defer releaseMCP()
 	plugins := g.plugins
 	releasePlugins := acquirePluginManager(plugins)
 	g.mu.RUnlock()
@@ -96,12 +104,16 @@ func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-cha
 		// Do not force req.Stream = false here: let Route() capture the
 		// original stream flag via its own originalStream variable so that
 		// emitted events correctly reflect stream: true for RouteStream callers.
-		resp, err := g.Route(ctx, req)
+		//
+		// The registry this decision was made on goes with the request, so the
+		// tools that diverted it are the tools it is offered (see route).
+		resp, err := g.route(ctx, req, &mcpHold{registry: mcpRegistrySnapshot, executor: mcpExecutorSnapshot})
 		if err != nil {
 			return nil, err
 		}
 		return responseStream(resp, suppressUsageForClient(req)), nil
 	}
+	releaseMCP()
 
 	// See Route: this entry point is exported too, and the trace ID read here is
 	// the one every later read in this function (the meter meta, the span

@@ -182,9 +182,29 @@ func withUnsupportedParamMode(ctx context.Context, compatMode string) context.Co
 }
 
 // Route routes a request to the appropriate provider based on the configuration.
+func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.Response, error) {
+	return g.route(ctx, req, nil)
+}
+
+// mcpHold is an MCP registry, and the executor built over it, that a caller
+// has already decided on and holds (see acquireMCPRegistry).
+type mcpHold struct {
+	registry *mcp.Registry
+	executor *mcp.Executor
+}
+
+// route is Route. held, when non-nil, is the MCP registry the request runs its
+// tool loop against in place of the gateway's current one.
+//
+// RouteStream needs it. It diverts a stream here because the registry it read
+// has tools to offer, and that decision is only honoured if this request is
+// offered tools from the same registry: reading the current one instead let a
+// config reload land between the two — every reload builds a fresh registry,
+// whose servers have not yet completed their handshake — and the diverted
+// stream then ran as an ordinary non-streaming call that MCP took no part in.
 //
 //nolint:maintidx // The request lifecycle stays together so plugin, routing, MCP, and accounting stages cannot drift.
-func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.Response, error) {
+func (g *Gateway) route(ctx context.Context, req providers.Request, held *mcpHold) (*providers.Response, error) {
 	ctx, task := trace.NewTask(ctx, "gateway.route")
 	defer task.End()
 
@@ -202,6 +222,9 @@ func (g *Gateway) Route(ctx context.Context, req providers.Request) (*providers.
 	obsEventsActive := g.obsEventsActive
 	mcpRegistrySnapshot := g.mcpRegistry
 	mcpExecutorSnapshot := g.mcpExecutor
+	if held != nil {
+		mcpRegistrySnapshot, mcpExecutorSnapshot = held.registry, held.executor
+	}
 	releaseMCP := acquireMCPRegistry(mcpRegistrySnapshot)
 	plugins := g.plugins
 	releasePlugins := acquirePluginManager(plugins)

@@ -126,6 +126,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A streamed chat request served while a config reload runs is no longer
+  answered as one buffered chunk with no MCP tools. A stream is diverted into
+  the MCP tool loop when the MCP registry it reads has tools to offer, but the
+  diverted request then read the gateway's registry again, and every reload
+  builds a fresh one whose servers have not finished their handshake: a reload
+  landing between the two reads turned the stream into an ordinary
+  non-streaming call — one chunk, bounded by `request_timeout`, and no tool
+  loop. The diverted request now runs against the registry that diverted it.
 - A config change through the Admin API that touches only
   `observability.tracing.attempt_spans` or
   `observability.tracing.propagate_passthrough` no longer logs that it was not
