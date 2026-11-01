@@ -116,7 +116,7 @@ func TestBoundUploadByIdleness_NoServerReadTimeoutChangesNothing(t *testing.T) {
 func TestRestartWriteTimeout_GivesTheAnswerTheWholeWriteTimeoutFromNow(t *testing.T) {
 	const writeTimeout = time.Minute
 	w := newDeadlineRecorder()
-	r := uploadRequest(t, "", &http.Server{WriteTimeout: writeTimeout})
+	r := uploadRequest(t, "", &http.Server{WriteTimeout: writeTimeout, ReadHeaderTimeout: time.Second})
 
 	before := time.Now()
 	RestartWriteTimeout(w, r)

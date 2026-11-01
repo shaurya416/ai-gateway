@@ -122,8 +122,8 @@ func isJSONScalar(raw []byte) bool {
 	if len(raw) == 0 {
 		return false
 	}
-	switch c := raw[0]; {
-	case c == '"', c == 't', c == 'f', c == '-':
+	switch c := raw[0]; c {
+	case '"', 't', 'f', '-':
 		return true
 	default:
 		return c >= '0' && c <= '9'

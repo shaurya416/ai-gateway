@@ -178,6 +178,7 @@ func TestPostTranscription_ArrayFieldsAreBracketedParts(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			var form map[string][]string
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				r.Body = http.MaxBytesReader(w, r.Body, 1<<21)
 				if err := r.ParseMultipartForm(1 << 20); err != nil {
 					t.Errorf("ParseMultipartForm: %v", err)
 					return

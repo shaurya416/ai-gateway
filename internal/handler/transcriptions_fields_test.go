@@ -50,6 +50,7 @@ func TestTranscriptions_ForwardsTimestampGranularitiesAndInclude(t *testing.T) {
 		gotGranularities, gotInclude []string
 	)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.Body = http.MaxBytesReader(w, r.Body, 1<<21)
 		if err := r.ParseMultipartForm(1 << 20); err != nil {
 			t.Errorf("upstream ParseMultipartForm: %v", err)
 		}
