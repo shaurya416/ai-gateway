@@ -238,6 +238,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   one whose admin key was cut back to `read_only` was still listed as `admin`.
   A session minted from a stored key is now listed with that key's scopes; one
   minted from `MASTER_KEY` keeps `admin`.
+- The Go client reports a stream whose connection is cut before `[DONE]` as
+  `ErrStreamTruncated`. Only a body that ended in a clean end-of-file was
+  treated as truncated, but a connection that drops mid-stream — a gateway
+  killed or restarted, a proxy or load balancer closing it — reaches the reader
+  as a read error instead (`unexpected EOF` for a chunked body, or `connection
+  reset by peer`), so `Err` returned that error and
+  `errors.Is(err, client.ErrStreamTruncated)` was false for the most common way
+  a stream is cut short. Such an error is now reported as `ErrStreamTruncated`,
+  with the read error wrapped alongside it.
 - A streamed chat request served while a config reload runs is no longer
   answered as one buffered chunk with no MCP tools. A stream is diverted into
   the MCP tool loop when the MCP registry it reads has tools to offer, but the

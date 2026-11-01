@@ -26,7 +26,9 @@ const sseDone = "[DONE]"
 
 // ErrStreamTruncated is reported when a stream's connection ends before the
 // gateway sent the [DONE] event that closes every complete stream: the
-// response is incomplete even though no error event arrived.
+// response is incomplete even though no error event arrived. A connection that
+// ended without a clean end of body — cut mid-chunk, or reset — is reported
+// with the read error that ended it wrapped alongside.
 var ErrStreamTruncated = errors.New("client: stream ended before [DONE]")
 
 // ChatCompletionStream reads a streamed chat completion, one chunk at a time.
@@ -277,7 +279,11 @@ func (s *ChatCompletionStream) readEvent() (string, []byte, error) {
 		if errors.Is(err, bufio.ErrTooLong) {
 			return "", nil, fmt.Errorf("client: stream line exceeds %d bytes", maxEventBytes)
 		}
-		return "", nil, fmt.Errorf("client: read stream: %w", err)
+		// A connection cut before [DONE] does not end the body with EOF:
+		// net/http reports a chunked body that loses its connection as
+		// io.ErrUnexpectedEOF, and a reset as the read's own error. The
+		// stream is cut short all the same.
+		return "", nil, fmt.Errorf("%w: %w", ErrStreamTruncated, err)
 	}
 	return "", nil, ErrStreamTruncated
 }

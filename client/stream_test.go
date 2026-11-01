@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"testing/iotest"
@@ -288,6 +290,75 @@ func TestStreamTruncated(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestStreamCutConnectionIsTruncated covers a connection that ends before
+// [DONE] without a clean end of body — the way a gateway that is killed, or a
+// proxy that drops the connection, ends one. net/http reports that as a read
+// error rather than EOF, and it is still a stream cut short: Err must be
+// ErrStreamTruncated, with the error that ended it kept.
+func TestStreamCutConnectionIsTruncated(t *testing.T) {
+	t.Run("dropped mid-body", func(t *testing.T) {
+		c := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
+			sseHeaders(w)
+			_, _ = io.WriteString(w, gatewayChunk(t, contentChunk("c1", "a")))
+			w.(http.Flusher).Flush()
+			// Closes the connection without the chunked body's terminator.
+			panic(http.ErrAbortHandler)
+		})
+		s, err := c.ChatCompletionStream(t.Context(), streamRequest())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = s.Close() }()
+		if text, _ := collect(t, s); text != "a" {
+			t.Errorf("text = %q", text)
+		}
+		if !errors.Is(s.Err(), ErrStreamTruncated) {
+			t.Fatalf("Err = %v, want ErrStreamTruncated", s.Err())
+		}
+		if !errors.Is(s.Err(), io.ErrUnexpectedEOF) {
+			t.Errorf("Err = %v, want the cause kept", s.Err())
+		}
+	})
+
+	t.Run("reset by the peer", func(t *testing.T) {
+		read := make(chan struct{})
+		c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+			_, _ = io.Copy(io.Discard, r.Body)
+			conn, rw, err := http.NewResponseController(w).Hijack()
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			chunk := gatewayChunk(t, contentChunk("c1", "a"))
+			_, _ = io.WriteString(rw, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n")
+			_, _ = io.WriteString(rw, strconv.FormatInt(int64(len(chunk)), 16)+"\r\n"+chunk+"\r\n")
+			_ = rw.Flush()
+			<-read
+			if tcp, ok := conn.(*net.TCPConn); ok {
+				_ = tcp.SetLinger(0) // close with a reset, not a FIN
+			}
+			_ = conn.Close()
+		})
+		s, err := c.ChatCompletionStream(t.Context(), streamRequest())
+		if err != nil {
+			close(read)
+			t.Fatal(err)
+		}
+		defer func() { _ = s.Close() }()
+		if !s.Next() || s.Current().Choices[0].Delta.Content != "a" {
+			close(read)
+			t.Fatalf("first chunk not read: %v", s.Err())
+		}
+		close(read)
+		if s.Next() {
+			t.Fatal("a chunk was read after the reset")
+		}
+		if !errors.Is(s.Err(), ErrStreamTruncated) {
+			t.Fatalf("Err = %v, want ErrStreamTruncated", s.Err())
+		}
+	})
 }
 
 func TestStreamMalformedChunk(t *testing.T) {
