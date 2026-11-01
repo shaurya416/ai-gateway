@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"testing"
 
 	"github.com/ferro-labs/ai-gateway/providers/core"
@@ -154,5 +155,54 @@ func TestPostTranscription_TextOnlyBodyIsUnchanged(t *testing.T) {
 	}
 	if string(served) != `{"text":"hi"}` {
 		t.Errorf("served %s, want {\"text\":\"hi\"}", served)
+	}
+}
+
+// The array fields travel as one "name[]" part per value, the encoding the
+// OpenAI SDKs use, and are sent only when the caller set them.
+func TestPostTranscription_ArrayFieldsAreBracketedParts(t *testing.T) {
+	for _, tc := range []struct {
+		name            string
+		req             core.TranscriptionRequest
+		wantGranularity []string
+		wantInclude     []string
+	}{
+		{
+			name:            "set",
+			req:             core.TranscriptionRequest{TimestampGranularities: []string{"word", "segment"}, Include: []string{"logprobs"}},
+			wantGranularity: []string{"word", "segment"},
+			wantInclude:     []string{"logprobs"},
+		},
+		{name: "unset"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var form map[string][]string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if err := r.ParseMultipartForm(1 << 20); err != nil {
+					t.Errorf("ParseMultipartForm: %v", err)
+					return
+				}
+				form = r.MultipartForm.Value
+				_, _ = w.Write([]byte(`{"text":"ok"}`))
+			}))
+			defer srv.Close()
+
+			req := tc.req
+			req.Model, req.File = "whisper-1", []byte("audio")
+			if _, err := PostTranscription(context.Background(), TranscriptionParams{HTTPClient: srv.Client(), URL: srv.URL, Label: "testprov"}, req); err != nil {
+				t.Fatalf("PostTranscription: %v", err)
+			}
+			if got := form["timestamp_granularities[]"]; !slices.Equal(got, tc.wantGranularity) {
+				t.Errorf("timestamp_granularities[] = %q, want %q", got, tc.wantGranularity)
+			}
+			if got := form["include[]"]; !slices.Equal(got, tc.wantInclude) {
+				t.Errorf("include[] = %q, want %q", got, tc.wantInclude)
+			}
+			for _, bare := range []string{"timestamp_granularities", "include"} {
+				if _, ok := form[bare]; ok {
+					t.Errorf("sent a bare %q part beside the bracketed one", bare)
+				}
+			}
+		})
 	}
 }

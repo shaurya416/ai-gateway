@@ -94,7 +94,12 @@ func Transcriptions(gw *aigateway.Gateway, translate bool) http.HandlerFunc {
 			Prompt:         r.FormValue("prompt"),
 			ResponseFormat: r.FormValue("response_format"),
 			Temperature:    temperature,
-			Translate:      translate,
+			// The two array fields decide what the upstream puts in the
+			// response — word timestamps, logprobs — and it returns either only
+			// when asked, so a caller who asked must not be answered without.
+			TimestampGranularities: formValues(r, "timestamp_granularities"),
+			Include:                formValues(r, "include"),
+			Translate:              translate,
 		}
 
 		attribution := &aigateway.RoutingAttribution{}
@@ -120,6 +125,14 @@ func Transcriptions(gw *aigateway.Gateway, translate bool) http.HandlerFunc {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(resp)
 	}
+}
+
+// formValues returns every value of the array form field name, under either
+// spelling a client sends one in: "name[]", one part per value, which is how
+// the OpenAI SDKs encode an array, or the bare name. Nil when absent.
+func formValues(r *http.Request, name string) []string {
+	values := append([]string(nil), r.Form[name+"[]"]...)
+	return append(values, r.Form[name]...)
 }
 
 // plainTextAudioFormat reports whether response_format asks for the transcript

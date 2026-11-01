@@ -179,6 +179,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   screened as a string input is; an image part is neither screened nor a
   reason to refuse, as on chat. A part of any other type is still refused as
   uninspectable.
+- `/v1/audio/transcriptions` and `/v1/audio/translations` now forward
+  `timestamp_granularities[]` and `include[]`. A `verbose_json` or `json`
+  response is served with every member the upstream returned, but the
+  upstream returns word timestamps only when asked with
+  `timestamp_granularities[]=word`, and token logprobs only with
+  `include[]=logprobs` — and the handler read neither field, so a caller who
+  asked for them got segment timestamps alone, or no logprobs, under a `200`
+  with nothing to say the request had changed on the way. Both are forwarded
+  as one `name[]` part per value, the encoding the OpenAI SDKs use; the bare
+  field name is accepted too.
 - A streamed chat request served while a config reload runs is no longer
   answered as one buffered chunk with no MCP tools. A stream is diverted into
   the MCP tool loop when the MCP registry it reads has tools to offer, but the

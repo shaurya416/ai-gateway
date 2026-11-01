@@ -17,6 +17,13 @@ type TranscriptionRequest struct {
 	// ResponseFormat is json (default) | text | srt | verbose_json | vtt.
 	ResponseFormat string
 	Temperature    *float64
+	// TimestampGranularities is the timestamp_granularities[] array: word,
+	// segment, or both. With verbose_json it decides which timestamps the
+	// upstream returns; word timestamps are returned only when asked for.
+	TimestampGranularities []string
+	// Include is the include[] array of extra response members, logprobs among
+	// them, which the upstream returns only when asked for.
+	Include []string
 	// Translate selects /v1/audio/translations (translate to English) instead of
 	// /v1/audio/transcriptions.
 	Translate bool

@@ -54,6 +54,14 @@ func PostTranscription(ctx context.Context, p TranscriptionParams, req core.Tran
 	if req.Temperature != nil {
 		_ = mw.WriteField("temperature", strconv.FormatFloat(*req.Temperature, 'f', -1, 64))
 	}
+	// Array fields travel as one "name[]" part per value, the encoding the
+	// OpenAI SDKs use for them.
+	for _, granularity := range req.TimestampGranularities {
+		_ = mw.WriteField("timestamp_granularities[]", granularity)
+	}
+	for _, include := range req.Include {
+		_ = mw.WriteField("include[]", include)
+	}
 	if err := mw.Close(); err != nil {
 		return nil, fmt.Errorf("failed to finalize multipart body: %w", err)
 	}
