@@ -1,5 +1,5 @@
 # Development overrides — build from source, verbose logging, no restart policy.
-# Usage: make up   (or: docker compose -f deploy/compose.yaml -f deploy/compose.dev.yaml up)
+# Usage: make up   (or: docker compose --env-file .env -f deploy/compose.yaml -f deploy/compose.dev.yaml up)
 #
 # One container. The gateway embeds the dashboard and serves it from its own
 # port, so http://localhost:8080 is both the API and the UI.

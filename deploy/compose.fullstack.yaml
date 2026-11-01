@@ -10,6 +10,9 @@
 #
 # Every image tag, port, and credential below is overridable via env (`${VAR:-default}`),
 # so put overrides in a repo-root `.env` and never edit this file for a deployment.
+# Compose reads .env from deploy/, the directory of this file, so the make
+# targets name the root one with --env-file .env; a direct invocation has to
+# do the same, or every ${VAR} below takes its default.
 #
 # | Setting                    | Env var                         | Default |
 # |----------------------------|---------------------------------|---------|

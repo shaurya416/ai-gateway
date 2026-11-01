@@ -4,7 +4,7 @@
 # dashboard panel fills. No real provider key is used and nothing is billed.
 #
 # Run from the repository root (base + this overlay):
-#   make up-fullstack     (docker compose -f deploy/compose.fullstack.yaml \
+#   make up-fullstack     (docker compose --env-file .env -f deploy/compose.fullstack.yaml \
 #                                          -f deploy/compose.fullstack.mock.yaml up -d --build)
 #
 # The mock LLM and the load generator are reusable tools that live in scripts/

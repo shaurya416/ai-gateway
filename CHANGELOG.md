@@ -223,6 +223,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `batch_target` set. Such a request is now routed on its decoded, cleaned
   path, so it is served, governed and priced by the native route. Paths that
   name no native route are forwarded as before.
+- The Compose stacks now read the repository-root `.env` the docs point at.
+  Compose loads `.env` from the project directory, which is the directory of
+  the first `-f` file — `deploy/` since the compose files moved there — so a
+  root `.env` went unread: `make up-fullstack-live` started its gateway with
+  every provider key empty, `make up-prod` ignored an `IMAGE_TAG` pinned there
+  and deployed `:latest`, and no stack's gateway saw the `MASTER_KEY` it set.
+  The dev and prod stacks also never handed the file to the container, so a
+  provider key in it reached no gateway. The `make` targets now pass
+  `--env-file .env` when the file exists, and `deploy/compose.yaml` passes it
+  to the container as an optional `env_file`; a value set under `environment:`
+  still wins. A direct `docker compose -f deploy/...` invocation has to add
+  `--env-file .env` itself to substitute from it.
 - A tool declared with `"parameters": null` now reaches Anthropic and Claude
   on Bedrock with the empty object schema, as a tool with no `parameters`
   already did. Anthropic requires `input_schema` to be a schema object, and

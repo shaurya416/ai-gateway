@@ -354,7 +354,8 @@ make down           # tears down either
 ```
 
 One container serves both the API and the dashboard — no second image, no second
-origin. Provider keys go in a repository-root `.env` or the environment.
+origin. Provider keys go in a repository-root `.env`: the make targets hand it
+to Compose, and `deploy/compose.yaml` passes it on to the container.
 [deploy/README.md](deploy/README.md) has the full reference, including a
 self-contained PostgreSQL pairing and the fullstack observability stack.
 

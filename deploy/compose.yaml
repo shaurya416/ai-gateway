@@ -2,8 +2,9 @@
 # image and no override, so it has neither a build nor a restart policy.
 #
 # Use with an override file, from the repository root:
-#   Dev:  make up        (docker compose -f deploy/compose.yaml -f deploy/compose.dev.yaml up)
-#   Prod: make up-prod   (docker compose -f deploy/compose.yaml -f deploy/compose.prod.yaml up -d)
+#   Dev:  make up        (docker compose --env-file .env -f deploy/compose.yaml -f deploy/compose.dev.yaml up)
+#   Prod: make up-prod   (docker compose --env-file .env -f deploy/compose.yaml -f deploy/compose.prod.yaml up -d)
+# (make drops --env-file .env when the repository root has no .env.)
 #
 # One service. The dashboard is compiled into the gateway binary and served
 # from the port below, so there is no second container to bring up.
@@ -21,9 +22,19 @@ services:
     image: ghcr.io/ferro-labs/ai-gateway:latest
     ports:
       - "8080:8080"
+    # The repository-root .env — the one .env.example is copied to — reaches the
+    # container through this, provider keys and MASTER_KEY included. Compose
+    # does not hand a .env to a container on its own: it reads one only to
+    # substitute ${VAR} in this file, and from deploy/, not the root. The path
+    # resolves against this file's directory. Optional, so a fresh clone with
+    # no .env still starts. A variable under environment: below wins over the
+    # same name here.
+    env_file:
+      - path: ../.env
+        required: false
     environment:
       - PORT=8080
-      # Provider API keys (set at least one):
+      # Provider API keys (set at least one, here or in the root .env):
       # - OPENAI_API_KEY=sk-...
       # - ANTHROPIC_API_KEY=sk-...
       # - GEMINI_API_KEY=...

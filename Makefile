@@ -168,13 +168,19 @@ lint-fix:
 # one override, so these targets exist to keep the -f pair out of the docs and
 # out of anyone's shell history. Run them from the repository root: the build
 # context is "." and Docker reads .dockerignore from there.
-COMPOSE_DEV  := docker compose -f deploy/compose.yaml -f deploy/compose.dev.yaml
-COMPOSE_PROD := docker compose -f deploy/compose.yaml -f deploy/compose.prod.yaml
+#
+# Compose loads .env from the project directory — the directory of the first
+# -f file, deploy/ — not from where it is invoked, so the repository-root .env
+# the docs point at is passed by name. Only when it exists: --env-file refuses
+# a missing file, and a fresh clone has none.
+COMPOSE_ENV_FILE := $(if $(wildcard .env),--env-file .env)
+COMPOSE_DEV  := docker compose $(COMPOSE_ENV_FILE) -f deploy/compose.yaml -f deploy/compose.dev.yaml
+COMPOSE_PROD := docker compose $(COMPOSE_ENV_FILE) -f deploy/compose.yaml -f deploy/compose.prod.yaml
 # Standalone stack (its own project name), so it neither adopts nor collides
 # with the dev/prod stack above. The base file is production-shaped (real
 # providers); the mock overlay turns it into the self-contained demo.
-COMPOSE_FULL      := docker compose -f deploy/compose.fullstack.yaml
-COMPOSE_FULL_MOCK := docker compose -f deploy/compose.fullstack.yaml -f deploy/compose.fullstack.mock.yaml
+COMPOSE_FULL      := docker compose $(COMPOSE_ENV_FILE) -f deploy/compose.fullstack.yaml
+COMPOSE_FULL_MOCK := docker compose $(COMPOSE_ENV_FILE) -f deploy/compose.fullstack.yaml -f deploy/compose.fullstack.mock.yaml
 
 # One Dockerfile, one context, one target. Built from the repository root so
 # Docker picks up the .dockerignore here. The dashboard bundle is produced by a

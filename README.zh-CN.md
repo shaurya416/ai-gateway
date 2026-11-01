@@ -348,7 +348,8 @@ make down           # 两种模式通用的停止命令
 ```
 
 一个容器同时提供 API 与控制台 —— 无需第二个镜像，也没有第二个源站。提供商
-密钥放在仓库根目录的 `.env` 或环境变量中。
+密钥放在仓库根目录的 `.env` 中：make 目标把它交给 Compose，`deploy/compose.yaml`
+再把它传入容器。
 [deploy/README.md](deploy/README.md) 提供完整参考，包括自包含的 PostgreSQL
 组合以及全栈可观测性环境。
 
