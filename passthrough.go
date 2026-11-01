@@ -83,7 +83,9 @@ var ErrPassthroughUninspectable error = &plugin.RejectionError{
 //     callUnderResilience the routed pipeline uses. An upstream 4xx the
 //     forward reports, or a request body the caller could not deliver, is
 //     recorded as a failed request but is not scored against the breaker,
-//     and a 429 parks the target; see forwardUnderResilience.
+//     and a 429 parks the target; see forwardUnderResilience. A 4xx other
+//     than 429 is not counted as a provider error either; see
+//     relayedCallerRejection.
 //   - request log and cost accounting: yes. Cost is recorded as UNPRICED, never
 //     as a known zero: the response is opaque by construction, and buffering an
 //     arbitrarily large, possibly streaming, possibly binary body to hunt for a
@@ -144,7 +146,7 @@ func (g *Gateway) RoutePassthrough(ctx context.Context, target, model, body stri
 	record, err := g.runPassthroughGovernance(ctx, span, start, passthroughParams{target: target, model: model, body: body, bodyInspectable: bodyInspectable}, forward)
 	latency := time.Since(start)
 	if err != nil {
-		safeErr := g.recordSurfaceError(ctx, span, obs, record.provider, model, record.abVariantLabel, record.hasABVariant, err, latency, hooksEnabled, obsEventsActive)
+		safeErr := g.recordSurfaceFailure(ctx, span, obs, record.provider, model, record.abVariantLabel, record.hasABVariant, err, latency, hooksEnabled, obsEventsActive, !relayedCallerRejection(err))
 		g.log.Ctx(ctx).Error("pass-through request failed", "target", target, "model", model, "error", safeErr)
 		return err
 	}
@@ -203,7 +205,7 @@ func (g *Gateway) RouteResponsesWithPricingProvider(ctx context.Context, target,
 	}, forward)
 	latency := time.Since(start)
 	if err != nil {
-		safeErr := g.recordSurfaceError(ctx, span, obs, record.provider, model, record.abVariantLabel, record.hasABVariant, err, latency, hooksEnabled, obsEventsActive)
+		safeErr := g.recordSurfaceFailure(ctx, span, obs, record.provider, model, record.abVariantLabel, record.hasABVariant, err, latency, hooksEnabled, obsEventsActive, !relayedCallerRejection(err))
 		g.log.Ctx(ctx).Error("responses request failed", "target", target, "model", model, "error", safeErr)
 		return err
 	}
@@ -426,6 +428,17 @@ func (g *Gateway) forwardUnderResilience(ctx context.Context, key string, forwar
 		g.parkRateLimited(key, err)
 	}
 	return err
+}
+
+// relayedCallerRejection reports whether a failed forward is the upstream's
+// answer to the caller's own request: a 4xx other than 429, relayed verbatim.
+// forwardUnderResilience scores exactly these as answered rather than against
+// the breaker, because the body was the caller's and not the gateway's, so the
+// provider-error series exonerates them too. A 429 stays a provider error, as
+// it is on every routed surface.
+func relayedCallerRejection(err error) bool {
+	status := providers.ParseStatusCode(err)
+	return status >= 400 && status < 500 && !isRateLimitError(err)
 }
 
 // FindTargetByModel returns the provider of the first configured target, in

@@ -805,6 +805,16 @@ func isPluginAbort(err error) bool {
 // It returns the redacted message for the caller's own log line; the lifecycle
 // event is redacted independently by events.FailedRequest.
 func (g *Gateway) recordSurfaceError(ctx context.Context, span observability.Span, obs observability.Provider, provider, model, abVariantLabel string, hasABVariant bool, err error, latency time.Duration, hooksEnabled, obsEventsActive bool) string {
+	return g.recordSurfaceFailure(ctx, span, obs, provider, model, abVariantLabel, hasABVariant, err, latency, hooksEnabled, obsEventsActive, true)
+}
+
+// recordSurfaceFailure is recordSurfaceError for a surface that decides per
+// failure whether it is evidence against the target. providerFault false still
+// records the failed request — its counter, duration, span and event — and
+// leaves gateway_provider_errors_total alone, for a failure the target's
+// circuit breaker scored as answered: the series must not convict a provider
+// the breaker exonerates (see metrics.ProviderErrorType).
+func (g *Gateway) recordSurfaceFailure(ctx context.Context, span observability.Span, obs observability.Provider, provider, model, abVariantLabel string, hasABVariant bool, err error, latency time.Duration, hooksEnabled, obsEventsActive, providerFault bool) string {
 	// Bucket the label, not the log or the span: model here is still the raw
 	// client value on the "no provider serves this model" path.
 	requestMetrics := metrics.ForRequest(provider, g.metricModel(model))
@@ -826,7 +836,9 @@ func (g *Gateway) recordSurfaceError(ctx context.Context, span observability.Spa
 		requestMetrics.Error.Inc()
 		// These surfaces were absent from gateway_provider_errors_total
 		// altogether, so a per-provider error alert could not see them fail.
-		recordProviderErrorCtx(ctx, provider, err)
+		if providerFault {
+			recordProviderErrorCtx(ctx, provider, err)
+		}
 	}
 
 	span.SetError(err)

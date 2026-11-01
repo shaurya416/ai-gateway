@@ -333,6 +333,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   observability seam, so a guardrail in `warn` or `log` mode registered through
   the Go API matched requests with nothing reaching any exporter — the one
   signal a non-blocking mode exists to produce.
+- A `4xx` other than `429` that `POST /v1/responses` or the `/v1/*`
+  pass-through relays from the upstream is no longer counted as
+  `gateway_provider_errors_total{error_type="provider_error"}`. These surfaces
+  forward the caller's body verbatim, so such a status is the upstream's
+  verdict on the caller's own request: the target's circuit breaker scores it
+  as answered and the `error_rate.high` window as a success, while the
+  provider-error series — the one documented as describing an unhealthy
+  upstream — counted it, so one client sending malformed requests, or asking
+  for ids that do not exist, read as an outage of a healthy provider. The
+  request is still counted as `gateway_requests_total{status="error"}`, and a
+  `5xx`, a connection failure and a `429` are provider errors as before.
 - `make test` runs the tests of the Go client (`client/`) and of the `run`
   and `httpgateway` packages. The target names its packages instead of
   `./...`, and the list named none of the three, so it reported success
