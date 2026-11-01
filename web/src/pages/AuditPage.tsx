@@ -1,6 +1,6 @@
 import { ChevronDown, ChevronRight, Filter, RefreshCw } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react'
-import { Link, useSearchParams } from 'react-router'
+import { useSearchParams } from 'react-router'
 import { DataTable, type DataTableColumn } from '../components/DataTable'
 import { Button, CopyButton, EmptyState, Notice, PageHeader, StatusPill } from '../components/ui'
 import { Input } from '@/components/ui/input'
@@ -263,15 +263,15 @@ export default function AuditPage() {
       header: 'Trace ID',
       mobileLabel: 'Trace ID',
       headerClassName: 'w-full',
+      /*
+       * Text to copy, not a link to Request Logs. The trace is the admin
+       * request's own, and the request log never holds one: its rows are
+       * written by the request-logger plugin on the routed surfaces, which no
+       * admin request reaches. It matches the gateway's own log lines and spans.
+       */
       render: (entry) => entry.trace_id ? (
         <span className="flex items-center gap-1">
-          <Link
-            className="font-mono text-xs text-primary hover:underline"
-            title="Find this trace in the request logs"
-            to={`/logs?q=${encodeURIComponent(entry.trace_id)}`}
-          >
-            {entry.trace_id}
-          </Link>
+          <code className="font-mono text-xs text-muted-foreground">{entry.trace_id}</code>
           <CopyButton label={`Copy trace ID ${entry.trace_id}`} size="icon-xs" value={entry.trace_id} />
         </span>
       ) : <span className="text-muted-foreground">—</span>,

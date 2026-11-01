@@ -212,6 +212,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   require alternating roles, Perplexity among them, refuse — exactly as a
   failed or empty reply did before those were fixed. A stopped reply is now
   undone like them: the turn comes off and the prompt goes back in the box.
+- The Audit Trail no longer links a trace ID to Request Logs. The link read
+  "Find this trace in the request logs", but every audited action is an admin
+  request and the request log never holds one — its rows are written by the
+  request-logger plugin on the routed surfaces, which no admin request reaches
+  — so following it always ended on an empty search that suggested widening
+  the filters. The trace ID is now shown as text with its copy control, for
+  matching against the gateway's own log lines and spans.
 - A streamed chat request no longer has its target drawn over providers that
   cannot stream. Every other surface narrows a strategy's candidates to the
   targets able to serve it, but the stream order was drawn over every

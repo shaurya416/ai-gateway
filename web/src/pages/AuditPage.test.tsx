@@ -53,8 +53,6 @@ function renderPage(initialEntry = '/audit') {
           }
           path="/audit"
         />
-        {/* Real route so a trace link can be followed rather than merely read. */}
-        <Route element={<LocationProbe />} path="/logs" />
       </Routes>
     </MemoryRouter>,
   )
@@ -182,15 +180,17 @@ describe('AuditPage', () => {
     expect(screen.getByText(/"name": "Production application"/)).toBeInTheDocument()
   })
 
-  it('links a trace to the request logs so the same request can be read there', async () => {
-    const user = userEvent.setup()
+  it('offers a trace for copying, not as a link to the request logs, which never record it', async () => {
+    // Every audited action is an admin request, and only the request-logger
+    // plugin writes request-log rows — on the routed surfaces, which no admin
+    // request reaches. A link to the request logs filtered by this trace could
+    // only ever land on "No matches", inviting a wider search that also finds
+    // nothing.
     renderPage()
 
-    const link = await screen.findByRole('link', { name: 'trace-abc' })
-    expect(link).toHaveAttribute('href', '/logs?q=trace-abc')
-
-    await user.click(link)
-    expect(screen.getByTestId('location').textContent).toBe('/logs?q=trace-abc')
+    expect(await screen.findByText('trace-abc')).toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: 'trace-abc' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Copy trace ID trace-abc' })).toBeInTheDocument()
   })
 
   it('shows the actor id alongside the display name, since only the id is stable', async () => {
