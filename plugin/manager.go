@@ -459,16 +459,20 @@ func (m *Manager) executePlugin(ctx context.Context, p Plugin, pctx *Context, st
 	}()
 
 	matchStart := len(pctx.GuardrailMatches)
+	// Reject stays set once a request is denied, and the on_error stage runs
+	// because something denied it, so the flag as found is another plugin's
+	// verdict. Only a rejection THIS plugin made is reported as its own.
+	rejectedBefore := pctx.Reject
 	// Deferred rather than written after Execute: a plugin that records a match
 	// and then panics would otherwise leave that match unattributed, and the
 	// stage flush would emit it with no plugin name or instance.
-	defer m.attributeGuardrailMatches(p, pctx, matchStart, pctx.Reject)
+	defer m.attributeGuardrailMatches(p, pctx, matchStart, rejectedBefore)
 
 	err = p.Execute(ctx, pctx)
 
 	if span != nil {
 		switch {
-		case pctx.Reject:
+		case pctx.Reject && !rejectedBefore:
 			span.SetAttribute(observability.AttrFerroPluginOutcome, "rejected")
 			if pctx.Reason != "" {
 				span.SetAttribute(observability.AttrFerroPluginReason, pctx.Reason)

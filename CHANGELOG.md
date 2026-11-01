@@ -315,6 +315,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   failure is a failure, a `429` is a failure, any other `4xx` is the caller's
   request answered, and an open circuit's refusal, a shed and a caller hanging
   up are not samples.
+- A plugin's span at the `on_error` stage now reports that plugin's own
+  outcome. A request refused at `before_request` or `after_request` keeps its
+  refusal on the plugin context, and the `on_error` stage runs on that same
+  context, so every plugin there — the `request-logger` recording the refusal
+  among them — had its `plugin.on_error.*` span stamped
+  `ferro.plugin.outcome=rejected` with the refusing plugin's
+  `ferro.plugin.reason`, and one that failed had its error left off the span.
+  A trace of one rate-limited request showed two plugins denying it, and a
+  broken `on_error` plugin showed none. The outcome is now `rejected` only for
+  the plugin whose run made the refusal, so an `on_error` plugin reads `ok`,
+  or `error` with its failure recorded.
 - `make test` runs the tests of the Go client (`client/`) and of the `run`
   and `httpgateway` packages. The target names its packages instead of
   `./...`, and the list named none of the three, so it reported success
