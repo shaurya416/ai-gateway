@@ -169,6 +169,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stdio ran to its configured timeout. A client whose timeout is longer than
   that bound now uses a transport that leaves the wait to the timeout. A webhook
   `timeout` above two minutes is honoured the same way.
+- With no config store, `GET /admin/config/history` now records each version
+  as the config the gateway runs. It recorded the request body instead, and
+  the gateway canonicalises a config before running it, so a `PUT` that left
+  out `apiVersion` or `strategy`, or wrote `mode: loadbalance`, was listed as
+  the newest version with `mode: ""` or `loadbalance` and no `apiVersion` while
+  `GET /admin/config` served `single` or `load-balance` and `v1` — a history
+  whose newest entry did not name the active config. An update and a rollback
+  now record the config read back after it is applied, as a reset already did;
+  the `config.update` audit row names the strategy actually applied too.
 - A sign-in, a session revoke and a sign-out of every operator that the
   session store refuses now leave a `session.create`, `session.revoke` or
   `session.revoke_all` error row in the audit trail. Each answered `500` and

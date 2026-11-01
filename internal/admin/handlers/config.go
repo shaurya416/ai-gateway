@@ -146,9 +146,15 @@ func (h *Handlers) applyConfigUpdate(w http.ResponseWriter, r *http.Request, sta
 		return
 	}
 
-	h.appendConfigHistoryLocked(cfg, nil, model.ActorFromContext(r.Context()))
+	// What is recorded is what the gateway now runs, read back under configMu
+	// as deleteConfig reads it, not the body it was applied from. The two
+	// differ wherever the apply canonicalises — the default apiVersion, a
+	// strategy mode left out or written the legacy way — and the newest
+	// version has to name the active config, which GET /admin/config serves.
+	applied := h.Configs.GetConfig()
+	h.appendConfigHistoryLocked(applied, nil, model.ActorFromContext(r.Context()))
 	h.recordAudit(r, action, auditConfigTarget, model.AuditOK,
-		"strategy", string(cfg.Strategy.Mode), "targets", len(cfg.Targets), "plugins", len(cfg.Plugins))
+		"strategy", string(applied.Strategy.Mode), "targets", len(applied.Targets), "plugins", len(applied.Plugins))
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(statusCode)
@@ -278,7 +284,7 @@ func (h *Handlers) rollbackConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	rollbackFrom := latestVersion
-	historySize := h.appendConfigHistoryLocked(target.Config, &rollbackFrom, model.ActorFromContext(r.Context()))
+	historySize := h.appendConfigHistoryLocked(h.Configs.GetConfig(), &rollbackFrom, model.ActorFromContext(r.Context()))
 	h.recordAudit(r, auditConfigRollback, requested, model.AuditOK, "rolled_back_from", latestVersion)
 	if durable {
 		// The apply persisted a version of its own; the in-memory record above is
