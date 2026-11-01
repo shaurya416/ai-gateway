@@ -116,20 +116,32 @@ export function PlaygroundChat({
     let finishReason = ''
     try {
       if (streamEnabled) {
-        const stream = await rawRequest('/v1/chat/completions', {
-          method: 'POST',
-          body: JSON.stringify({
-            model,
-            messages: outgoing,
-            temperature,
-            max_tokens: maxTokens,
-            stream: true,
-            // Without this, providers never emit a usage object on a streamed
-            // response and the counters below never move off their initial zero.
-            stream_options: { include_usage: true },
-          }),
-          signal: controller.signal,
-        })
+        /*
+         * No connect deadline here either. The gateway sends a stream's
+         * response headers with its first chunk, so the wait for them is the
+         * model's time to first token — and with MCP tools configured, the
+         * whole agentic loop, whose answer arrives as a single chunk. A
+         * thirty-second bound reported both as a gateway that stopped
+         * answering. The abort signal is what ends the wait early.
+         */
+        const stream = await rawRequest(
+          '/v1/chat/completions',
+          {
+            method: 'POST',
+            body: JSON.stringify({
+              model,
+              messages: outgoing,
+              temperature,
+              max_tokens: maxTokens,
+              stream: true,
+              // Without this, providers never emit a usage object on a streamed
+              // response and the counters below never move off their initial zero.
+              stream_options: { include_usage: true },
+            }),
+            signal: controller.signal,
+          },
+          { connectTimeoutMs: 0 },
+        )
         if (!stream.body) throw new Error('The gateway returned an empty stream.')
         answeredBy = stream.headers.get(TARGET_HEADER) ?? ''
         const reader = stream.body.getReader()

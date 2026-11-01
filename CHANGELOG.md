@@ -195,6 +195,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   way the auth middleware checks it; a key store that cannot answer fails the
   listing with `500` rather than guessing, and never blocks signing everyone
   out.
+- The Playground no longer abandons a streamed chat answer after thirty
+  seconds. Streaming is the default, and the panel sent it under the
+  dashboard's connect deadline on the reasoning that a stream's headers mean
+  the gateway is answering — but the gateway sends a stream's headers with its
+  first chunk, so the deadline bounded the model's time to first token, and
+  with MCP tools configured the whole agentic loop, whose answer arrives as one
+  chunk. A reasoning model or a tool-using prompt that took longer was reported
+  as "The gateway did not respond in time" and the message rolled back while
+  the gateway was still producing the reply. A streamed send is now unbounded
+  like the non-streamed one, and Stop is what ends it early.
 - A streamed chat request no longer has its target drawn over providers that
   cannot stream. Every other surface narrows a strategy's candidates to the
   targets able to serve it, but the stream order was drawn over every

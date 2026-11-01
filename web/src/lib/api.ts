@@ -426,13 +426,14 @@ export async function request<T>(path: string, init?: RequestInit): Promise<T> {
  * Returns the raw Response, for callers that read the body themselves.
  *
  * The deadline here covers reaching the gateway, not finishing with it: it is
- * disarmed the moment the response headers arrive. This route serves the
- * streamed chat completion, where the body stays open for as long as the model
- * keeps producing tokens — a whole-response deadline would cut a long
- * generation off partway through and report it as a failure.
+ * disarmed the moment the response headers arrive. A streamed body stays open
+ * for as long as the model keeps producing tokens, so a whole-response deadline
+ * would cut a long generation off partway through and report it as a failure.
  *
  * `connectTimeoutMs: 0` removes even that bound, for a caller that expects a
- * gateway to take arbitrarily long to answer at all.
+ * gateway to take arbitrarily long to answer at all. Every routed completion is
+ * one: the gateway sends a stream's headers with its first chunk, so even a
+ * streamed answer's headers wait on the model.
  */
 export async function rawRequest(
   path: string,
