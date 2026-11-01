@@ -87,3 +87,63 @@ func TestRouter_SessionAuthenticatesThroughProductionWiring(t *testing.T) {
 		t.Fatalf("GET /admin/keys after revoke = %d, want 401: %s", w.Code, w.Body.String())
 	}
 }
+
+// TestRouter_SessionListNamesTheSignedInOperators runs GET /admin/sessions
+// through the production wiring, which is where the session routes are handed
+// the master identity's liveness gate. A session minted from the configured
+// master key is listed; one whose stored key has been revoked is not, because
+// the middleware refuses it.
+func TestRouter_SessionListNamesTheSignedInOperators(t *testing.T) {
+	const masterKey = "router-master-key"
+	reg := providers.NewRegistry()
+	reg.Register(stubProvider{})
+
+	keyStore := repository.NewKeyStore()
+	sessionStore := repository.NewSessionStore()
+	departing, err := keyStore.Create(t.Context(), "departing", []string{model.ScopeAdmin}, nil)
+	if err != nil {
+		t.Fatalf("create key: %v", err)
+	}
+
+	router := httpserver.NewRouter(reg, keyStore, sessionStore, nil, nil, nil, nil, nil, nil, nil, masterKey, nil)
+	do := func(method, path, token string) *httptest.ResponseRecorder {
+		req := httptest.NewRequestWithContext(t.Context(), method, path, nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		return w
+	}
+	signIn := func(credential string) string {
+		w := do(http.MethodPost, "/admin/session", credential)
+		if w.Code != http.StatusCreated {
+			t.Fatalf("POST /admin/session = %d, want 201: %s", w.Code, w.Body.String())
+		}
+		var body struct {
+			Token string `json:"token"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+			t.Fatalf("decode session: %v", err)
+		}
+		return body.Token
+	}
+
+	masterToken := signIn(masterKey)
+	signIn(departing.Key)
+	if err := keyStore.Revoke(t.Context(), departing.ID); err != nil {
+		t.Fatalf("revoke: %v", err)
+	}
+
+	w := do(http.MethodGet, "/admin/sessions", masterToken)
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET /admin/sessions = %d, want 200: %s", w.Code, w.Body.String())
+	}
+	var listed struct {
+		Data []model.Session `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &listed); err != nil {
+		t.Fatalf("decode sessions: %v", err)
+	}
+	if len(listed.Data) != 1 || !strings.HasPrefix(listed.Data[0].CredentialID, "master-key:") {
+		t.Fatalf("GET /admin/sessions listed %+v, want only the master-key session", listed.Data)
+	}
+}

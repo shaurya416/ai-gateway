@@ -231,12 +231,13 @@ func routerWithStores(keys repository.Store, sessions repository.SessionStore, m
 		},
 	}
 	cm.initial = cm.cfg
-	validate, _ := NewCredentialValidator(keys, masterKey)
+	validate, live := NewCredentialValidator(keys, masterKey)
 	h := &Handlers{
-		Keys:        keys,
-		Configs:     cm,
-		Sessions:    sessions,
-		Credentials: validate,
+		Keys:           keys,
+		Configs:        cm,
+		Sessions:       sessions,
+		Credentials:    validate,
+		CredentialLive: live,
 	}
 	r := chi.NewRouter()
 	// Unauthenticated, exactly as router.go mounts it: this route is how a

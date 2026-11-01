@@ -105,17 +105,35 @@ func (h *Handlers) deleteSession(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// listSessions returns every currently live dashboard session.
+// listSessions returns every dashboard session that can still authenticate.
+//
+// The store's list is bounded by each session's own lifetime alone; it knows
+// nothing of keys. A session whose key has since been revoked, deleted or
+// expired — or whose master key has been rotated away — is refused on every
+// request, so listing it reported a departing operator as signed in to the
+// admin who had just revoked their key. Each listed session's source credential
+// is therefore checked the way the auth middleware checks it.
 func (h *Handlers) listSessions(w http.ResponseWriter, r *http.Request) {
 	if h.Sessions == nil {
 		writeError(w, http.StatusNotImplemented, "session authentication is not enabled", "not_implemented_error", "not_implemented")
 		return
 	}
-	sessions, err := h.Sessions.ListSessions(r.Context())
+	stored, err := h.Sessions.ListSessions(r.Context())
 	if err != nil {
 		logger.Default().Error("session list failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "internal server error", "server_error", "internal_error")
 		return
+	}
+	sessions := make([]*model.Session, 0, len(stored))
+	for _, sess := range stored {
+		_, live, err := sessionSourceCredential(r.Context(), h.Keys, h.CredentialLive, sess.CredentialID)
+		if err != nil {
+			writeKeyStoreError(w, err)
+			return
+		}
+		if live {
+			sessions = append(sessions, sess)
+		}
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
@@ -158,12 +176,27 @@ func (h *Handlers) deleteAllSessions(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotImplemented, "session authentication is not enabled", "not_implemented_error", "not_implemented")
 		return
 	}
+	// The store counts the sessions inside their own lifetime, which includes
+	// any whose source credential can no longer authenticate. Those were not
+	// signed in, so they are found first and left out of the count, which then
+	// matches what listSessions lists. Finding them is best-effort: this is the
+	// emergency control, so a store that cannot answer must not stop it, and a
+	// session whose credential could not be checked is counted.
+	unbacked := 0
+	if stored, err := h.Sessions.ListSessions(r.Context()); err == nil {
+		for _, sess := range stored {
+			if _, live, err := sessionSourceCredential(r.Context(), h.Keys, h.CredentialLive, sess.CredentialID); err == nil && !live {
+				unbacked++
+			}
+		}
+	}
 	n, err := h.Sessions.DeleteAllSessions(r.Context())
 	if err != nil {
 		logger.Default().Error("session revoke-all failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "internal server error", "server_error", "internal_error")
 		return
 	}
+	n = max(n-unbacked, 0)
 	// Signs out every operator, so it is the most disruptive control the admin
 	// API exposes and the one most worth attributing. The target is the whole
 	// session store rather than one row.

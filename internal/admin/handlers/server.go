@@ -79,6 +79,12 @@ type Handlers struct {
 	// a second time here would build a second, independently-drifting identity
 	// set for the same key store and master key.
 	Credentials CredentialValidator
+	// CredentialLive is the gate NewCredentialValidator returns beside
+	// Credentials, deciding whether a session minted from the synthetic master
+	// identity is still admissible. The session routes ask it, as the auth
+	// middleware does, so a session minted from a master key since rotated
+	// away is neither listed nor counted as signed in. Nil admits none.
+	CredentialLive SyntheticCredentialLive
 
 	// configMu serializes whole config mutations: applying a config and
 	// recording it in configHistory must happen as one step, or a concurrent

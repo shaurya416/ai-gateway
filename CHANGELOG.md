@@ -169,6 +169,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stdio ran to its configured timeout. A client whose timeout is longer than
   that bound now uses a transport that leaves the wait to the timeout. A webhook
   `timeout` above two minutes is honoured the same way.
+- `GET /admin/sessions` now lists only the dashboard sessions that can still
+  authenticate, and `DELETE /admin/sessions` counts only those. A session is
+  refused on every request once the key it was minted from is revoked, deleted
+  or expired, or once the `MASTER_KEY` it was minted from is rotated away, but
+  both routes judged a session by its own 24-hour and one-hour bounds alone: an
+  admin who revoked a departing operator's key saw that operator still listed
+  as signed in, and signing everyone out answered — and audited — one session
+  more than anyone held. Each session's source credential is now checked the
+  way the auth middleware checks it; a key store that cannot answer fails the
+  listing with `500` rather than guessing, and never blocks signing everyone
+  out.
 - A streamed chat request no longer has its target drawn over providers that
   cannot stream. Every other surface narrows a strategy's candidates to the
   targets able to serve it, but the stream order was drawn over every

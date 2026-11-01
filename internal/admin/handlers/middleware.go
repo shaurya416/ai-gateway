@@ -177,24 +177,16 @@ func AuthMiddlewareWithSessions(store repository.Store, sessions repository.Sess
 				// below to re-check liveness has the current scopes in hand at
 				// no extra cost.
 				scopes := sess.Scopes
-				if isSyntheticCredential(sess.CredentialID) {
-					if !syntheticCredentialLive(r.Context(), sess.CredentialID) {
-						writeError(w, http.StatusUnauthorized, "session expired or invalid", "authentication_error", "invalid_session")
-						return
-					}
-				} else {
-					// Lookup rather than Get: a key store that could not answer
-					// has not said the source key is gone, and reading it as gone
-					// signed the operator out of the dashboard.
-					cred, err := store.Lookup(r.Context(), sess.CredentialID)
-					if err != nil && !errors.Is(err, model.ErrKeyNotFound) {
-						writeCredentialStoreError(w, err)
-						return
-					}
-					if err != nil || !model.KeyIsUsable(cred) {
-						writeError(w, http.StatusUnauthorized, "session expired or invalid", "authentication_error", "invalid_session")
-						return
-					}
+				cred, live, err := sessionSourceCredential(r.Context(), store, syntheticCredentialLive, sess.CredentialID)
+				if err != nil {
+					writeCredentialStoreError(w, err)
+					return
+				}
+				if !live {
+					writeError(w, http.StatusUnauthorized, "session expired or invalid", "authentication_error", "invalid_session")
+					return
+				}
+				if cred != nil {
 					scopes = cred.Scopes // store.Lookup already returns a clone
 				}
 				// A session is presented to the rest of the stack as an APIKey so
@@ -240,6 +232,36 @@ func AuthMiddlewareWithSessions(store repository.Store, sessions repository.Sess
 			next.ServeHTTP(w, r.WithContext(model.StoreKeyInContext(r.Context(), apiKey, "")))
 		})
 	}
+}
+
+// sessionSourceCredential reports whether the credential a session was minted
+// from can still authenticate, which a session needs as well as its own time
+// bounds: the session store knows nothing of keys, so a row it reports live may
+// belong to a key since revoked, deleted or expired, or to a master key since
+// rotated away.
+//
+// A synthetic credential has no row to look up, so it is asked of
+// syntheticLive, the gate that admitted it; a nil gate admits nothing. For a
+// stored key the clone store.Lookup returns comes back with the answer, so a
+// caller can read its current scopes. Lookup rather than Get: a key store that
+// could not answer has not said the source key is gone, and its error is
+// returned as one rather than read as a dead session — which signed the
+// operator out of the dashboard.
+//
+// The auth middleware and the session listing both ask this, so the sessions
+// the Admin API lists are exactly the ones it would admit.
+func sessionSourceCredential(ctx context.Context, store repository.Store, syntheticLive SyntheticCredentialLive, credentialID string) (*model.APIKey, bool, error) {
+	if isSyntheticCredential(credentialID) {
+		return nil, syntheticLive != nil && syntheticLive(ctx, credentialID), nil
+	}
+	cred, err := store.Lookup(ctx, credentialID)
+	if errors.Is(err, model.ErrKeyNotFound) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	return cred, model.KeyIsUsable(cred), nil
 }
 
 // bearerCredential returns the credential an Authorization header presents

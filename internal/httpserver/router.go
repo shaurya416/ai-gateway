@@ -440,16 +440,17 @@ func mountAdminRoutes(
 	// reads the MASTER_KEY-derived state once; AuthMiddlewareWithSessions
 	// below builds a second, functionally identical one internally for the same
 	// (keyStore, masterKey) pair — see NewCredentialValidator's doc comment.
-	credentials, _ := handlers.NewCredentialValidator(keyStore, masterKey)
+	credentials, credentialLive := handlers.NewCredentialValidator(keyStore, masterKey)
 	adminHandlers := &handlers.Handlers{
-		Keys:        keyStore,
-		Providers:   gw,
-		Configs:     cfgManager,
-		Logs:        logReader,
-		LogAdmin:    logMaintainer,
-		Sessions:    sessionStore,
-		Audit:       auditStore,
-		Credentials: credentials,
+		Keys:           keyStore,
+		Providers:      gw,
+		Configs:        cfgManager,
+		Logs:           logReader,
+		LogAdmin:       logMaintainer,
+		Sessions:       sessionStore,
+		Audit:          auditStore,
+		Credentials:    credentials,
+		CredentialLive: credentialLive,
 		// Read per request rather than snapshotted: an MCP server's readiness
 		// changes while the process runs, and the handshake that decides the
 		// first value has not finished when this router is built.
