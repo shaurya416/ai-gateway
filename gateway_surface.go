@@ -796,10 +796,10 @@ func (g *Gateway) recordSurfaceSuccess(ctx context.Context, span observability.S
 		requestMetrics.CostUSD.Add(record.cost.TotalUSD)
 	}
 
-	span.SetAttribute(observability.AttrGenAISystem, record.provider)
-	span.SetAttribute(observability.AttrGenAIResponseModel, record.routedModel)
+	setSpanString(span, observability.AttrGenAISystem, record.provider)
+	setSpanString(span, observability.AttrGenAIResponseModel, record.routedModel)
 	if record.provider != "" {
-		span.SetAttribute(observability.AttrFerroRoutingTargetKey, record.provider)
+		setSpanString(span, observability.AttrFerroRoutingTargetKey, record.provider)
 		span.SetAttribute(observability.AttrFerroRoutingAttempt, record.attempts)
 	}
 	span.SetTokens(record.tokens.PromptTokens, record.tokens.CompletionTokens, record.tokens.ReasoningTokens)

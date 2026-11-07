@@ -324,6 +324,23 @@ func (g *Gateway) recordCacheHit(ctx context.Context, span observability.Span, o
 	g.recordOutcome(ctx, span, obs, resp, resp.Model, cacheServedCost(), latency, metrics.CacheProviderLabel, "", false, originalStream, hooksEnabled, obsEventsActive)
 }
 
+// noopRequestSpan is the span the NoOp provider hands out. It records nothing,
+// but stamping it is not free: SetAttribute takes an any, and boxing a string
+// into one allocates before the no-op discards it. Compared against rather than
+// type-asserted because its type is unexported; the comparison cannot panic,
+// since its dynamic type is comparable.
+var _, noopRequestSpan = observability.NoOp().StartRequestSpan(context.Background(), observability.RequestAttrs{})
+
+// setSpanString sets a string attribute on span, and does nothing on the NoOp
+// provider's span, so a request with tracing off allocates nothing to describe
+// itself to a span that keeps nothing.
+func setSpanString(span observability.Span, key, value string) {
+	if span == noopRequestSpan {
+		return
+	}
+	span.SetAttribute(key, value)
+}
+
 // recordOutcome emits Prometheus + cost metrics under metricProvider, stamps the
 // root span with the resolved provider/model/usage/cost, logs at debug level,
 // and dispatches the completed lifecycle event.
@@ -342,11 +359,11 @@ func (g *Gateway) recordOutcome(ctx context.Context, span observability.Span, ob
 	}
 
 	// Stamp final usage + cost + resolved provider/model on the root span.
-	span.SetAttribute(observability.AttrGenAISystem, resp.Provider)
-	span.SetAttribute(observability.AttrGenAIResponseModel, routedModel)
+	setSpanString(span, observability.AttrGenAISystem, resp.Provider)
+	setSpanString(span, observability.AttrGenAIResponseModel, routedModel)
 	// Stamp the resolved target key (virtual key = provider name in this routing layer).
 	if resp.Provider != "" {
-		span.SetAttribute(observability.AttrFerroRoutingTargetKey, resp.Provider)
+		setSpanString(span, observability.AttrFerroRoutingTargetKey, resp.Provider)
 	}
 	span.SetTokens(resp.Usage.PromptTokens, resp.Usage.CompletionTokens, resp.Usage.ReasoningTokens)
 	span.SetCost(observability.CostBreakdown{

@@ -189,10 +189,10 @@ func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-cha
 		target, rawCh, started, err = g.startStreamWithStrategy(startCtx, ctx, stream, req)
 	}
 	providerName := target.key
-	span.SetAttribute(observability.AttrGenAISystem, providerName)
+	setSpanString(span, observability.AttrGenAISystem, providerName)
 	// Stamp the resolved target key (virtual key = provider name in this routing layer).
 	if providerName != "" {
-		span.SetAttribute(observability.AttrFerroRoutingTargetKey, providerName)
+		setSpanString(span, observability.AttrFerroRoutingTargetKey, providerName)
 		span.SetAttribute(observability.AttrFerroRoutingAttempt, target.attempts)
 	}
 	if err == nil && g.log.Enabled(ctx, logger.LevelDebug) {
@@ -335,7 +335,7 @@ func (g *Gateway) RouteStream(ctx context.Context, req providers.Request) (<-cha
 		// drains. Provider chunk models are forwarded unchanged but must not leak
 		// into terminal attribution when per-target model mapping is active.
 		if o.Model != "" {
-			finishSpan.SetAttribute(observability.AttrGenAIResponseModel, o.Model)
+			setSpanString(finishSpan, observability.AttrGenAIResponseModel, o.Model)
 		}
 		finishSpan.SetTokens(o.TokensIn, o.TokensOut, o.ReasoningIn)
 		finishSpan.SetCost(observability.CostBreakdown{

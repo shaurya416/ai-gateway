@@ -170,6 +170,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the one being revoked. A target only zero-weight variants name is now left
   out of that order as well, so such a request is answered with the live
   variant's own failure. Targets no variant names still follow, as before.
+- With tracing off, a request no longer allocates to describe itself to a span
+  that records nothing. The NoOp provider's methods allocate nothing, but their
+  arguments were built first: boxing the provider and model strings into
+  `SetAttribute` cost three allocations on every chat, stream, embeddings and
+  image request, and naming each plugin's child span and boxing its three
+  attributes cost four more per plugin per stage. A chat request with no
+  plugins made 14 allocations where it now makes 11, and one through three
+  guardrails made 28 where it now makes 13. Nothing is built for a NoOp span
+  any more, so tracing off adds no allocations to the request path, as
+  documented.
 - The `rate-limit` plugin's `user_rpm` buckets no longer keep a copy of the
   request's `user` value. A bucket was keyed on the raw `user` field, which is
   bounded only by the request size, so the 100,000-bucket cap bounded how many

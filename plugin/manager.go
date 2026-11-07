@@ -421,19 +421,29 @@ func (m *Manager) RunOnError(ctx context.Context, pctx *Context) {
 	}
 }
 
+// noopRootSpan is the span the NoOp provider hands out, compared against
+// rather than type-asserted because its type is unexported. A child of it
+// records nothing, so executePlugin opens none: the child's name and its three
+// attributes are built before the span ever sees them, and that cost four
+// allocations per plugin per stage on a gateway with tracing off.
+//
+// The comparison cannot panic: interface equality panics only on two values of
+// one uncomparable dynamic type, and this one's is comparable.
+var _, noopRootSpan = observability.NoOp().StartRequestSpan(context.Background(), observability.RequestAttrs{})
+
 // executePlugin runs a single plugin under a child span opened through the
 // observability seam. When the request carries a root span (pctx.Span) the
 // child records the plugin name/kind/stage plus the rejection or error
 // outcome; error messages are redacted by the seam per the configured
-// privacy level. With the NoOp provider — or when no root span is set — the
-// child is a no-op and adds effectively zero overhead.
+// privacy level. With the NoOp provider — or when no root span is set — no
+// child is opened and the stage allocates nothing for telemetry.
 func (m *Manager) executePlugin(ctx context.Context, p Plugin, pctx *Context, stage Stage) (err error) {
 	// The stage the plugin is running in is the framework's to state, not the
 	// plugin's to guess from which fields are populated.
 	pctx.Stage = stage
 
 	var span observability.Span
-	if pctx.Span != nil {
+	if pctx.Span != nil && pctx.Span != noopRootSpan {
 		ctx, span = pctx.Span.StartChild(ctx, "plugin."+string(stage)+"."+p.Name(), observability.SpanKindInternal)
 		span.SetAttribute(observability.AttrFerroPluginName, p.Name())
 		span.SetAttribute(observability.AttrFerroPluginKind, string(p.Type()))
