@@ -178,6 +178,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `404 model_not_found` for a model both configs serve — on an agentic request,
   after its first turn had already been billed. The walk settings are now
   taken from the same read of the config as the strategy, on every surface.
+- `/v1/models` no longer lists a model id that a configured alias sends
+  elsewhere when nothing serves the alias's target. Every routed surface
+  resolves an alias before routing, but the listing asked whether the id as
+  written was routable: with an `openai` target, `aliases: {gpt-4o:
+  claude-sonnet-4-6}` and an `anthropic` target whose credential has not
+  rolled out, `gpt-4o` was advertised from the catalog and every request for
+  it answered `404 model_not_found`. The listing now asks the question the
+  routed surfaces ask, about the model the alias resolves to.
 - A `targets[].models` entry that names a global alias is now refused at load
   and by `ferrogw validate`, as a `model_map` key naming one already is.
   Aliases resolve before routing, so a request for the declared id was routed

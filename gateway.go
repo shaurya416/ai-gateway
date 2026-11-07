@@ -840,7 +840,14 @@ func (g *Gateway) AllModels() []providers.ModelInfo {
 // no-match fallback target. A model only a matched rule would reach is
 // therefore not listed. That is the safe direction, and the only one available:
 // the endpoint's promise is that what it lists can be routed.
+//
+// The id is resolved as a configured alias first, because every routed surface
+// does that before anything else: an inventory id that is also an alias name —
+// a catalog gpt-4o beside an alias sending gpt-4o to another provider's model —
+// is routed as the alias's target, never as itself. Asked about the id as
+// written, the listing advertised it while every request for it was refused.
 func (g *Gateway) routingServes(s strategies.Strategy, model string) bool {
+	model = g.resolveModelAlias(model)
 	keys, err := s.SelectTargets(providers.Request{Model: model})
 	if err != nil || len(keys) == 0 {
 		return false
