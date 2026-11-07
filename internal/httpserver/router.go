@@ -245,6 +245,12 @@ func NewRouter(
 	// RecoverJSON is outermost so panics anywhere below this point still return
 	// the gateway's JSON error envelope while inner middleware defers can run.
 	r.Use(middleware.RecoverJSON(logger.Default()))
+	// The server's WriteTimeout is armed when a request's headers are read,
+	// which would bound the provider call, retries and any MCP tool loop along
+	// with writing the answer. This re-arms it when the answer starts, for
+	// every route; request_timeout is what bounds the work. Handlers leave the
+	// write deadline alone until they write. See WriteTimeoutFromAnswer.
+	r.Use(middleware.WriteTimeoutFromAnswer)
 	// OTel middleware MUST come before logger.Middleware so any inbound
 	// W3C traceparent is extracted into the request context, then the
 	// logging layer reuses that trace ID for X-Request-ID. When no OTel

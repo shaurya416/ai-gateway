@@ -126,6 +126,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- An answer that takes more than two minutes to produce now reaches the
+  caller. The server's 120-second write timeout started once the request's
+  headers were read, so the time spent waiting on the provider — retries,
+  fallback and an MCP tool loop included — came out of the time left to write
+  the answer, and an answer ready after it was lost on the wire: the caller
+  read a closed connection while the gateway logged the status it had meant
+  to send. That held for a non-streamed chat request, `/v1/completions`,
+  `/v1/embeddings`, `/v1/images/generations`, `/v1/rerank`, `/v1/moderations`
+  and the three `/v1/audio/*` routes — the two upload routes restarted the
+  timeout when the upload ended, which was still before the provider call —
+  and for the error answer of a streamed chat request whose stream took that
+  long to fail. On those routes no answer later than the timeout arrived,
+  whatever `request_timeout` said, including when it was unset, which is
+  documented as no gateway-imposed deadline. A `/v1/*` pass-through forward
+  whose upstream took that long to answer with an empty body could lose its
+  answer too. The router now re-arms the write timeout when the answer
+  starts, so it bounds writing the answer, and `request_timeout` alone bounds
+  the work.
 - A content guardrail on the `/v1/*` pass-through and `POST /v1/responses`
   now reads every value of a key the body names twice. The body is forwarded
   verbatim, but the text projection guardrails read was built by decoding it
@@ -396,9 +414,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   file needed about 7 Mbit/s of upload bandwidth to be accepted, and a 100 MB
   batch file about 27. On these routes the timeout now applies to each read of
   the body instead, so an upload that keeps arriving is read to the end, and
-  an audio route's answer gets the server's whole write timeout from the end of
-  the upload rather than what the upload left of it. An upload that sends
-  nothing for thirty seconds is still refused as before.
+  the time it took to arrive no longer comes out of the time an audio route
+  has to write its answer. An upload that sends nothing for thirty seconds is
+  still refused as before.
 - A `/v1/moderations` request whose `input` is OpenAI's multi-modal array —
   `{"type":"text"}` and `{"type":"image_url"}` objects, the shape
   omni-moderation takes an image in — is no longer refused by every blocking

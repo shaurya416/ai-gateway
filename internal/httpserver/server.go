@@ -11,7 +11,9 @@ import (
 	"github.com/ferro-labs/ai-gateway/internal/httpclient"
 )
 
-// Default HTTP server timeouts and limits.
+// Default HTTP server timeouts and limits. The router starts
+// ServerWriteTimeout when an answer starts rather than when the request's
+// headers have been read; see middleware.WriteTimeoutFromAnswer.
 const (
 	ServerReadTimeout       = 30 * time.Second
 	ServerReadHeaderTimeout = 10 * time.Second

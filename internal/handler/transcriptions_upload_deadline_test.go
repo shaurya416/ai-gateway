@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/ferro-labs/ai-gateway/config"
+	"github.com/ferro-labs/ai-gateway/internal/middleware"
 	"github.com/ferro-labs/ai-gateway/providers"
 )
 
@@ -146,7 +147,9 @@ func (p *slowTranscriber) Transcribe(ctx context.Context, req providers.Transcri
 // the time an upload spends arriving comes out of the answer's budget. Once a
 // slow upload is read to the end rather than cut off, a transcription that took
 // longer than what was left would be produced, billed and then lost on the
-// wire. The answer gets the whole WriteTimeout from the end of the upload.
+// wire. The answer gets the whole WriteTimeout from its first byte. Re-arming
+// it is the router's job, not the handler's, so the handler is served behind
+// the middleware the router installs.
 func TestTranscriptions_AnswerGetsTheWholeWriteTimeoutAfterASlowUpload(t *testing.T) {
 	const (
 		readTimeout  = 300 * time.Millisecond
@@ -165,7 +168,7 @@ func TestTranscriptions_AnswerGetsTheWholeWriteTimeoutAfterASlowUpload(t *testin
 	stub := &slowTranscriber{delay: 400 * time.Millisecond}
 	gw.RegisterProvider(stub)
 
-	srv := httptest.NewUnstartedServer(Transcriptions(gw, false))
+	srv := httptest.NewUnstartedServer(middleware.WriteTimeoutFromAnswer(Transcriptions(gw, false)))
 	srv.Config.ReadTimeout = readTimeout
 	srv.Config.ReadHeaderTimeout = readTimeout
 	srv.Config.WriteTimeout = writeTimeout

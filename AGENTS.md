@@ -192,6 +192,7 @@ point into `deploy/`.
 | `providers/core/discovery.go` | `DiscoverOpenAICompatibleModels` / `DiscoverModelsWithHeaders` — live `/models` enumeration shared by OpenAI-compatible providers |
 | `cmd/ferrogw/main.go` | HTTP server setup and entry point |
 | `internal/admin/handlers/middleware.go` | Bearer token auth middleware — `AuthMiddlewareWithSessions` accepts either an API key or a dashboard session token |
+| `internal/middleware/writetimeout.go` | `WriteTimeoutFromAnswer` — re-arms the server's `WriteTimeout` when the answer starts, on every route, so it bounds writing the answer rather than the provider call. The only code that moves the write deadline before an answer starts: a handler sets one only while it writes |
 | `internal/admin/repository/sessions.go` | `SessionStore` interface + `MemorySessionStore` (the `Session` type itself lives in `internal/admin/model`) — session lifetime (24h absolute / 1h idle), token hashing |
 | `internal/admin/{model,repository,handlers}/` | Admin subsystem split into three packages: `model` (domain types + api-key/actor context kernel), `repository` (key/session/config/audit stores + migrations + config scrubbing), `handlers` (HTTP handlers, routes, auth middleware) |
 

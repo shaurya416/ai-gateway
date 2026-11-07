@@ -32,13 +32,14 @@ const audioMaxRequestBytes = 25 << 20 // 25 MiB
 func Transcriptions(gw *aigateway.Gateway, translate bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		// Up to 25 MiB can take longer to arrive than the server's ReadTimeout
-		// allows a whole request, so the upload is bounded by idleness instead,
-		// and the answer's write budget starts once it has arrived.
+		// allows a whole request, so the upload is bounded by idleness instead.
+		// The write deadline is left alone: the router re-arms it when the
+		// answer starts (middleware.WriteTimeoutFromAnswer), and one set here
+		// would bound the provider call as well.
 		release := streamio.BoundUploadByIdleness(w, r)
 		defer release()
 		r.Body = http.MaxBytesReader(w, r.Body, audioMaxRequestBytes)
 		err := r.ParseMultipartForm(transcriptionMultipartMemory)
-		streamio.RestartWriteTimeout(w, r)
 		// A file part larger than transcriptionMultipartMemory is spilled to a
 		// temporary file. net/http removes those only for the request it
 		// dispatched, and this handler holds a copy of it — every middleware

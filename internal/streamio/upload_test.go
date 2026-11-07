@@ -112,29 +112,3 @@ func TestBoundUploadByIdleness_NoServerReadTimeoutChangesNothing(t *testing.T) {
 		})
 	}
 }
-
-func TestRestartWriteTimeout_GivesTheAnswerTheWholeWriteTimeoutFromNow(t *testing.T) {
-	const writeTimeout = time.Minute
-	w := newDeadlineRecorder()
-	r := uploadRequest(t, "", &http.Server{WriteTimeout: writeTimeout, ReadHeaderTimeout: time.Second})
-
-	before := time.Now()
-	RestartWriteTimeout(w, r)
-
-	if len(w.deadlines) != 1 {
-		t.Fatalf("write deadline set %d times, want once", len(w.deadlines))
-	}
-	if d := w.deadlines[0]; d.Before(before.Add(writeTimeout)) || d.After(time.Now().Add(writeTimeout)) {
-		t.Errorf("deadline = %v, want WriteTimeout from the call", d)
-	}
-
-	for name, srv := range map[string]*http.Server{"no server": nil, "no WriteTimeout": {}} {
-		t.Run(name, func(t *testing.T) {
-			w := newDeadlineRecorder()
-			RestartWriteTimeout(w, uploadRequest(t, "", srv))
-			if len(w.deadlines) != 0 {
-				t.Fatalf("write deadline set %d times with no WriteTimeout to restart, want none", len(w.deadlines))
-			}
-		})
-	}
-}

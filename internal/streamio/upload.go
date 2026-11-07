@@ -40,23 +40,6 @@ func BoundUploadByIdleness(w http.ResponseWriter, r *http.Request) (release func
 	return b.release
 }
 
-// RestartWriteTimeout gives the response the serving http.Server's whole
-// WriteTimeout from now, for a handler that has finished reading an upload
-// bounded by BoundUploadByIdleness and answers only once its work is done.
-//
-// net/http arms WriteTimeout when the request's headers have been read, so the
-// time an upload spends arriving is taken out of the answer's budget: once a
-// slow upload is read to the end rather than cut off, an answer that took
-// longer to produce than what was left would be lost on the wire after the work
-// had been done and paid for. With no WriteTimeout configured nothing changes.
-func RestartWriteTimeout(w http.ResponseWriter, r *http.Request) {
-	srv, _ := r.Context().Value(http.ServerContextKey).(*http.Server)
-	if srv == nil || srv.WriteTimeout <= 0 {
-		return
-	}
-	_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(srv.WriteTimeout))
-}
-
 // idleUploadBody is the body BoundUploadByIdleness installs.
 type idleUploadBody struct {
 	io.ReadCloser
