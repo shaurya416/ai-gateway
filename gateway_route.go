@@ -398,7 +398,11 @@ func (g *Gateway) route(ctx context.Context, req providers.Request, held *mcpHol
 		// Scoped to the tools this request was offered, so a server withdrawn
 		// mid-loop does not hand the client a call to a tool it never declared.
 		loopExecutor := mcpExecutorSnapshot.WithOfferedTools(mcpTools)
-		resp, loopUsage, loopDuration, loopTarget, err = g.runMCPLoop(ctx, loopExecutor, plugins, pctx, s, &provReq, resp, target)
+		// The loop carries the conversation forward on its own copy of the
+		// request, which never holds the MCP tool definitions: they are added
+		// to each provider call it makes. See runMCPLoop.
+		loopReq := req
+		resp, loopUsage, loopDuration, loopTarget, err = g.runMCPLoop(ctx, loopExecutor, plugins, pctx, s, &loopReq, mcpTools, resp, target)
 		providerDuration += loopDuration
 		if err != nil {
 			// The turns that completed before the failure spent real tokens, so
@@ -484,9 +488,11 @@ func (g *Gateway) route(ctx context.Context, req providers.Request, held *mcpHol
 // response caching for the whole deployment. No tool call was required; the
 // plugin reported itself configured and simply never hit.
 //
-// The copy is shallow, which is sound because injectMCPTools only assigns:
-// active requires that the caller sent no tools, so the append inside allocates
-// rather than writing through a backing array the original still shares.
+// The copy is shallow, which is sound because injectMCPTools only assigns, and
+// assigns a Tools slice of its own: the request it is handed may already hold
+// tools — a before_request plugin's, or on an agentic-loop turn whatever the
+// loop's request carries — and appending to that slice could write through a
+// backing array the original still shares.
 func providerRequestFor(req providers.Request, tools []mcp.Tool, active bool) providers.Request {
 	if active {
 		injectMCPTools(&req, tools)
@@ -494,14 +500,16 @@ func providerRequestFor(req providers.Request, tools []mcp.Tool, active bool) pr
 	return req
 }
 
-// injectMCPTools advertises the gateway's MCP tools on req and forces the call
-// non-streaming.
+// injectMCPTools advertises the gateway's MCP tools on req, after the tools req
+// already carries, and forces the call non-streaming.
 //
 // The two go together. During the agentic loop an intermediate call must be
 // non-streaming so the whole response can be inspected for tool_calls; the
 // client's original stream preference is captured before this and restored on
 // the final response (Phase 1: an MCP request always returns non-streaming).
 func injectMCPTools(req *providers.Request, tools []mcp.Tool) {
+	all := make([]core.Tool, 0, len(req.Tools)+len(tools))
+	req.Tools = append(all, req.Tools...)
 	for _, t := range tools {
 		req.Tools = append(req.Tools, core.Tool{
 			Type: "function",
@@ -536,13 +544,23 @@ func (g *Gateway) metricModel(model string) string {
 // runMCPLoop drives the agentic MCP tool-call loop: while resp has pending
 // tool_calls, it executes them via the MCP executor, appends the results to
 // req, and re-contacts the provider (always non-streaming for intermediate
-// calls) until no tool_calls remain or the depth limit is hit. req is
-// mutated in place (same aliasing as runBeforePlugins) so the caller's
-// plugin.Context, which was built from &req, still sees the accumulated
-// tool messages. Returns the final response, the accumulated provider-call
-// duration (for OverheadMs accounting), the provider name of the last
-// attempted call (for error reporting), and any error.
-func (g *Gateway) runMCPLoop(ctx context.Context, mcpExecutorSnapshot *mcp.Executor, plugins *plugin.Manager, pctx *plugin.Context, s strategies.Strategy, req *providers.Request, resp *providers.Response, initialTarget routedTarget) (*providers.Response, core.Usage, time.Duration, routedTarget, error) {
+// calls) until no tool_calls remain or the depth limit is hit. Returns the
+// final response, the accumulated provider-call duration (for OverheadMs
+// accounting), the provider name of the last attempted call (for error
+// reporting), and any error.
+//
+// req is the loop's own request: the caller's, as the before_request stage
+// left it, plus the transcript the loop appends. It never carries the
+// gateway's MCP tool definitions, tools: each provider call is built from req
+// with them added (providerRequestFor), and that copy is the only place they
+// exist. So the plugins checking a turn, which are handed req, read on every
+// turn what the caller sent and what the loop added on its behalf — and on no
+// turn the definitions, which are the operator's configuration, the same on
+// every request, and were not part of what the opening turn's before_request
+// stage checked either. Telling the two apart by where a tool came from rather
+// than by its name keeps a tool on the request that shares an MCP tool's name
+// the request's own.
+func (g *Gateway) runMCPLoop(ctx context.Context, mcpExecutorSnapshot *mcp.Executor, plugins *plugin.Manager, pctx *plugin.Context, s strategies.Strategy, req *providers.Request, tools []mcp.Tool, resp *providers.Response, initialTarget routedTarget) (*providers.Response, core.Usage, time.Duration, routedTarget, error) {
 	var providerDuration time.Duration
 	var err error
 	depth := 0
@@ -610,12 +628,15 @@ func (g *Gateway) runMCPLoop(ctx context.Context, mcpExecutorSnapshot *mcp.Execu
 			// same figure every turn and stops nothing.
 			if pctx != nil && plugins != nil {
 				// Point the context at the request the loop is BUILDING, not the
-				// one the caller sent. They are different objects: MCP tools and
-				// the tool results below land on a copy, so that the response
-				// cache and the after stage still see what the client actually
-				// asked for. A guardrail has the opposite need — it must read
-				// what is about to go on the wire — so the pointer is swapped for
-				// the duration of the check and restored immediately.
+				// one the caller sent. They are different objects: the tool
+				// results land on a copy, so that the response cache and the
+				// after stage still see what the client actually asked for. A
+				// guardrail has the opposite need — it must read what this turn
+				// sends on the caller's behalf, the transcript included — so the
+				// pointer is swapped for the duration of the check and restored
+				// immediately. What it reads is req, not the provider call built
+				// from it below, so the MCP tool definitions are not among it on
+				// this turn, as they were not on the opening one.
 				callerRequest := pctx.Request
 				pctx.Request = req
 				pctx.Measurements.CostUSD, pctx.Measurements.HasCost = spentUSD, spentPriced
@@ -638,7 +659,7 @@ func (g *Gateway) runMCPLoop(ctx context.Context, mcpExecutorSnapshot *mcp.Execu
 
 			callStart := time.Now()
 			var target routedTarget
-			resp, target, err = g.routeChat(ctx, s, *req)
+			resp, target, err = g.routeChat(ctx, s, providerRequestFor(*req, tools, true))
 			providerDuration += time.Since(callStart)
 			if target.key != "" {
 				attempts += target.attempts

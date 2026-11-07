@@ -341,6 +341,14 @@ func (m *Manager) RunBefore(ctx context.Context, pctx *Context) error {
 // Everything else runs: a guardrail inspects what is about to be sent, and a
 // rate limiter or budget sees a call it is meant to be bounding.
 //
+// pctx.Request is the loop's request: the caller's, as the ordinary stage left
+// it, with the transcript so far — the model's tool calls and the servers'
+// results. It does not carry the MCP tool definitions the gateway advertises on
+// the provider call. Those are the operator's configuration, the same on every
+// request, and the ordinary stage, which runs before they are added, never
+// sees them either; handing them to a turn's check would make a request's
+// verdict depend on how many turns it had taken.
+//
 // A rejection ends the loop and is returned to the caller. A plugin FAILURE is
 // handled exactly as it is at the ordinary stage, by the shared policy — this
 // runs the same executePlugin and handlePluginFailure, so a fail-open plugin

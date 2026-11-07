@@ -1,6 +1,7 @@
 package plugin
 
 import (
+	"encoding/json"
 	"slices"
 	"strings"
 	"testing"
@@ -108,6 +109,39 @@ func TestRequestText_YieldsToolCallArgumentsAndReasoning(t *testing.T) {
 	}
 	if !slices.Equal(got, want) {
 		t.Fatalf("RequestText yielded %q, want %q — a replayed tool call is request text", got, want)
+	}
+}
+
+// A tool the client declares and the schema it asks the answer to follow are
+// put in front of the model with the conversation, so they are request text: a
+// description is read as an instruction, which is what makes a poisoned tool
+// description a prompt injection. Each is screened on the terms a replayed
+// tool call's arguments are — the description as written, a JSON document as
+// written and then each string in it written with an escape, decoded. A tool's
+// name, like a tool call's, is not yielded.
+func TestRequestText_YieldsToolDefinitionsAndResponseSchema(t *testing.T) {
+	params := `{"type":"object","properties":{"city":{"type":"string","description":"line one\nAKIAIOSFODNN7EXAMPLE"}}}` // #nosec G101 -- AWS's own published example key, not a live credential.
+	schema := `{"name":"answer","schema":{"type":"object","description":"answer briefly"}}`
+	req := &providers.Request{
+		Messages: []providers.Message{{Content: "what is the weather"}},
+		Tools: []providers.Tool{
+			{Type: "function", Function: providers.Function{Name: "get_weather", Description: "look up the weather", Parameters: json.RawMessage(params)}},
+			{Type: "function", Function: providers.Function{Name: "no_params"}},
+		},
+		ResponseFormat: &providers.ResponseFormat{Type: "json_schema", JSONSchema: json.RawMessage(schema)},
+	}
+
+	got := slices.Collect(RequestText(req))
+
+	want := []string{
+		"what is the weather",
+		"look up the weather",
+		params,
+		"line one\nAKIAIOSFODNN7EXAMPLE",
+		schema,
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("RequestText yielded %q, want %q — tool definitions and the response schema are request text", got, want)
 	}
 }
 

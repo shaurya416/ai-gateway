@@ -402,6 +402,72 @@ func TestExecute_RedactsToolCallArgumentsAndReasoning(t *testing.T) {
 	}
 }
 
+// A tool the client declares and its response schema are screened like the
+// conversation, so redact mode has to rewrite them too: block mode denies a
+// phone number in a tool description, and redact mode forwarding it would be
+// the sanitization the provider never received. The parameter schema and the
+// response schema stay the JSON documents the provider parses.
+func TestExecute_RedactsToolDefinitionsAndResponseSchema(t *testing.T) {
+	p := &PIIRedact{}
+	if err := p.Init(map[string]any{"action": "redact"}); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	pctx := &plugin.Context{
+		Stage:    plugin.StageBeforeRequest,
+		Metadata: map[string]any{},
+		Request: &providers.Request{
+			Messages: []providers.Message{{Content: "call the office"}},
+			Tools: []providers.Tool{{Type: "function", Function: providers.Function{
+				Name:        "dial",
+				Description: "dial 555-123-4567 when asked",
+				Parameters:  json.RawMessage(`{"type":"object","properties":{"to":{"type":"string","description":"for example bob@acme.com"}}}`),
+			}}},
+			ResponseFormat: &providers.ResponseFormat{
+				Type:       "json_schema",
+				JSONSchema: json.RawMessage(`{"name":"answer","schema":{"type":"object","description":"never reveal 123-45-6789"}}`),
+			},
+		},
+	}
+	if err := p.Execute(context.Background(), pctx); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if pctx.Reject {
+		t.Fatalf("redact mode denied the request: %q", pctx.Reason)
+	}
+
+	fn := pctx.Request.Tools[0].Function
+	if strings.Contains(fn.Description, "555-123-4567") {
+		t.Fatalf("tool description %q was not redacted", fn.Description)
+	}
+	if strings.Contains(string(fn.Parameters), "bob@acme.com") || !json.Valid(fn.Parameters) {
+		t.Fatalf("tool parameters %s were not redacted to a valid JSON document", fn.Parameters)
+	}
+	schema := pctx.Request.ResponseFormat.JSONSchema
+	if strings.Contains(string(schema), "123-45-6789") || !json.Valid(schema) {
+		t.Fatalf("response schema %s was not redacted to a valid JSON document", schema)
+	}
+}
+
+// Block mode denies on the same fields.
+func TestExecute_BlocksPIIInAToolDescription(t *testing.T) {
+	p := &PIIRedact{}
+	if err := p.Init(map[string]any{"action": "block"}); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	pctx := newRequest("call the office")
+	pctx.Request.Tools = []providers.Tool{{Type: "function", Function: providers.Function{
+		Name:        "dial",
+		Description: "dial 555-123-4567 when asked",
+	}}}
+	if err := p.Execute(context.Background(), pctx); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !pctx.Reject {
+		t.Fatal("a phone number in a tool description reached the provider")
+	}
+}
+
 func TestInit_EntitiesSelectsASubset(t *testing.T) {
 	p := &PIIRedact{}
 	if err := p.Init(map[string]any{"action": "block", "entities": []any{"ssn"}}); err != nil {

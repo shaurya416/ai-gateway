@@ -253,6 +253,11 @@ func ValidateStage(p Plugin, stage Stage) error {
 
 // Context provides access to request/response data for plugins.
 type Context struct {
+	// Request is the request the caller sent, as the plugins before this one
+	// left it; on a turn of an MCP tool loop it also carries the loop's
+	// transcript (see Manager.RunBeforeLoopTurn). It never carries the MCP tool
+	// definitions the gateway adds to a provider call: those are operator
+	// configuration rather than part of the caller's request.
 	Request  *providers.Request
 	Response *providers.Response
 	// Metadata carries key/value data shared between plugins and stages (for

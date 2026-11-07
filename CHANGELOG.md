@@ -126,6 +126,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The content guardrails on `/v1/chat/completions` and `/v1/completions` —
+  `word-filter`, `regex-guard`, `secret-scan`, `prompt-shield` and
+  `pii-redact` — now screen the tools a request declares and the JSON schema
+  its `response_format` asks for, not only its messages. A tool's description
+  and parameter schema are put in front of the model with the conversation,
+  and a description is read as an instruction, so a request with clean
+  messages and an injection, a blocked word or a credential in a tool it
+  declared reached the provider unscreened — while the same body sent to
+  `POST /v1/responses` or the `/v1/*` pass-through, which screen every string
+  in it, was refused. Each schema is screened as written and by the decoded
+  value of every escaped string in it, as a replayed tool call's arguments
+  are, and `pii-redact` under `action: redact` rewrites both, leaving each a
+  valid JSON document. A tool's name is still not screened. Inside an MCP tool
+  loop the request's own tools and `response_format` schema are screened again
+  before every turn, with the transcript. The tool definitions the gateway
+  advertises for its MCP servers are screened, and rewritten, on no turn, the
+  opening one included: they are the operator's configuration, the same on
+  every request and not something a caller sends or can change, so a blocked
+  word in a server's tool description refuses nothing. They are told apart by
+  where they come from, not by name, so a tool on the request named like an MCP
+  tool is still screened. A tool result an MCP server returns is still screened
+  on the turn that carries it.
 - An answer that takes more than two minutes to produce now reaches the
   caller. The server's 120-second write timeout started once the request's
   headers were read, so the time spent waiting on the provider — retries,

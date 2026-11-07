@@ -66,6 +66,26 @@ runs at the stages its rules' `apply_to` can act at. Listing one anywhere else
 used to load a plugin that reported itself enabled and did nothing. The
 multi-stage plugins above are unaffected: they act at every stage they name.
 
+## What a content guardrail reads
+
+On `/v1/chat/completions` and `/v1/completions` the content guardrails —
+`word-filter`, `regex-guard`, `secret-scan`, `prompt-shield` and `pii-redact` —
+read at `before_request` everything the request puts in front of the model:
+each message's content, content parts and reasoning content, the arguments of
+each tool call it replays, the description and parameter schema of each tool it
+declares, and the JSON schema its `response_format` asks for. A tool's name and
+image data are not read. `POST /v1/responses` and the `/v1/*` pass-through
+forward a body the gateway does not model, so there they read every string in
+it.
+
+Inside an MCP tool loop each turn is screened again before it is sent, against
+the same request plus the loop's transcript — the model's tool calls and the
+MCP servers' results. The tool definitions the gateway advertises for its MCP
+servers are read on **no** turn: they are the operator's configuration, the
+same on every request and not something a caller sends or can change, and a
+verdict on them could only refuse every request or none. Which tools a server
+offers is decided by `mcp_servers[].allowed_tools`, not by a content guardrail.
+
 ## Built-in plugins
 
 | Plugin | Type | Stage(s) | What it does |
@@ -133,11 +153,12 @@ only built-in guardrail that can, rewrites it in place and lets it continue
 request as written (`action: log`, the observe-only mode for sizing a policy
 before enforcing it). Redaction rewrites every screenable field — a message's
 `Content`, its reasoning content, each of its content parts and each tool
-call's arguments — so none of them can carry the value past the plugin. The
-arguments are rewritten as the JSON document they are: each string by its
-decoded value, so a value after an escaped newline is found, and a number
-carrying a match replaced whole by the placeholder as a JSON string, so the
-arguments still parse afterwards. A custom pattern written against the
+call's arguments, and each declared tool's description and parameter schema
+and the `response_format` JSON schema — so none of them can carry the value
+past the plugin. The arguments and both schemas are rewritten as the JSON
+documents they are: each string by its decoded value, so a value after an
+escaped newline is found, and a number carrying a match replaced whole by the
+placeholder as a JSON string, so each document still parses afterwards. A custom pattern written against the
 arguments as text, spanning a key and its value, is still applied to the text
 as written. A `credit_card` match must also pass the Luhn check, so a
 sixteen-digit order id or tracking number is not denied as a card.

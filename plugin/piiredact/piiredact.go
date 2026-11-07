@@ -418,6 +418,31 @@ func (p *PIIRedact) redactRequest(ctx context.Context, pctx *plugin.Context) {
 			msg.ToolCalls[j].Function.Arguments = p.redactArguments(ctx, pctx, msg.ToolCalls[j].Function.Arguments)
 		}
 	}
+	// The tools the request declares and its response schema are screened like
+	// the conversation (see plugin.RequestText), so they are rewritten like it:
+	// a description as text, each schema as the JSON document the provider
+	// parses.
+	for i := range req.Tools {
+		if ctx.Err() != nil {
+			return
+		}
+		fn := &req.Tools[i].Function
+		fn.Description = p.redact(ctx, pctx, fn.Description)
+		fn.Parameters = p.redactDocument(ctx, pctx, fn.Parameters)
+	}
+	if req.ResponseFormat != nil {
+		req.ResponseFormat.JSONSchema = p.redactDocument(ctx, pctx, req.ResponseFormat.JSONSchema)
+	}
+}
+
+// redactDocument rewrites a JSON document the request carries — a tool's
+// parameter schema, a response schema — exactly as redactArguments rewrites a
+// tool call's arguments. An absent document stays absent.
+func (p *PIIRedact) redactDocument(ctx context.Context, pctx *plugin.Context, doc json.RawMessage) json.RawMessage {
+	if len(doc) == 0 {
+		return doc
+	}
+	return json.RawMessage(p.redactArguments(ctx, pctx, string(doc)))
 }
 
 // redactArguments rewrites a tool call's arguments as the JSON document they

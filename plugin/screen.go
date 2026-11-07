@@ -14,14 +14,36 @@ import (
 // RequestText yields every piece of text a request carries to the provider:
 // each message's Content and ReasoningContent, the Text of each of its content
 // parts, and the arguments of each tool call it replays — the JSON document as
-// written, then each string in it that is written with an escape, decoded.
+// written, then each string in it that is written with an escape, decoded —
+// followed by the description and parameter schema of each tool the request
+// declares, and the JSON schema its response_format asks for, the two schemas
+// on the same terms as a tool call's arguments.
 //
-// Both, because neither alone is the whole message. Message.UnmarshalJSON
-// collapses only parts typed "text" into Content, so a blocked word in a part
-// of any other type leaves no trace in Content and is forwarded upstream;
-// a message built in Go rather than decoded from JSON has parts and an empty
-// Content. Re-scanning the collapsed text costs a second pass over bytes
-// already in cache and cannot produce a wrong answer; missing a part can.
+// The tool definitions and the response schema are text the provider puts in
+// front of the model with the conversation, and a description is read as an
+// instruction — which is what makes a poisoned tool description a prompt
+// injection. Left unscreened, a request whose messages were clean carried a
+// blocked word, a credential or an injection in a tool it declared straight
+// past every content guardrail, while the same body sent through the /v1/*
+// pass-through, whose projection collects every string, was refused. A tool's
+// name is not yielded, for the reason a tool call's is not.
+//
+// The tools are the ones the request itself carries, which never include the
+// MCP tool definitions the gateway advertises. A plugin is handed the caller's
+// request, and on each turn of an MCP tool loop the loop's own request — the
+// caller's plus the transcript so far — to which the gateway adds its MCP
+// definitions only when it makes the provider call. Those definitions are the
+// operator's configuration, identical on every request and beyond the
+// caller's reach, so they are screened on no turn: a verdict on them could only
+// refuse every request or none.
+//
+// Both Content and parts, because neither alone is the whole message.
+// Message.UnmarshalJSON collapses only parts typed "text" into Content, so a
+// blocked word in a part of any other type leaves no trace in Content and is
+// forwarded upstream; a message built in Go rather than decoded from JSON has
+// parts and an empty Content. Re-scanning the collapsed text costs a second
+// pass over bytes already in cache and cannot produce a wrong answer; missing a
+// part can.
 //
 // Part.ImageURL is deliberately not yielded. A content policy is a policy about
 // prose, and a data URI is base64 in which any short word appears by chance.
@@ -42,6 +64,17 @@ func RequestText(req *providers.Request) iter.Seq[string] {
 			if !yieldMessage(msg, yield) {
 				return
 			}
+		}
+		for _, tool := range req.Tools {
+			if tool.Function.Description != "" && !yield(tool.Function.Description) {
+				return
+			}
+			if !yieldJSONDocument(string(tool.Function.Parameters), yield) {
+				return
+			}
+		}
+		if req.ResponseFormat != nil && !yieldJSONDocument(string(req.ResponseFormat.JSONSchema), yield) {
+			return
 		}
 	}
 }
@@ -105,17 +138,25 @@ func yieldMessage(msg providers.Message, yield func(string) bool) bool {
 		}
 	}
 	for _, call := range msg.ToolCalls {
-		if call.Function.Arguments == "" {
-			continue
-		}
-		if !yield(call.Function.Arguments) {
-			return false
-		}
-		if !yieldEscapedStrings(call.Function.Arguments, yield) {
+		if !yieldJSONDocument(call.Function.Arguments, yield) {
 			return false
 		}
 	}
 	return true
+}
+
+// yieldJSONDocument yields a JSON document a request or response carries — a
+// tool call's arguments, a tool's parameter schema, a response schema — as
+// written, then each of its strings written with an escape, decoded (see
+// yieldEscapedStrings). An empty document is absent and yields nothing.
+func yieldJSONDocument(doc string, yield func(string) bool) bool {
+	if doc == "" {
+		return true
+	}
+	if !yield(doc) {
+		return false
+	}
+	return yieldEscapedStrings(doc, yield)
 }
 
 // yieldEscapedStrings yields, decoded, every string in a JSON document that is
