@@ -447,12 +447,139 @@ func RedactedSecretField(cfg config.Config) string {
 	return redactedPath(reflect.ValueOf(cfg), "", true)
 }
 
-// RedactedLiteralField is RedactedSecretField restricted to VALUES. It answers
-// the question warnStoredLiterals asks — did scrubbing withhold something the
-// operator wrote as a literal — where a withheld KEY is not evidence, because
-// every undeclared free-form key is withheld by default.
+// RedactedLiteralField is RedactedSecretField restricted to VALUES: the path of
+// the first value holding a redaction token, map keys aside. Whether scrubbing
+// withheld something the operator wrote is withheldLiteralField's question,
+// because an operator's own value can hold a token too.
 func RedactedLiteralField(cfg config.Config) string {
 	return redactedPath(reflect.ValueOf(cfg), "", false)
+}
+
+// withheldLiteralField returns the config path of the first VALUE that
+// ScrubConfigSecrets withholds from cfg, or "" when the read path serves every
+// value as written. It answers the question warnStoredLiterals asks: what did
+// scrubbing change.
+//
+// A redaction token in the scrubbed copy is evidence only where cfg does not
+// hold that same string at that place: an operator's own value can contain one
+// — pii-redact's default redact_placeholder is "[REDACTED]" — and a declared
+// setting carrying it is served exactly as written. Keys are not evidence, as
+// for RedactedLiteralField: every undeclared free-form key is withheld by
+// default.
+func withheldLiteralField(cfg config.Config) string {
+	return withheldPath(reflect.ValueOf(ScrubConfigSecrets(cfg)), reflect.ValueOf(cfg), "")
+}
+
+// withheldPath is redactedPath with keys excluded, walking the scrubbed value v
+// beside raw, the value it was scrubbed from, and reporting a token only where
+// raw differs. raw is the zero Value where the original has nothing at that
+// place: a withheld map entry is served under a name the original never had.
+func withheldPath(v, raw reflect.Value, path string) string {
+	switch v.Kind() {
+	case reflect.Struct:
+		for i := range v.NumField() {
+			name, ok := jsonFieldName(v.Type().Field(i))
+			if !ok {
+				continue
+			}
+			if p := withheldPath(v.Field(i), rawField(raw, i), joinPath(path, name)); p != "" {
+				return p
+			}
+		}
+		return ""
+	case reflect.Slice, reflect.Array:
+		elemPath := func(i int) string { return fmt.Sprintf("%s[%d]", path, i) }
+		if v.Type().Elem().Kind() == reflect.String {
+			elemPath = func(int) string { return path }
+		}
+		for i := range v.Len() {
+			if p := withheldPath(v.Index(i), rawIndex(raw, i), elemPath(i)); p != "" {
+				return p
+			}
+		}
+		return ""
+	case reflect.Map:
+		// Reported as the field holding the map, as redactedPath reports it.
+		if withheldIn(v, raw) {
+			return path
+		}
+		return ""
+	case reflect.Interface, reflect.Pointer:
+		if v.IsNil() {
+			return ""
+		}
+		return withheldPath(v.Elem(), rawElem(raw), path)
+	}
+	if withheldIn(v, raw) {
+		return path
+	}
+	return ""
+}
+
+// withheldIn reports whether a redaction token appears in a string value under
+// v that raw does not hold at the same place, walking maps and slices of any
+// element type.
+func withheldIn(v, raw reflect.Value) bool {
+	switch v.Kind() {
+	case reflect.String:
+		if !strings.Contains(v.String(), redactedMarker) {
+			return false
+		}
+		return raw.Kind() != reflect.String || raw.String() != v.String()
+	case reflect.Map:
+		if v.IsNil() {
+			return false
+		}
+		for iter := v.MapRange(); iter.Next(); {
+			var entry reflect.Value
+			if raw.Kind() == reflect.Map && !raw.IsNil() && iter.Key().Type().AssignableTo(raw.Type().Key()) {
+				entry = raw.MapIndex(iter.Key())
+			}
+			if withheldIn(iter.Value(), entry) {
+				return true
+			}
+		}
+	case reflect.Slice, reflect.Array:
+		for i := range v.Len() {
+			if withheldIn(v.Index(i), rawIndex(raw, i)) {
+				return true
+			}
+		}
+	case reflect.Struct:
+		for i := range v.NumField() {
+			if v.Type().Field(i).IsExported() && withheldIn(v.Field(i), rawField(raw, i)) {
+				return true
+			}
+		}
+	case reflect.Interface, reflect.Pointer:
+		if !v.IsNil() {
+			return withheldIn(v.Elem(), rawElem(raw))
+		}
+	}
+	return false
+}
+
+// rawField, rawIndex and rawElem step through the original value beside the
+// scrubbed one, yielding the zero Value where the original has nothing there.
+func rawField(raw reflect.Value, i int) reflect.Value {
+	if raw.Kind() != reflect.Struct || i >= raw.NumField() {
+		return reflect.Value{}
+	}
+	return raw.Field(i)
+}
+
+func rawIndex(raw reflect.Value, i int) reflect.Value {
+	if (raw.Kind() != reflect.Slice && raw.Kind() != reflect.Array) || i >= raw.Len() {
+		return reflect.Value{}
+	}
+	return raw.Index(i)
+}
+
+func rawElem(raw reflect.Value) reflect.Value {
+	if (raw.Kind() != reflect.Interface && raw.Kind() != reflect.Pointer) || raw.IsNil() {
+		return reflect.Value{}
+	}
+	return raw.Elem()
 }
 
 // redactedPath returns the JSON path of the first redaction token under v.

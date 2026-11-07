@@ -214,6 +214,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `responses_target` under the provider's credential. One past the cap is now
   answered `413 request_too_large`, before anything is forwarded when its
   length is declared.
+- `Gateway.Close` waits for every webhook delivery worker to exit before it
+  returns. When a receiver held a delivery past the five-second shutdown
+  budget, Close cancelled the pending deliveries and then returned on its own
+  timer, ahead of the workers it had just cancelled: they were still running
+  after Close, and the events they abandoned were not yet counted in
+  `gateway_webhook_deliveries_total{outcome="abandoned"}`. Close now returns
+  once the cancelled deliveries have unwound, which follows the budget by the
+  time a cancelled request takes to return.
+- The warning that a stored config value is withheld from
+  `GET /admin/config` names only a value the read actually withholds. It
+  looked for a redaction token in the scrubbed config rather than for what
+  scrubbing changed, so a value an operator wrote that contains one and that
+  the read serves as written — `pii-redact`'s default `redact_placeholder:
+  "[REDACTED]"`, spelled out as `config.example.yaml` does — was reported as
+  withheld on every apply. Because the warning names the first such field, it
+  also hid any literal credential the read did withhold later in the config.
 - With live model discovery on (`FERRO_MODEL_DISCOVERY_INTERVAL`), a
   discovered model in `/v1/models` is now owned by the target that serves it
   and carries that target's catalog metadata, as every catalog-sourced and

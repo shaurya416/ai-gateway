@@ -548,7 +548,7 @@ func (m *GatewayConfigManager) ReloadConfig(ctx context.Context, cfg config.Conf
 // exactly why the value is withheld — and the message says stored-and-withheld
 // rather than accusing the value of being a secret.
 func warnStoredLiterals(cfg config.Config) {
-	field := RedactedLiteralField(ScrubConfigSecrets(cfg))
+	field := withheldLiteralField(cfg)
 	if field == "" {
 		return
 	}
