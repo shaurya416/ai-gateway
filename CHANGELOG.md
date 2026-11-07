@@ -126,6 +126,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `AGENTS.md` no longer groups `HUGGING_FACE_ENDPOINT` with `DATABRICKS_HOST`
+  and `AZURE_OPENAI_ENDPOINT` as a resource host the provider builds a fixed
+  surface path under. The value is resolved as the OpenAI-compatible API root,
+  as every `<PROVIDER>_BASE_URL` is, so an endpoint written with a path — a
+  proxy mounted at `/hf/v1` — is used as written rather than having the
+  vendor's path appended; the guide described the opposite. It now says so,
+  and that the task routes hang off that root less its trailing `/v1`.
 - `POST /v1/responses` and `POST /v1/responses/compact` now refuse a body that
   names `model` or `max_output_tokens` twice with a `400`, before anything is
   forwarded, as they already refuse one that spells either in another letter

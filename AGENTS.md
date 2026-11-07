@@ -870,9 +870,13 @@ configured with is not an API root. Both are listed in
 | `ollama` | `OLLAMA_HOST` is Ollama's own variable for the *server* root, and one server mounts two — the OpenAI-compatible surface at `/v1` and the native API at `/api` | the server URL, `http://localhost:11434` |
 | `azure-foundry` | `AZURE_FOUNDRY_ENDPOINT` is the Azure resource host the portal shows, and the surface path under it is Azure's fixed shape, not a mount point. The GA OpenAI-compatible route is `/openai/v1`, so the version segment sits mid-path behind a vendor prefix | the resource host, `https://<resource>.services.ai.azure.com` |
 
-`DATABRICKS_HOST`, `AZURE_OPENAI_ENDPOINT` and `HUGGING_FACE_ENDPOINT` are named
-for what they are, too: a resource host, from which the provider builds the
-vendor's fixed surface path.
+`DATABRICKS_HOST` and `AZURE_OPENAI_ENDPOINT` are named for what they are, too:
+a resource host, from which the provider builds the vendor's fixed surface path.
+`HUGGING_FACE_ENDPOINT` is not one of them, whatever its name: it is the
+OpenAI-compatible API root and follows the rule — the router's host or a
+dedicated Inference Endpoint's resolves to its `/v1`, and a value carrying a
+path is used as written. Its task routes (embeddings, images) hang off that
+root less a trailing `/v1`.
 
 Two guards hold the rule, and both fail on any provider that reintroduces the
 defect. `TestBaseURLIsResolvedOnlyAtConstruction` fails on a base URL inspected
