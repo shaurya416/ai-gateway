@@ -397,8 +397,10 @@ that answers before any prompt exists. `conditional` has no such gap: its rules
 match on the model, which is exactly what the listing asks about.
 
 `ferrogw validate` rejects an empty entry, one carrying surrounding whitespace,
-a wildcard, and a duplicate within one target. The same id on two different
-targets is legal: that is how a model gets a fallback.
+a wildcard, a duplicate within one target, and a global alias name — aliases
+resolve before routing, so a request naming one never reaches the target under
+that id, as a `model_map` key naming one never does. The same id on two
+different targets is legal: that is how a model gets a fallback.
 
 Misspelling the key itself is caught by the decoder rather than by validation,
 and `PUT`/`POST /admin/config` decode as strictly as a config file does: an

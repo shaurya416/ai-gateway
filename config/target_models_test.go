@@ -118,6 +118,32 @@ func TestValidateTargetModelsAcrossTargets(t *testing.T) {
 	}
 }
 
+// TestValidateTargetModelsRefuseAGlobalAlias refuses a declared model that is
+// also a global alias. Aliases resolve before routing, so a request naming it
+// is routed as the alias's target and never reaches the declaring target as
+// that id — while /v1/models listed it as that target's model, and answered a
+// 404 for it whenever no target served the alias's target. model_map keys and
+// conditional model rules already refuse an alias name for the same reason.
+func TestValidateTargetModelsRefuseAGlobalAlias(t *testing.T) {
+	cfg := Config{
+		Strategy: StrategyConfig{Mode: ModeSingle},
+		Targets:  []Target{{VirtualKey: "ollama", Models: []string{"llama3.1:8b", "fast"}}},
+		Aliases:  map[string]string{"fast": "gpt-4o-mini"},
+	}
+	err := ValidateConfig(cfg)
+	want := `target "ollama": models[1] "fast" is unreachable because it is a global alias`
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("ValidateConfig() = %v, want error containing %q", err, want)
+	}
+
+	// The alias's TARGET is an ordinary model id to declare: it is what a
+	// request naming the alias is routed as.
+	cfg.Targets[0].Models = []string{"gpt-4o-mini"}
+	if err := ValidateConfig(cfg); err != nil {
+		t.Fatalf("ValidateConfig() = %v, want nil: declaring the model an alias resolves to is how a target serves it", err)
+	}
+}
+
 func TestValidateTargetIdentity(t *testing.T) {
 	tests := []struct {
 		name    string

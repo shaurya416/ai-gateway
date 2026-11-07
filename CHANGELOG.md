@@ -178,6 +178,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `404 model_not_found` for a model both configs serve — on an agentic request,
   after its first turn had already been billed. The walk settings are now
   taken from the same read of the config as the strategy, on every surface.
+- A `targets[].models` entry that names a global alias is now refused at load
+  and by `ferrogw validate`, as a `model_map` key naming one already is.
+  Aliases resolve before routing, so a request for the declared id was routed
+  as the alias's target and never reached the declaring target under that id,
+  while `/v1/models` listed it as that target's model: with `aliases:
+  {fast: gpt-4o-mini}` and `models: [fast]` on a target, `fast` was advertised
+  and then answered `404 model_not_found` wherever no target served
+  `gpt-4o-mini`, and served by a different target with a different model
+  wherever one did. Declare the alias's target instead, or remove the alias.
 - A `budget` checked before a turn of an MCP tool loop now prices what the
   request has already spent at its own `input_per_m_tokens` and
   `output_per_m_tokens`, the rates its spend store is kept in. The check was

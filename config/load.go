@@ -374,7 +374,7 @@ func ValidateConfig(cfg Config) error {
 		if err := validateTargetConcurrency(t); err != nil {
 			return err
 		}
-		if err := validateTargetModels(t); err != nil {
+		if err := validateTargetModels(t, cfg.Aliases); err != nil {
 			return err
 		}
 		if err := validateTargetModelMap(t, cfg.Aliases); err != nil {
@@ -1197,10 +1197,15 @@ const modelWildcardChars = "*?"
 //   - A duplicate within one target is de-duplicated by the index anyway, so
 //     rejecting it costs nothing and catches the copy-paste that meant to name
 //     two different models.
+//   - A global alias is refused, as it is for a model_map key. Aliases resolve
+//     before routing, so a request naming one is routed as the alias's target
+//     and never reaches this target under the declared id — while /v1/models
+//     listed it as this target's model, and the request was a 404 whenever no
+//     target served the alias's target.
 //
 // Repeating a model across DIFFERENT targets is not an error: that is how a
 // model gets a fallback.
-func validateTargetModels(t Target) error {
+func validateTargetModels(t Target, aliases map[string]string) error {
 	seen := make(map[string]struct{}, len(t.Models))
 	for i, m := range t.Models {
 		if m == "" || strings.TrimSpace(m) != m {
@@ -1208,6 +1213,9 @@ func validateTargetModels(t Target) error {
 		}
 		if strings.ContainsAny(m, modelWildcardChars) {
 			return fmt.Errorf("target %q: models[%d] %q contains a wildcard; declare each model id exactly", t.VirtualKey, i, m)
+		}
+		if target, unreachable := aliases[m]; unreachable {
+			return fmt.Errorf("target %q: models[%d] %q is unreachable because it is a global alias for %q; declare %q instead, or remove the alias", t.VirtualKey, i, m, target, target)
 		}
 		if _, dup := seen[m]; dup {
 			return fmt.Errorf("target %q: models[%d] %q is listed more than once", t.VirtualKey, i, m)
