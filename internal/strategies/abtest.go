@@ -39,6 +39,9 @@ type ABTest struct {
 	targets  []Target
 	lookup   ProviderLookup
 	sticky   Sticky
+	// drained holds the targets only zero-weight variants name. They are left
+	// out of the failover tail as well as the draw: see SelectTargets.
+	drained map[string]bool
 }
 
 // WithSticky pins each request's variant to a hash of its sticky key (see
@@ -73,7 +76,28 @@ func NewABTest(variants []ABTestVariant, lookup ProviderLookup) (*ABTest, error)
 	if sum <= 0 {
 		return nil, fmt.Errorf("ab-test: variant weights sum to zero; at least one must be positive")
 	}
-	return &ABTest{variants: variants, lookup: lookup}, nil
+	return &ABTest{variants: variants, lookup: lookup, drained: drainedVariantTargets(variants)}, nil
+}
+
+// drainedVariantTargets returns the targets named by zero-weight variants and
+// by no positively weighted one, or nil when there are none.
+func drainedVariantTargets(variants []ABTestVariant) map[string]bool {
+	live := make(map[string]bool, len(variants))
+	for _, v := range variants {
+		if positiveWeight(v.Weight) > 0 {
+			live[v.Target.VirtualKey] = true
+		}
+	}
+	var drained map[string]bool
+	for _, v := range variants {
+		if key := v.Target.VirtualKey; !live[key] {
+			if drained == nil {
+				drained = make(map[string]bool)
+			}
+			drained[key] = true
+		}
+	}
+	return drained
 }
 
 // eligibleVariants returns the variants whose provider is registered and serves
@@ -114,6 +138,12 @@ func (ab *ABTest) WithRoutingTargets(targets []Target) *ABTest {
 // whose provider is missing or does not serve the model are excluded from the
 // draw.
 //
+// A target only zero-weight variants name is left out of the tail too. ab-test
+// is a pool mode, so the walk reaches every key in the tail whenever the drawn
+// variant answers 5xx, opens its circuit or is parked after a 429 — and a
+// drained variant kept there took exactly that traffic, while the operator was
+// draining it to revoke its credential. Zero weight means zero traffic.
+//
 // Excluding them is what makes the split reproducible per model. The pipeline
 // commits to a single-target strategy's pick rather than falling through it, so
 // a variant drawn for a model it cannot serve is a 404 — and drawing it half the
@@ -141,5 +171,10 @@ func (ab *ABTest) SelectTargets(req providers.Request) ([]string, error) {
 	}
 	keys := make([]string, 0, len(ab.targets)+1)
 	keys = appendUniqueKey(keys, v.Target.VirtualKey)
-	return appendRemainingTargetKeys(keys, ab.targets), nil
+	for _, t := range ab.targets {
+		if !ab.drained[t.VirtualKey] {
+			keys = appendUniqueKey(keys, t.VirtualKey)
+		}
+	}
+	return keys, nil
 }

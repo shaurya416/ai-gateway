@@ -1025,9 +1025,11 @@ func TestPipeline_PoolModesAdvancePastADeadTargetWithoutABreaker(t *testing.T) {
 				},
 			}
 			if mode == config.ModeABTest {
+				// The sibling is a live variant: a zero-weight one is drained
+				// and takes no traffic, failover included.
 				cfg.Strategy.ABVariants = []config.ABVariantConfig{
 					{TargetKey: "dead", Weight: 100, Label: "control"},
-					{TargetKey: "healthy", Weight: 0, Label: "challenger"},
+					{TargetKey: "healthy", Weight: 1, Label: "challenger"},
 				}
 			}
 			gw, err := newTestGateway(t, cfg)

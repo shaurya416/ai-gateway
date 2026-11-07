@@ -358,7 +358,7 @@ check "a failing rule target is reported, never rerouted" "$([ "$CODE" = 502 ] &
 stop_gw
 
 # ── 8. ab-test ───────────────────────────────────────────────────────────────────
-section "8. ab-test — weighted variants, drained variant, failover keeps the request in the pool"
+section "8. ab-test — weighted variants, failover keeps the request in the pool, a drained variant stays drained"
 start_gw "$(config ab <<YAML
 strategy:
   mode: ab-test
@@ -370,6 +370,10 @@ YAML
 )"
 tally 400 "$SHARED"
 check "50/50 variants split 400 requests evenly (±8)" "$(within "$T_groq" 400 50 8)" "groq=$T_groq together=$T_together errors=$T_err"
+scenario groq '{"status":503}'
+route "$SHARED" hi
+check "a failing variant fails over inside the pool (intent-to-treat: the drawn label stays on the request)" \
+  "$([ "$CODE" = 200 ] && [ "$PROV" = together ] && echo 0 || echo 1)" "code=$CODE prov=$PROV"
 stop_gw
 start_gw "$(config ab-drained <<YAML
 strategy:
@@ -382,10 +386,10 @@ YAML
 )"
 tally 40 "$SHARED"
 check "a weight-0 variant is drained: 40/40 on the other" "$([ "$T_groq" = 40 ] && echo 0 || echo 1)" "groq=$T_groq together=$T_together"
-scenario groq '{"status":503}'
+reset_mocks; scenario groq '{"status":503}'
 route "$SHARED" hi
-check "a failing variant fails over inside the pool (intent-to-treat: the drawn label stays on the request)" \
-  "$([ "$CODE" = 200 ] && [ "$PROV" = together ] && echo 0 || echo 1)" "code=$CODE prov=$PROV"
+check "a drained variant takes no failover traffic either" \
+  "$([ "$CODE" = 502 ] && [ "$(calls together)" = 0 ] && echo 0 || echo 1)" "code=$CODE together_calls=$(calls together)"
 stop_gw
 
 # ── 9. model_map across providers ────────────────────────────────────────────────

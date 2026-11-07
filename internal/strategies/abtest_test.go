@@ -104,6 +104,39 @@ func TestABTest_SelectTargets_ZeroWeightVariantIsDrained(t *testing.T) {
 	}
 }
 
+// TestABTest_SelectTargets_DrainedVariantIsNotInTheTail: the tail after the
+// drawn variant is what the walk fails over to, so a target only zero-weight
+// variants name is left out of it — a drained variant receives nothing,
+// failover included. A target no variant names stays in the tail, and so does
+// one a positively weighted variant also names.
+func TestABTest_SelectTargets_DrainedVariantIsNotInTheTail(t *testing.T) {
+	ab, err := NewABTest([]ABTestVariant{
+		{Target: Target{VirtualKey: "drained"}, Weight: 0, Label: "old"},
+		{Target: Target{VirtualKey: "live"}, Weight: 100, Label: "new"},
+		{Target: Target{VirtualKey: "shared"}, Weight: 0, Label: "shared-old"},
+		{Target: Target{VirtualKey: "shared"}, Weight: 1, Label: "shared-new"},
+	}, abTestLookup("drained", "live", "shared", "outside"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ab.WithRoutingTargets([]Target{{VirtualKey: "drained"}, {VirtualKey: "live"}, {VirtualKey: "shared"}, {VirtualKey: "outside"}})
+
+	for range 200 {
+		keys, err := ab.SelectTargets(providers.Request{Model: abTestModel})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, k := range keys {
+			if k == "drained" {
+				t.Fatalf("SelectTargets = %v: the drained variant is in the failover tail", keys)
+			}
+		}
+		if len(keys) != 3 {
+			t.Fatalf("SelectTargets = %v, want live, shared and outside", keys)
+		}
+	}
+}
+
 // TestABTest_SelectTargets_ModelEligibility covers the draw being confined to
 // the variants that can serve the request.
 //

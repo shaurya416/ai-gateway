@@ -161,6 +161,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   schema has a string, holding a bare `{"type":"thinking"}` part whose
   reasoning text had been dropped. The streaming path already read the same
   chunks this way; both now agree.
+- Under `ab-test`, a variant with `weight: 0` no longer receives the traffic
+  the drawn variant cannot serve. Zero weight kept the variant out of the draw,
+  but the order the strategy returns lists every configured target after the
+  drawn one, and the walk advances through it on a failover-safe failure — so
+  the moment the live variant answered `5xx`, opened its circuit or was parked
+  after a `429`, every request went to the drained variant, whose credential is
+  the one being revoked. A target only zero-weight variants name is now left
+  out of that order as well, so such a request is answered with the live
+  variant's own failure. Targets no variant names still follow, as before.
 - A content guardrail on the `/v1/*` pass-through and `POST /v1/responses`
   now reads every value of a key the body names twice. The body is forwarded
   verbatim, but the text projection guardrails read was built by decoding it
