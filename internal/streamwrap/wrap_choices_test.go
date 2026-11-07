@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/ferro-labs/ai-gateway/providers"
+	"github.com/ferro-labs/ai-gateway/providers/core"
 )
 
 // contentDelta builds one streaming content fragment for choice index.
@@ -83,5 +84,46 @@ func TestMeter_AssemblesReasoningContent(t *testing.T) {
 	}
 	if got.Content != "Hello" {
 		t.Errorf("content = %q, want %q", got.Content, "Hello")
+	}
+}
+
+// TestMeter_AssemblesLogprobs pins each choice's logprobs into the response the
+// after_request stage reads and the response cache stores. A streamed choice
+// carries the entries for its own delta's tokens; the assembled choice carries
+// every token's, as a non-streamed choice does, joined list by list in stream
+// order. A member that is null in every chunk stays null, and a choice whose
+// fragments are not lists to join is assembled with none rather than with a
+// guess.
+func TestMeter_AssemblesLogprobs(t *testing.T) {
+	withLogprobs := func(index int, content, logprobs string) providers.StreamChunk {
+		c := contentDelta(index, content, "")
+		c.Choices[0].Logprobs = core.Logprobs(logprobs)
+		return c
+	}
+	resp := completedResponse(t,
+		withLogprobs(1, "Bon", `{"content":[{"token":"Bon","logprob":-0.3}],"refusal":null}`),
+		withLogprobs(0, "Hel", `{"content":[{"token":"Hel","logprob":-0.1}],"refusal":null}`),
+		withLogprobs(2, "x", `-0.5`),
+		withLogprobs(1, "jour", `{"content":[{"token":"jour","logprob":-0.4}],"refusal":null}`),
+		contentDelta(0, "", "stop"),
+		withLogprobs(0, "lo", `{"content":[{"token":"lo","logprob":-0.2}],"refusal":null}`),
+		contentDelta(1, "", "stop"),
+		contentDelta(2, "", "stop"),
+		contentDelta(3, "plain", "stop"),
+	)
+
+	if len(resp.Choices) != 4 {
+		t.Fatalf("assembled %d choices, want 4", len(resp.Choices))
+	}
+	want := []string{
+		`{"content":[{"token":"Hel","logprob":-0.1},{"token":"lo","logprob":-0.2}],"refusal":null}`,
+		`{"content":[{"token":"Bon","logprob":-0.3},{"token":"jour","logprob":-0.4}],"refusal":null}`,
+		"",
+		"",
+	}
+	for i, w := range want {
+		if got := string(resp.Choices[i].Logprobs); got != w {
+			t.Errorf("choices[%d].logprobs = %s, want %s", i, got, w)
+		}
 	}
 }

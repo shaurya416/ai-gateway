@@ -25,8 +25,10 @@
 package streamwrap
 
 import (
+	"bytes"
 	"cmp"
 	"context"
+	"encoding/json"
 	"errors"
 	"slices"
 	"time"
@@ -297,6 +299,9 @@ func Meter(ctx context.Context, src <-chan providers.StreamChunk, start time.Tim
 		// choiceSlots indexes resp.Choices by stream index once a stream opens
 		// its choices out of order; nil for every dense stream. See choiceAt.
 		var choiceSlots map[int]int
+		// logprobs collects each choice's per-chunk logprobs until the stream
+		// ends; see logprobsAssembly.
+		var logprobs logprobsAssembly
 
 	loop:
 		for {
@@ -350,7 +355,7 @@ func Meter(ctx context.Context, src <-chan providers.StreamChunk, start time.Tim
 			if chunk.Usage != nil && (chunk.Usage.TotalTokens > 0 || chunk.Usage.PromptTokens > 0) {
 				usage = *chunk.Usage
 			}
-			applyChunkToResponse(&resp, &choiceSlots, chunk)
+			applyChunkToResponse(&resp, &choiceSlots, &logprobs, chunk)
 			if chunk.Error != nil {
 				streamErr = chunk.Error
 			}
@@ -420,6 +425,7 @@ func Meter(ctx context.Context, src <-chan providers.StreamChunk, start time.Tim
 			return
 		}
 
+		logprobs.apply(&resp)
 		sortChoices(&resp, choiceSlots)
 		resp.Usage = usage
 		if resp.Usage.TotalTokens == 0 {
@@ -671,8 +677,9 @@ func finishStreamOnSuccess(
 
 // applyChunkToResponse folds one chunk into the response assembled for the
 // after_request stage. slots is the assembly's index of choices by their stream
-// index; see choiceAt.
-func applyChunkToResponse(resp *providers.Response, slots *map[int]int, chunk providers.StreamChunk) {
+// index; see choiceAt. logprobs collects each choice's logprobs, which are
+// joined only once the stream has ended; see logprobsAssembly.
+func applyChunkToResponse(resp *providers.Response, slots *map[int]int, logprobs *logprobsAssembly, chunk providers.StreamChunk) {
 	if chunk.ID != "" && resp.ID == "" {
 		resp.ID = chunk.ID
 	}
@@ -702,6 +709,88 @@ func applyChunkToResponse(resp *providers.Response, slots *map[int]int, chunk pr
 		if streamChoice.FinishReason != "" {
 			choice.FinishReason = streamChoice.FinishReason
 		}
+		logprobs.add(idx, streamChoice.Logprobs)
+	}
+}
+
+// logprobsAssembly joins the logprobs a stream carries for each choice, keyed by
+// stream index, into the object a non-streamed choice carries. Each streamed
+// choice holds the entries for its own delta's tokens — OpenAI nests them in a
+// "content" list, and a refusal's in a "refusal" list — and the non-streamed
+// choice holds every token's entries in the same lists, so the assembled object
+// is each list joined across the chunks in order.
+//
+// The assembled response is what the after_request stage reads and what the
+// response cache stores and replays. Assembled without logprobs, a streamed
+// answer served again from the cache reached a request that asked for them with
+// none, which a client cannot tell from a model that returned none.
+//
+// The object is carried, not re-modelled: any member that holds a list is
+// joined and a member that is null in every chunk stays null. A fragment that is
+// not an object of lists cannot be joined, and that choice is then assembled
+// with no logprobs, as before.
+type logprobsAssembly map[int]*choiceLogprobs
+
+// choiceLogprobs is one choice's logprobs collected so far: each member's
+// entries in stream order, nil for a member that has only been null.
+type choiceLogprobs struct {
+	lists      map[string][]json.RawMessage
+	unjoinable bool
+}
+
+// add folds one streamed choice's logprobs fragment into the assembly.
+func (a *logprobsAssembly) add(idx int, fragment []byte) {
+	if len(fragment) == 0 {
+		return
+	}
+	var members map[string]json.RawMessage
+	if err := json.Unmarshal(fragment, &members); err == nil && members == nil {
+		return // a JSON null: no logprobs on this chunk
+	}
+	if *a == nil {
+		*a = make(logprobsAssembly)
+	}
+	c := (*a)[idx]
+	if c == nil {
+		c = &choiceLogprobs{lists: make(map[string][]json.RawMessage)}
+		(*a)[idx] = c
+	}
+	if c.unjoinable {
+		return
+	}
+	if members == nil {
+		c.unjoinable = true
+		return
+	}
+	for name, raw := range members {
+		if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+			if _, seen := c.lists[name]; !seen {
+				c.lists[name] = nil
+			}
+			continue
+		}
+		var entries []json.RawMessage
+		if err := json.Unmarshal(raw, &entries); err != nil {
+			c.unjoinable = true
+			return
+		}
+		c.lists[name] = append(c.lists[name], entries...)
+	}
+}
+
+// apply sets each assembled choice's logprobs from what the stream carried for
+// its index.
+func (a logprobsAssembly) apply(resp *providers.Response) {
+	for i := range resp.Choices {
+		c := a[resp.Choices[i].Index]
+		if c == nil || c.unjoinable {
+			continue
+		}
+		joined, err := json.Marshal(c.lists)
+		if err != nil {
+			continue
+		}
+		resp.Choices[i].Logprobs = joined
 	}
 }
 

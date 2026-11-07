@@ -277,7 +277,7 @@ func suppressUsageForClient(req providers.Request) bool {
 // The delta carries everything the message does, in the streaming shape: the
 // reasoning a provider-served stream delivers as reasoning_content, and each
 // tool call with the index a streamed tool call is keyed by (see
-// streamToolCalls).
+// streamToolCalls). Each choice carries its logprobs, as a streamed choice does.
 func responseStream(resp *providers.Response, suppressUsage bool) <-chan providers.StreamChunk {
 	ch := make(chan providers.StreamChunk, 1)
 	streamChoices := make([]providers.StreamChoice, len(resp.Choices))
@@ -291,6 +291,7 @@ func responseStream(resp *providers.Response, suppressUsage bool) <-chan provide
 				ReasoningContent: c.Message.ReasoningContent,
 			},
 			FinishReason: c.FinishReason,
+			Logprobs:     c.Logprobs,
 		}
 	}
 	chunk := providers.StreamChunk{

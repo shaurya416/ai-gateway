@@ -126,6 +126,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A streamed chat request that asks for `logprobs` now receives them when its
+  answer is replayed rather than streamed by the provider: from the response
+  cache, or from the MCP tool loop. The replay built each streamed choice from
+  the message alone and left the choice's `logprobs` behind, and the response a
+  provider-served stream is assembled into — the one the cache stores — kept
+  every chunk's text but none of its log probabilities. So the first request
+  got them and every cache hit after it got a `200` with none, which a client
+  cannot tell from a model that returned none. The assembled choice now carries
+  every chunk's entries joined in order, the object a non-streamed answer
+  carries, and the replay forwards it.
 - An answer that takes more than two minutes to produce now reaches the
   caller. The server's 120-second write timeout started once the request's
   headers were read, so the time spent waiting on the provider — retries,
