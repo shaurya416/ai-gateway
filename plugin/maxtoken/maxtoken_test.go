@@ -2,6 +2,7 @@ package maxtoken
 
 import (
 	"context"
+	"encoding/json"
 	"math"
 	"strings"
 	"testing"
@@ -437,6 +438,61 @@ func TestMaxToken_MaxInputLengthCountsToolCallArguments(t *testing.T) {
 	}
 	if !pctx.Reject {
 		t.Fatal("5000 characters of tool-call arguments passed a 100-character input cap")
+	}
+}
+
+// The tools a request declares and the schema its response_format asks for
+// travel to the provider with the conversation and are billed as prompt tokens
+// like it, so they count toward the input length. Measuring only the messages
+// let a request carry any amount of input in a tool description, a parameter
+// schema or a response schema past a cap of any size.
+func TestMaxToken_MaxInputLengthCountsToolDefinitionsAndResponseSchema(t *testing.T) {
+	long := strings.Repeat("A", 5000)
+	for _, tc := range []struct {
+		name  string
+		apply func(*providers.Request)
+	}{
+		{"tool description", func(req *providers.Request) {
+			req.Tools = []providers.Tool{{Type: "function", Function: providers.Function{Name: "f", Description: long}}}
+		}},
+		{"tool parameter schema", func(req *providers.Request) {
+			req.Tools = []providers.Tool{{Type: "function", Function: providers.Function{
+				Name:       "f",
+				Parameters: json.RawMessage(`{"type":"object","description":"` + long + `"}`),
+			}}}
+		}},
+		{"response schema", func(req *providers.Request) {
+			req.ResponseFormat = &providers.ResponseFormat{
+				Type:       "json_schema",
+				JSONSchema: json.RawMessage(`{"name":"answer","schema":{"type":"object","description":"` + long + `"}}`),
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := initMaxToken(t, map[string]any{"max_input_length": 100})
+			req := &providers.Request{Model: "gpt-4", Messages: []providers.Message{{Role: "user", Content: "hi"}}}
+			tc.apply(req)
+			pctx := plugin.NewContext(req)
+
+			if err := m.Execute(context.Background(), pctx); err != nil {
+				t.Fatalf("Execute error: %v", err)
+			}
+			if !pctx.Reject {
+				t.Fatalf("5000 characters in the %s passed a 100-character input cap", tc.name)
+			}
+		})
+	}
+
+	// A small tool beside a small message stays under the cap.
+	m := initMaxToken(t, map[string]any{"max_input_length": 100})
+	req := &providers.Request{Model: "gpt-4", Messages: []providers.Message{{Role: "user", Content: "hi"}},
+		Tools: []providers.Tool{{Type: "function", Function: providers.Function{Name: "f", Description: "short", Parameters: json.RawMessage(`{"type":"object"}`)}}}}
+	pctx := plugin.NewContext(req)
+	if err := m.Execute(context.Background(), pctx); err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+	if pctx.Reject {
+		t.Fatalf("a request well under the cap was refused: %q", pctx.Reason)
 	}
 }
 

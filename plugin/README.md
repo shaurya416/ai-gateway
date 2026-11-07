@@ -326,8 +326,18 @@ load.
 config:
   max_tokens: 4096       # reject a request whose completion ceiling exceeds this
   max_messages: 50       # reject more than this many messages
-  max_input_length: 0    # 0 = no total-character limit; replayed tool-call arguments count
+  max_input_length: 0    # 0 = no total-character limit; replayed tool-call arguments,
+                         # declared tools and the response_format schema count
 ```
+
+`max_input_length` counts the messages (image data included), the arguments of
+replayed tool calls, the description and parameter schema of each tool the
+request declares, and its `response_format` schema. Inside an MCP tool loop it
+is checked again before every turn, against the request and the loop's
+transcript; the tool definitions the gateway advertises for its MCP servers
+count on no turn, because the limit bounds what a caller sends and those are
+the operator's, the same size on every request (see
+[What a content guardrail reads](#what-a-content-guardrail-reads)).
 
 ### rate-limit
 

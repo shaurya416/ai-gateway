@@ -126,6 +126,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `max-token`'s `max_input_length` now counts the tools a request declares —
+  each description and parameter schema — and its `response_format` JSON
+  schema. The provider bills all of it as prompt tokens with the
+  conversation, but only the messages were measured, so a request with a
+  two-character message and a five-megabyte tool description passed a cap of
+  any size, the gap already closed for replayed tool-call arguments and
+  reasoning content. Inside an MCP tool loop the request's own tools and
+  `response_format` schema count again before every turn, with the
+  transcript. The tool definitions the gateway advertises for its MCP servers
+  count on no turn, the opening one included: the limit bounds what a caller
+  sends, and those are the operator's, the same size on every request, so a
+  server with large tool schemas does not push a tool loop past an ordinary
+  cap. A tool on the request named like an MCP tool still counts.
 - The content guardrails on `/v1/chat/completions` and `/v1/completions` —
   `word-filter`, `regex-guard`, `secret-scan`, `prompt-shield` and
   `pii-redact` — now screen the tools a request declares and the JSON schema

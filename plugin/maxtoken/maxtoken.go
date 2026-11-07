@@ -191,6 +191,7 @@ func (m *MaxToken) Execute(_ context.Context, pctx *plugin.Context) error {
 		for _, msg := range pctx.Request.Messages {
 			totalLen += messageLen(msg)
 		}
+		totalLen += definitionsLen(pctx.Request)
 		if totalLen > m.maxInputLen {
 			deny(pctx, fmt.Sprintf("total input length %d exceeds limit of %d", totalLen, m.maxInputLen))
 			return nil
@@ -234,6 +235,30 @@ func messageLen(msg providers.Message) int {
 		if part.ImageURL != nil {
 			n += len(part.ImageURL.URL)
 		}
+	}
+	return n
+}
+
+// definitionsLen measures what a request sends beside its messages: the
+// description and parameter schema of each tool it declares, and the JSON
+// schema its response_format asks for. The provider puts all of it in front of
+// the model with the conversation and bills it as prompt tokens, so it counts
+// toward the input length on the terms a replayed tool call's arguments do.
+// Leaving it out let a request carry any amount of input in one tool
+// description past a cap of any size.
+//
+// The tools are the ones on the request, which never include the MCP tool
+// definitions the gateway adds to a provider call (see plugin.Context.Request).
+// The limit bounds what the caller sends; those are the operator's, the same
+// size on every request, so they count on no turn of a tool loop, the opening
+// one included, while the request's own definitions count on every turn.
+func definitionsLen(req *providers.Request) int {
+	n := 0
+	for _, tool := range req.Tools {
+		n += len(tool.Function.Description) + len(tool.Function.Parameters)
+	}
+	if req.ResponseFormat != nil {
+		n += len(req.ResponseFormat.JSONSchema)
 	}
 	return n
 }

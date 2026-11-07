@@ -523,41 +523,45 @@ already presented a credential carrying `read_only` or `admin`.
 
 ### What guardrails read in an MCP tool loop
 
-A content guardrail governs what the **caller** sends, and it governs it the
-same way on every turn of an agentic loop. On the chat surfaces it reads the
-messages, every replayed tool call's arguments, the description and parameter
-schema of every tool on the request, and the `response_format` schema
-(`plugin.RequestText`). Inside a loop, `Manager.RunBeforeLoopTurn` runs it again
-before each turn, against that same request plus the loop's transcript — the
-model's tool calls and the MCP servers' results.
+A content guardrail, and `max-token`'s `max_input_length`, govern what the
+**caller** sends, and they govern it the same way on every turn of an agentic
+loop. On the chat surfaces a content guardrail reads the messages, every
+replayed tool call's arguments, the description and parameter schema of every
+tool on the request, and the `response_format` schema (`plugin.RequestText`);
+`max_input_length` measures the same text. Inside a loop,
+`Manager.RunBeforeLoopTurn` runs both again before each turn, against that same
+request plus the loop's transcript — the model's tool calls and the MCP
+servers' results.
 
 | Text | Opening turn | Every later turn |
 |------|--------------|------------------|
-| The caller's messages, tools and `response_format` (as the `before_request` plugins left them) | screened | screened |
-| The model's tool calls and the MCP servers' tool results | — | screened |
-| The tool definitions the gateway injects for its MCP servers (`injectMCPTools`) | **not screened** | **not screened** |
+| The caller's messages, tools and `response_format` (as the `before_request` plugins left them) | screened and counted | screened and counted |
+| The model's tool calls and the MCP servers' tool results | — | screened and counted |
+| The tool definitions the gateway injects for its MCP servers (`injectMCPTools`) | **neither** | **neither** |
 
 The injected definitions are operator configuration, not caller input: they
 arrive through servers the operator configured, are the same on every request,
 and no caller can send or change one. A verdict on them is therefore not a
 verdict on a request — it can only refuse every request or none — so they are
-screened on no turn rather than on every turn. Screening them on the later turns
-alone, which is what reading the provider call instead of the request does,
-approved and billed the opening call carrying a definition and then refused the
-turn carrying the same one: a tool description containing a blocked word broke
-every tool loop in the deployment at its second call. A tool *result* is
-different and stays screened: it is per-call content the server returns, which
-no configuration fixes in advance. Which tools a server offers is the
-operator's decision through `mcp_servers[].allowed_tools`, not a guardrail's.
+screened and counted on no turn rather than on every turn. Doing either on the
+later turns alone, which is what reading the provider call instead of the
+request amounts to, would approve and bill the opening call carrying a
+definition and then refuse the turn carrying the same one: a tool description
+containing a blocked word, or a server whose schemas outweigh an ordinary
+`max_input_length`, would break every tool loop in the deployment at its second
+call. A tool *result* is different and stays screened: it is per-call content
+the server returns, which no configuration fixes in advance. Which tools a
+server offers is the operator's decision through `mcp_servers[].allowed_tools`,
+not a guardrail's.
 
 The split is held by construction rather than by name. `runMCPLoop` carries the
 conversation forward on its own copy of the caller's request, which never holds
 the injected definitions; `providerRequestFor` adds them to each provider call,
 and that copy is the only place they exist. A tool on the request that shares an
-MCP tool's name is still the request's own and is screened on every turn. (MCP
-takes part only when the caller declares no tools, so such a tool is one a
-`before_request` transform added; the caller's `response_format` travels on
-every turn regardless.)
+MCP tool's name is still the request's own and is screened and counted on every
+turn. (MCP takes part only when the caller declares no tools, so such a tool is
+one a `before_request` transform added; the caller's `response_format` travels
+on every turn regardless.)
 
 ### Webhook notifications (`notifications.webhooks`)
 
