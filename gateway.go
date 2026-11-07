@@ -1048,6 +1048,10 @@ func (g *Gateway) FindStreamingByModel(model string) (providers.StreamProvider, 
 // times out — Close must never block indefinitely (a panicking hook could
 // otherwise wedge shutdown).
 //
+// Webhook notifications drain within the same 5s. At the deadline whatever is
+// still pending is abandoned, and Close returns once every delivery worker has
+// exited.
+//
 // For stdio MCP servers this terminates their subprocesses; for HTTP MCP
 // servers it ends their sessions.
 //
@@ -1117,7 +1121,13 @@ func (g *Gateway) Close() error {
 		}()
 		select {
 		case <-done:
-		case <-time.After(5 * time.Second):
+		case <-drainCtx.Done():
+			// The webhook drain ends on this same deadline by cancelling what it
+			// still holds, and its workers then unwind. Returning without them
+			// left deliveries running, and their abandonment uncounted, after
+			// Close. The wait is bounded: every wait a worker makes is on the
+			// context the deadline cancels.
+			<-notifyDone
 		}
 	})
 	return nil

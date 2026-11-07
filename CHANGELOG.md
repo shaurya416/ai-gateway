@@ -147,6 +147,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   skipped them. A non-finite `targets[].weight` under a mode that ignores
   weights loaded too, and `GET /admin/config` then answered with an empty
   `200`.
+- `Gateway.Close` returns once every webhook delivery worker has exited, as
+  documented. The webhook drain and the wait `Close` bounds itself by were two
+  five-second timers started a moment apart, so against a receiver that does
+  not answer the drain reached its deadline and began cancelling just as
+  `Close` stopped waiting: it returned with the workers still unwinding, their
+  in-flight deliveries still open and the events they abandoned not yet counted
+  in `gateway_webhook_deliveries_total`. `Close` now ends its wait on the
+  drain's own deadline and then waits for that cancellation to finish, which
+  every worker's waits are bound to.
 - A streamed chat request, or an embeddings, image, rerank, moderation or
   audio request, in flight while a config reload lands is governed and routed
   by one config. Its plugins were read when the request started and its

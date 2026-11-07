@@ -16,9 +16,11 @@ import (
 	"github.com/ferro-labs/ai-gateway/config"
 	"github.com/ferro-labs/ai-gateway/internal/authctx"
 	"github.com/ferro-labs/ai-gateway/internal/notify"
+	"github.com/ferro-labs/ai-gateway/pkg/metrics"
 	"github.com/ferro-labs/ai-gateway/plugin/budget"
 	"github.com/ferro-labs/ai-gateway/providers"
 	"github.com/ferro-labs/ai-gateway/providers/core"
+	dto "github.com/prometheus/client_model/go"
 )
 
 // hookReceiver is a webhook endpoint recording every payload it is sent.
@@ -539,4 +541,69 @@ func TestNotifications_CloseDeliversWhatIsQueued(t *testing.T) {
 	if n := len(rcv.payloads(t)); n != 1 {
 		t.Fatalf("delivered %d of 1 queued events by the time Close returned", n)
 	}
+}
+
+// TestNotifications_CloseWaitsForTheWorkersItAbandons: against receivers that
+// never answer, Close cannot deliver what is queued; at its deadline it
+// abandons the rest, and it returns only once every delivery worker has
+// exited — so by then every event is accounted for in
+// gateway_webhook_deliveries_total and no delivery is still running.
+func TestNotifications_CloseWaitsForTheWorkersItAbandons(t *testing.T) {
+	hung := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, req *http.Request) {
+		// Read to the end, so the server notices the client hanging up.
+		_, _ = io.Copy(io.Discard, req.Body)
+		<-req.Context().Done()
+	}))
+	defer hung.Close()
+
+	const webhooks, events = 4, 256
+	hooks := make([]config.WebhookConfig, 0, webhooks)
+	for i := range webhooks {
+		hooks = append(hooks, config.WebhookConfig{
+			Name:    "close-unwind-" + string(rune('a'+i)),
+			URL:     hung.URL,
+			Events:  []string{config.WebhookEventCircuitOpened},
+			Timeout: "1m",
+		})
+	}
+	gw, err := New(config.Config{
+		Strategy:      config.StrategyConfig{Mode: config.ModeSingle},
+		Targets:       []config.Target{{VirtualKey: mockProviderName}},
+		Notifications: &config.NotificationsConfig{Webhooks: hooks},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	settled := func(name string) float64 {
+		var sum float64
+		for _, outcome := range []string{notify.OutcomeDelivered, notify.OutcomeRejected, notify.OutcomeFailed, notify.OutcomeDropped, notify.OutcomeAbandoned} {
+			sum += webhookDeliveries(t, name, config.WebhookEventCircuitOpened, outcome)
+		}
+		return sum
+	}
+	before := make(map[string]float64, len(hooks))
+	for _, h := range hooks {
+		before[h.Name] = settled(h.Name)
+	}
+	n := gw.notifier.Load()
+	for range events {
+		n.Publish(notify.Event{Type: config.WebhookEventCircuitOpened, Target: "x"})
+	}
+	if err := gw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for _, h := range hooks {
+		if got := settled(h.Name) - before[h.Name]; got != events {
+			t.Fatalf("webhook %s: %v of %d events accounted for when Close returned; its worker was still abandoning the rest", h.Name, got, events)
+		}
+	}
+}
+
+func webhookDeliveries(t *testing.T, name, event, outcome string) float64 {
+	t.Helper()
+	m := &dto.Metric{}
+	if err := metrics.WebhookDeliveriesTotal.WithLabelValues(name, event, outcome).Write(m); err != nil {
+		t.Fatal(err)
+	}
+	return m.GetCounter().GetValue()
 }
