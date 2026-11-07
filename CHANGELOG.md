@@ -205,6 +205,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the catalog's dollars were compared against, and on a refusal recorded into,
   a store kept at the operator's rates. `plugin.Measurements` now carries the
   running `Usage` for that check, beside the catalog `CostUSD`.
+- The Responses id sub-routes — `GET`/`DELETE /v1/responses/{id}`,
+  `POST /v1/responses/{id}/cancel` and `/input_items` — now hold a request
+  body to `max_request_bytes`, as every data-plane route but the file, batch
+  and audio uploads does. The routes share a mount with `POST /v1/responses`,
+  which sits outside the shared body limit because it applies the cap itself,
+  and the id sub-routes applied none: a body of any size was streamed to
+  `responses_target` under the provider's credential. One past the cap is now
+  answered `413 request_too_large`, before anything is forwarded when its
+  length is declared.
 - With live model discovery on (`FERRO_MODEL_DISCOVERY_INTERVAL`), a
   discovered model in `/v1/models` is now owned by the target that serves it
   and carries that target's catalog metadata, as every catalog-sourced and

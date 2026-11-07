@@ -221,6 +221,22 @@ func ResponsesIDs(src ResponsesSource) http.HandlerFunc {
 			return
 		}
 
+		// Held to max_request_bytes, as every data-plane route but the file,
+		// batch and audio uploads is. This handler is mounted outside the shared
+		// body-limit middleware because create applies the cap itself, so
+		// these routes applied none and streamed a body of any size upstream
+		// under the provider's credential. A body declared past the cap is
+		// refused before anything is sent; one that runs past it mid-forward
+		// is refused as the generic pass-through refuses it.
+		if r.Body != nil && r.Body != http.NoBody {
+			limit := responsesBodyCap(src)
+			if r.ContentLength > limit {
+				writeCallerBodyError(w, &http.MaxBytesError{Limit: limit})
+				return
+			}
+			r.Body = http.MaxBytesReader(w, r.Body, limit)
+		}
+
 		// The id sub-routes are a straight forward like Files/Batches: no
 		// governance to score, so the reported failure is unused; only a
 		// mid-body abort is re-raised.

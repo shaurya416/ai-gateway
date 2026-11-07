@@ -707,7 +707,8 @@ func mountOpenAIRoutes(r chi.Router, gw *aigateway.Gateway, store repository.Sto
 	// refuses a larger one with 413 before anything is forwarded, so an
 	// embedder mounting it through httpgateway gets the same bound.
 	// The stateful id sub-routes (retrieve/delete/cancel/input_items) carry no
-	// model and pin to responses_target. Static/prefixed paths win over /v1/*.
+	// model and pin to responses_target; their handler applies the same cap to
+	// the body it forwards. Static/prefixed paths win over /v1/*.
 	r.Group(func(r chi.Router) {
 		r.Use(auth)
 		r.Handle("/v1/responses", onlyMethod(http.MethodPost, proxy.ResponsesCreate(gw)))
