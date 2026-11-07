@@ -144,6 +144,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   answer too. The router now re-arms the write timeout when the answer
   starts, so it bounds writing the answer, and `request_timeout` alone bounds
   the work.
+- Cohere chat is reported and priced on the tokens Cohere bills. Its usage
+  object carries two counts — `billed_units`, and `tokens`, which also counts
+  the prompt template Cohere wraps every request in and does not charge for —
+  and the gateway read `tokens`, so a short prompt or a tool call was costed,
+  and spent against a budget, at several times its price: Cohere's own
+  documented tool-call response bills 127 input and 69 output tokens beside
+  1032 and 124 processed. Streamed and unary chat now report `billed_units`,
+  as Cohere embeddings already did, and fall back to `tokens` only when no
+  billed count is present.
 - A content guardrail on the `/v1/*` pass-through and `POST /v1/responses`
   now reads every value of a key the body names twice. The body is forwarded
   verbatim, but the text projection guardrails read was built by decoding it

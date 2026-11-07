@@ -126,9 +126,32 @@ type cohereTokenCounts struct {
 	OutputTokens int `json:"output_tokens"`
 }
 
+// cohereUsage is the v2 Chat usage object. Cohere reports two counts:
+// billed_units, the tokens it charges for, and tokens, everything the model
+// processed — including the prompt template Cohere wraps a request in, which
+// is not billed. The two differ by up to an order of magnitude on a short
+// prompt or a tool call (127 billed input tokens beside 1032 processed in
+// Cohere's own documented example).
 type cohereUsage struct {
-	BilledUnits cohereTokenCounts `json:"billed_units"`
-	Tokens      cohereTokenCounts `json:"tokens"`
+	BilledUnits *cohereTokenCounts `json:"billed_units"`
+	Tokens      cohereTokenCounts  `json:"tokens"`
+}
+
+// toCore reports the billed counts, which is what the gateway prices and a
+// budget spends: the catalog's Cohere rates are per billed token, so pricing
+// the processed count charged the template as prompt. A body whose
+// billed_units carries no token count falls back to tokens rather than
+// reporting a free request.
+func (u cohereUsage) toCore() core.Usage {
+	counts := u.Tokens
+	if b := u.BilledUnits; b != nil && (b.InputTokens > 0 || b.OutputTokens > 0) {
+		counts = *b
+	}
+	return core.Usage{
+		PromptTokens:     counts.InputTokens,
+		CompletionTokens: counts.OutputTokens,
+		TotalTokens:      counts.InputTokens + counts.OutputTokens,
+	}
 }
 
 type cohereResponse struct {
@@ -301,7 +324,6 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 		}
 	}
 
-	tokens := cohResp.Usage.Tokens
 	return &core.Response{
 		ID:       cohResp.ID,
 		Model:    req.Model,
@@ -317,11 +339,7 @@ func (p *Provider) Complete(ctx context.Context, req core.Request) (*core.Respon
 				FinishReason: core.NormalizeFinishReason(cohResp.FinishReason),
 			},
 		},
-		Usage: core.Usage{
-			PromptTokens:     tokens.InputTokens,
-			CompletionTokens: tokens.OutputTokens,
-			TotalTokens:      tokens.InputTokens + tokens.OutputTokens,
-		},
+		Usage: cohResp.Usage.toCore(),
 	}, nil
 }
 
@@ -572,12 +590,8 @@ func (p *Provider) CompleteStream(ctx context.Context, req core.Request) (<-chan
 						},
 					},
 				}
-				if u := delta.Usage.Tokens; u.InputTokens > 0 || u.OutputTokens > 0 {
-					sc.Usage = &core.Usage{
-						PromptTokens:     u.InputTokens,
-						CompletionTokens: u.OutputTokens,
-						TotalTokens:      u.InputTokens + u.OutputTokens,
-					}
+				if u := delta.Usage.toCore(); u.TotalTokens > 0 {
+					sc.Usage = &u
 				}
 				core.SendChunk(ctx, ch, sc)
 				return

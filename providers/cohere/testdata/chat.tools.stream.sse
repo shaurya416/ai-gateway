@@ -1,0 +1,233 @@
+event: message-start
+data: {"delta":{"message":{"role":"assistant"}},"id":"2edfdf70-019c-4f7a-be20-3cdbfaa3dca6","type":"message-start"}
+
+event: tool-plan-delta
+data: {"delta":{"message":{"tool_plan":"I"}},"type":"tool-plan-delta"}
+
+event: tool-plan-delta
+data: {"delta":{"message":{"tool_plan":" will"}},"type":"tool-plan-delta"}
+
+event: tool-plan-delta
+data: {"delta":{"message":{"tool_plan":" use"}},"type":"tool-plan-delta"}
+
+event: tool-plan-delta
+data: {"delta":{"message":{"tool_plan":" the"}},"type":"tool-plan-delta"}
+
+event: tool-plan-delta
+data: {"delta":{"message":{"tool_plan":" query"}},"type":"tool-plan-delta"}
+
+event: tool-plan-delta
+data: {"delta":{"message":{"tool_plan":"_"}},"type":"tool-plan-delta"}
+
+event: tool-plan-delta
+data: {"delta":{"message":{"tool_plan":"daily"}},"type":"tool-plan-delta"}
+
+event: tool-plan-delta
+data: {"delta":{"message":{"tool_plan":"_"}},"type":"tool-plan-delta"}
+
+event: tool-plan-delta
+data: {"delta":{"message":{"tool_plan":"sales"}},"type":"tool-plan-delta"}
+
+event: tool-plan-delta
+data: {"delta":{"message":{"tool_plan":"_"}},"type":"tool-plan-delta"}
+
+event: tool-plan-delta
+data: {"delta":{"message":{"tool_plan":"report"}},"type":"tool-plan-delta"}
+
+event: tool-plan-delta
+data: {"delta":{"message":{"tool_plan":" tool"}},"type":"tool-plan-delta"}
+
+event: tool-plan-delta
+data: {"delta":{"message":{"tool_plan":" to"}},"type":"tool-plan-delta"}
+
+event: tool-plan-delta
+data: {"delta":{"message":{"tool_plan":" find"}},"type":"tool-plan-delta"}
+
+event: tool-plan-delta
+data: {"delta":{"message":{"tool_plan":" the"}},"type":"tool-plan-delta"}
+
+event: tool-plan-delta
+data: {"delta":{"message":{"tool_plan":" sales"}},"type":"tool-plan-delta"}
+
+event: tool-plan-delta
+data: {"delta":{"message":{"tool_plan":" summary"}},"type":"tool-plan-delta"}
+
+event: tool-plan-delta
+data: {"delta":{"message":{"tool_plan":" for"}},"type":"tool-plan-delta"}
+
+event: tool-plan-delta
+data: {"delta":{"message":{"tool_plan":" 2"}},"type":"tool-plan-delta"}
+
+event: tool-plan-delta
+data: {"delta":{"message":{"tool_plan":"9"}},"type":"tool-plan-delta"}
+
+event: tool-plan-delta
+data: {"delta":{"message":{"tool_plan":"th"}},"type":"tool-plan-delta"}
+
+event: tool-plan-delta
+data: {"delta":{"message":{"tool_plan":" September"}},"type":"tool-plan-delta"}
+
+event: tool-plan-delta
+data: {"delta":{"message":{"tool_plan":" 2"}},"type":"tool-plan-delta"}
+
+event: tool-plan-delta
+data: {"delta":{"message":{"tool_plan":"0"}},"type":"tool-plan-delta"}
+
+event: tool-plan-delta
+data: {"delta":{"message":{"tool_plan":"2"}},"type":"tool-plan-delta"}
+
+event: tool-plan-delta
+data: {"delta":{"message":{"tool_plan":"3"}},"type":"tool-plan-delta"}
+
+event: tool-plan-delta
+data: {"delta":{"message":{"tool_plan":"."}},"type":"tool-plan-delta"}
+
+event: tool-plan-delta
+data: {"delta":{"message":{"tool_plan":" I"}},"type":"tool-plan-delta"}
+
+event: tool-plan-delta
+data: {"delta":{"message":{"tool_plan":" will"}},"type":"tool-plan-delta"}
+
+event: tool-plan-delta
+data: {"delta":{"message":{"tool_plan":" also"}},"type":"tool-plan-delta"}
+
+event: tool-plan-delta
+data: {"delta":{"message":{"tool_plan":" use"}},"type":"tool-plan-delta"}
+
+event: tool-plan-delta
+data: {"delta":{"message":{"tool_plan":" the"}},"type":"tool-plan-delta"}
+
+event: tool-plan-delta
+data: {"delta":{"message":{"tool_plan":" query"}},"type":"tool-plan-delta"}
+
+event: tool-plan-delta
+data: {"delta":{"message":{"tool_plan":"_"}},"type":"tool-plan-delta"}
+
+event: tool-plan-delta
+data: {"delta":{"message":{"tool_plan":"product"}},"type":"tool-plan-delta"}
+
+event: tool-plan-delta
+data: {"delta":{"message":{"tool_plan":"_"}},"type":"tool-plan-delta"}
+
+event: tool-plan-delta
+data: {"delta":{"message":{"tool_plan":"catalog"}},"type":"tool-plan-delta"}
+
+event: tool-plan-delta
+data: {"delta":{"message":{"tool_plan":" tool"}},"type":"tool-plan-delta"}
+
+event: tool-plan-delta
+data: {"delta":{"message":{"tool_plan":" to"}},"type":"tool-plan-delta"}
+
+event: tool-plan-delta
+data: {"delta":{"message":{"tool_plan":" find"}},"type":"tool-plan-delta"}
+
+event: tool-plan-delta
+data: {"delta":{"message":{"tool_plan":" the"}},"type":"tool-plan-delta"}
+
+event: tool-plan-delta
+data: {"delta":{"message":{"tool_plan":" details"}},"type":"tool-plan-delta"}
+
+event: tool-plan-delta
+data: {"delta":{"message":{"tool_plan":" of"}},"type":"tool-plan-delta"}
+
+event: tool-plan-delta
+data: {"delta":{"message":{"tool_plan":" the"}},"type":"tool-plan-delta"}
+
+event: tool-plan-delta
+data: {"delta":{"message":{"tool_plan":" products"}},"type":"tool-plan-delta"}
+
+event: tool-plan-delta
+data: {"delta":{"message":{"tool_plan":" in"}},"type":"tool-plan-delta"}
+
+event: tool-plan-delta
+data: {"delta":{"message":{"tool_plan":" the"}},"type":"tool-plan-delta"}
+
+event: tool-plan-delta
+data: {"delta":{"message":{"tool_plan":" Electronics"}},"type":"tool-plan-delta"}
+
+event: tool-plan-delta
+data: {"delta":{"message":{"tool_plan":" category"}},"type":"tool-plan-delta"}
+
+event: tool-plan-delta
+data: {"delta":{"message":{"tool_plan":"."}},"type":"tool-plan-delta"}
+
+event: tool-call-start
+data: {"delta":{"message":{"tool_calls":{"function":{"arguments":"","name":"query_daily_sales_report"},"id":"query_daily_sales_report_j3f0adww9pmr","type":"function"}}},"index":0,"type":"tool-call-start"}
+
+event: tool-call-delta
+data: {"delta":{"message":{"tool_calls":{"function":{"arguments":"{\""}}}},"index":0,"type":"tool-call-delta"}
+
+event: tool-call-delta
+data: {"delta":{"message":{"tool_calls":{"function":{"arguments":"day"}}}},"index":0,"type":"tool-call-delta"}
+
+event: tool-call-delta
+data: {"delta":{"message":{"tool_calls":{"function":{"arguments":"\": "}}}},"index":0,"type":"tool-call-delta"}
+
+event: tool-call-delta
+data: {"delta":{"message":{"tool_calls":{"function":{"arguments":"\""}}}},"index":0,"type":"tool-call-delta"}
+
+event: tool-call-delta
+data: {"delta":{"message":{"tool_calls":{"function":{"arguments":"2"}}}},"index":0,"type":"tool-call-delta"}
+
+event: tool-call-delta
+data: {"delta":{"message":{"tool_calls":{"function":{"arguments":"0"}}}},"index":0,"type":"tool-call-delta"}
+
+event: tool-call-delta
+data: {"delta":{"message":{"tool_calls":{"function":{"arguments":"2"}}}},"index":0,"type":"tool-call-delta"}
+
+event: tool-call-delta
+data: {"delta":{"message":{"tool_calls":{"function":{"arguments":"3"}}}},"index":0,"type":"tool-call-delta"}
+
+event: tool-call-delta
+data: {"delta":{"message":{"tool_calls":{"function":{"arguments":"-"}}}},"index":0,"type":"tool-call-delta"}
+
+event: tool-call-delta
+data: {"delta":{"message":{"tool_calls":{"function":{"arguments":"0"}}}},"index":0,"type":"tool-call-delta"}
+
+event: tool-call-delta
+data: {"delta":{"message":{"tool_calls":{"function":{"arguments":"9"}}}},"index":0,"type":"tool-call-delta"}
+
+event: tool-call-delta
+data: {"delta":{"message":{"tool_calls":{"function":{"arguments":"-"}}}},"index":0,"type":"tool-call-delta"}
+
+event: tool-call-delta
+data: {"delta":{"message":{"tool_calls":{"function":{"arguments":"2"}}}},"index":0,"type":"tool-call-delta"}
+
+event: tool-call-delta
+data: {"delta":{"message":{"tool_calls":{"function":{"arguments":"9"}}}},"index":0,"type":"tool-call-delta"}
+
+event: tool-call-delta
+data: {"delta":{"message":{"tool_calls":{"function":{"arguments":"\"}"}}}},"index":0,"type":"tool-call-delta"}
+
+event: tool-call-end
+data: {"index":0,"type":"tool-call-end"}
+
+event: tool-call-start
+data: {"delta":{"message":{"tool_calls":{"function":{"arguments":"","name":"query_product_catalog"},"id":"query_product_catalog_c66nf11r6s8g","type":"function"}}},"index":1,"type":"tool-call-start"}
+
+event: tool-call-delta
+data: {"delta":{"message":{"tool_calls":{"function":{"arguments":"{\""}}}},"index":1,"type":"tool-call-delta"}
+
+event: tool-call-delta
+data: {"delta":{"message":{"tool_calls":{"function":{"arguments":"category"}}}},"index":1,"type":"tool-call-delta"}
+
+event: tool-call-delta
+data: {"delta":{"message":{"tool_calls":{"function":{"arguments":"\": "}}}},"index":1,"type":"tool-call-delta"}
+
+event: tool-call-delta
+data: {"delta":{"message":{"tool_calls":{"function":{"arguments":"\""}}}},"index":1,"type":"tool-call-delta"}
+
+event: tool-call-delta
+data: {"delta":{"message":{"tool_calls":{"function":{"arguments":"Electron"}}}},"index":1,"type":"tool-call-delta"}
+
+event: tool-call-delta
+data: {"delta":{"message":{"tool_calls":{"function":{"arguments":"ics"}}}},"index":1,"type":"tool-call-delta"}
+
+event: tool-call-delta
+data: {"delta":{"message":{"tool_calls":{"function":{"arguments":"\"}"}}}},"index":1,"type":"tool-call-delta"}
+
+event: tool-call-end
+data: {"index":1,"type":"tool-call-end"}
+
+event: message-end
+data: {"delta":{"finish_reason":"TOOL_CALL","usage":{"billed_units":{"input_tokens":126,"output_tokens":84},"tokens":{"input_tokens":1589,"output_tokens":135}}},"type":"message-end"}
