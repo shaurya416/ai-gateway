@@ -153,6 +153,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   1032 and 124 processed. Streamed and unary chat now report `billed_units`,
   as Cohere embeddings already did, and fall back to `tokens` only when no
   billed count is present.
+- A non-streamed answer from a Mistral reasoning model is served as an OpenAI
+  assistant message: the answer as the `content` string and the reasoning as
+  `reasoning_content`. Mistral returns such an answer's `content` as a list of
+  chunks — the trace in a `thinking` chunk, the answer in a `text` chunk — and
+  the gateway relayed that list, so the caller got an array where the OpenAI
+  schema has a string, holding a bare `{"type":"thinking"}` part whose
+  reasoning text had been dropped. The streaming path already read the same
+  chunks this way; both now agree.
 - A content guardrail on the `/v1/*` pass-through and `POST /v1/responses`
   now reads every value of a key the body names twice. The body is forwarded
   verbatim, but the text projection guardrails read was built by decoding it

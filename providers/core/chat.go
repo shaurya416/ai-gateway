@@ -3,6 +3,7 @@ package core
 import (
 	"encoding/json"
 	"errors"
+	"strings"
 )
 
 // ContentPart is a single element of a multipart message content array.
@@ -123,7 +124,9 @@ func (m Message) MarshalJSON() ([]byte, error) {
 }
 
 // UnmarshalJSON decodes a Message from JSON.  The content field may be a plain
-// string or an array of ContentPart objects; both forms are handled.
+// string or an array of ContentPart objects; both forms are handled. A thinking
+// chunk in the array is reasoning, not content: its text becomes
+// ReasoningContent and it is not kept as a part.
 func (m *Message) UnmarshalJSON(b []byte) error {
 	var w messageWire
 	if err := json.Unmarshal(b, &w); err != nil {
@@ -145,18 +148,62 @@ func (m *Message) UnmarshalJSON(b []byte) error {
 		return nil
 	}
 	// Fall back to content-part array (vision / multimodal).
-	var parts []ContentPart
-	if err := json.Unmarshal(w.Content, &parts); err != nil {
+	var wire []contentPartWire
+	if err := json.Unmarshal(w.Content, &wire); err != nil {
 		return err
 	}
-	m.ContentParts = parts
+	parts := make([]ContentPart, 0, len(wire))
+	var thinking strings.Builder
+	sawThinking := false
+	for _, p := range wire {
+		if p.Type == contentTypeThinking {
+			sawThinking = true
+			for _, t := range p.Thinking {
+				if t.Type == ContentTypeText {
+					thinking.WriteString(t.Text)
+				}
+			}
+			continue
+		}
+		parts = append(parts, p.ContentPart)
+	}
+	allText := true
 	// Collapse text parts into Content so existing code paths keep working.
 	for _, p := range parts {
 		if p.Type == ContentTypeText {
 			m.Content += p.Text
+		} else {
+			allText = false
+		}
+	}
+	m.ContentParts = parts
+	if sawThinking {
+		if m.ReasoningContent == "" {
+			m.ReasoningContent = thinking.String()
+		}
+		// A thinking chunk is a reasoning model's answer (Mistral's message
+		// schema is string | list of chunks), and the OpenAI assistant message
+		// it is served as carries its text as a string. Kept as parts, the
+		// answer reached the caller as an array holding a bare
+		// {"type":"thinking"} part, with the reasoning text dropped.
+		if allText {
+			m.ContentParts = nil
 		}
 	}
 	return nil
+}
+
+// contentTypeThinking is the type of a Mistral thinking chunk:
+// {"type":"thinking","thinking":[{"type":"text","text":…}]}.
+const contentTypeThinking = "thinking"
+
+// contentPartWire is one element of an array-form message content: a
+// ContentPart, or a thinking chunk, whose reasoning text is nested under
+// "thinking" rather than carried in "text". The streaming delta reads the
+// same chunk; see deltaContent.
+type contentPartWire struct {
+	ContentPart
+	Thinking []ContentPart `json:"thinking"`
 }
 
 // Request represents a chat completion request sent to the gateway.
