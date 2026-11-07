@@ -555,10 +555,14 @@ func (p *Plugin) checkBudget(pctx *plugin.Context, key string) error {
 	// many turns and however large the context grew. The loop is the one place
 	// a single request can spend without bound, so it is the one place the soft
 	// cap has to be able to close mid-request.
-	var extra float64
-	if pctx.Measurements.HasCost {
-		extra = pctx.Measurements.CostUSD
-	}
+	//
+	// The running spend is priced from the usage the gateway carries, at this
+	// plugin's own rates — the rates the store is kept in. The catalog's figure
+	// for the same turns is a different currency: it is zero for a model the
+	// catalog does not price, which left the cap open for a whole loop on every
+	// self-hosted or declared model, and otherwise it is whatever the catalog
+	// charges, added to a store kept at the operator's rates.
+	extra := p.inRequestSpend(pctx.Measurements)
 	current, refuse, first := p.store.check(key, extra, p.spendLimitUSD)
 	if refuse {
 		// A denial mid-loop ends the request on its error path, where the
@@ -568,8 +572,8 @@ func (p *Plugin) checkBudget(pctx *plugin.Context, key string) error {
 		// cap. Without it the key's store never moved: every request spent up
 		// to the cap, was refused with "budget exceeded", and the next one was
 		// admitted to spend it again.
-		if pctx.Measurements.HasCost && pctx.Measurements.CostUSD > 0 {
-			p.store.add(key, pctx.Measurements.CostUSD, p.maxKeys)
+		if extra > 0 {
+			p.store.add(key, extra, p.maxKeys)
 			markRecorded(pctx, p.storeID)
 		}
 		pctx.Reject = true
@@ -629,15 +633,35 @@ func (p *Plugin) recordCost(pctx *plugin.Context, key string) {
 	if !ok {
 		return
 	}
+	if actual := p.costOf(usage); actual > 0 {
+		p.store.add(key, actual, p.maxKeys)
+	}
+}
+
+// costOf prices usage at this plugin's configured rates. See recordCost for
+// how the token classes are split.
+func (p *Plugin) costOf(usage providers.Usage) float64 {
 	promptBillable := usage.PromptTokens
 	if p.cacheReadPerMTokens != nil {
 		promptBillable = max(usage.PromptTokens-usage.CacheReadTokens, 0)
 	}
-	actual := perM(p.inputPerMTokens, promptBillable) +
+	return perM(p.inputPerMTokens, promptBillable) +
 		perM(p.outputPerMTokens, usage.CompletionTokens) +
 		perM(rate(p.cacheReadPerMTokens), usage.CacheReadTokens) +
 		perM(rate(p.cacheWritePerMTokens), usage.CacheWriteTokens)
-	if actual > 0 {
-		p.store.add(key, actual, p.maxKeys)
+}
+
+// inRequestSpend is what the request being checked has already spent, at this
+// plugin's rates: zero at the ordinary before_request stage, and the running
+// usage the gateway carries before each turn of an agentic tool loop. A caller
+// that carries a cost and no usage is taken at its figure.
+func (p *Plugin) inRequestSpend(m plugin.Measurements) float64 {
+	switch {
+	case m.HasUsage:
+		return p.costOf(m.Usage)
+	case m.HasCost:
+		return m.CostUSD
+	default:
+		return 0
 	}
 }

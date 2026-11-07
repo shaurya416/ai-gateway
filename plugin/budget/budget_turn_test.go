@@ -146,3 +146,58 @@ func TestBudget_AdmittedLoopTurnRecordsNothing(t *testing.T) {
 		t.Fatalf("recorded spend = %v, want 0: an admitted turn is recorded by the after stage", got)
 	}
 }
+
+// The gateway carries a loop's running usage beside the catalog's price for it.
+// The store is kept at this plugin's rates, so the check prices that usage at
+// them: the catalog's figure is zero for a model it does not price, which left
+// the cap open for the whole loop, and a different number for one it does.
+func TestBudget_PricesInRequestUsageAtItsOwnRates(t *testing.T) {
+	const storeID = "turn-usage"
+	defer ResetStore(storeID)
+
+	p := &Plugin{}
+	if err := p.Init(map[string]any{"spend_limit_usd": 1.0, "input_per_m_tokens": 1.0, "output_per_m_tokens": 2.0, "store_id": storeID}); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	// 1M prompt + 1M completion at $1/M and $2/M is $3, past the $1 cap. The
+	// catalog prices none of it.
+	turn := &plugin.Context{
+		Stage:    plugin.StageBeforeRequest,
+		Request:  &providers.Request{Model: "m"},
+		Metadata: map[string]any{"api_key": "k1"},
+		Measurements: plugin.Measurements{
+			Usage:    providers.Usage{PromptTokens: 1_000_000, CompletionTokens: 1_000_000},
+			HasUsage: true,
+		},
+	}
+	if err := p.Execute(context.Background(), turn); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !turn.Reject {
+		t.Fatal("a loop that has spent $3 at the budget's rates against a $1 cap was allowed another turn")
+	}
+	if got := p.store.get("k1"); got != 3.0 {
+		t.Fatalf("recorded spend = %v, want 3: the refusal records the spend at the budget's own rates", got)
+	}
+
+	// A catalog price beside the usage does not replace it.
+	ResetStoreKey(storeID, "k1")
+	turn = &plugin.Context{
+		Stage:    plugin.StageBeforeRequest,
+		Request:  &providers.Request{Model: "m"},
+		Metadata: map[string]any{"api_key": "k1"},
+		Measurements: plugin.Measurements{
+			CostUSD:  0.01,
+			HasCost:  true,
+			Usage:    providers.Usage{PromptTokens: 1_000_000, CompletionTokens: 1_000_000},
+			HasUsage: true,
+		},
+	}
+	if err := p.Execute(context.Background(), turn); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !turn.Reject {
+		t.Fatal("the check read the catalog's $0.01 instead of the $3 the budget charges for the same usage")
+	}
+}

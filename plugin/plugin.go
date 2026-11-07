@@ -377,6 +377,14 @@ type Measurements struct {
 	// the catalog does not price the model.
 	CostUSD float64
 	HasCost bool
+	// Usage is the token usage the provider calls of this request have already
+	// reported, for the before_request check the gateway runs ahead of each turn
+	// of an agentic MCP tool loop; HasUsage is false everywhere else. It is the
+	// quantity behind CostUSD, so a plugin that prices usage at rates of its own
+	// rather than the catalog's — budget does — can price what the request has
+	// spent so far, including on a model the catalog does not price.
+	Usage    providers.Usage
+	HasUsage bool
 }
 
 // pluginContextPool recycles Context objects to reduce GC pressure.

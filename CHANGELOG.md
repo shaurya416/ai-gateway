@@ -178,6 +178,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `404 model_not_found` for a model both configs serve — on an agentic request,
   after its first turn had already been billed. The walk settings are now
   taken from the same read of the config as the strategy, on every surface.
+- A `budget` checked before a turn of an MCP tool loop now prices what the
+  request has already spent at its own `input_per_m_tokens` and
+  `output_per_m_tokens`, the rates its spend store is kept in. The check was
+  handed the model catalog's price for the turns instead, so on a model the
+  catalog does not price — a self-hosted one, or one declared in
+  `targets[].models` — the request read as having spent nothing and the cap
+  never closed mid-loop, however far past it the turns ran; on a priced model
+  the catalog's dollars were compared against, and on a refusal recorded into,
+  a store kept at the operator's rates. `plugin.Measurements` now carries the
+  running `Usage` for that check, beside the catalog `CostUSD`.
 - With live model discovery on (`FERRO_MODEL_DISCOVERY_INTERVAL`), a
   discovered model in `/v1/models` is now owned by the target that serves it
   and carries that target's catalog metadata, as every catalog-sourced and

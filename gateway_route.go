@@ -619,6 +619,11 @@ func (g *Gateway) runMCPLoop(ctx context.Context, mcpExecutorSnapshot *mcp.Execu
 				callerRequest := pctx.Request
 				pctx.Request = req
 				pctx.Measurements.CostUSD, pctx.Measurements.HasCost = spentUSD, spentPriced
+				// The usage behind that cost goes too. A budget keeps its store at
+				// its own rates, not the catalog's, and the catalog prices nothing
+				// for a self-hosted or declared model — handed the cost alone, it
+				// read such a loop as free and never closed mid-request.
+				pctx.Measurements.Usage, pctx.Measurements.HasUsage = total, true
 				turnErr := plugins.RunBeforeLoopTurn(ctx, pctx)
 				pctx.Request = callerRequest
 				if turnErr != nil {
