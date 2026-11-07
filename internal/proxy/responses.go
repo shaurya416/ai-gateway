@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"path"
+	"slices"
 	"strings"
 
 	"github.com/ferro-labs/ai-gateway/config"
@@ -282,6 +283,10 @@ func responsesBodyCap(src any) int64 {
 	return config.DefaultMaxRequestBytes
 }
 
+// responsesGovernedKeys are the top-level fields of a Responses body the create
+// path governs on; see peekResponsesFields.
+var responsesGovernedKeys = [...]string{"model", "max_output_tokens"}
+
 // peekResponsesFields reads the two schema-stable top-level fields the create
 // path governs on — model (routing) and max_output_tokens (the completion
 // ceiling a guardrail caps) — then restores the body so it forwards intact.
@@ -305,6 +310,12 @@ func responsesBodyCap(src any) int64 {
 // only the exact key does not settle it either: an upstream that folds case as
 // encoding/json does honours the other spelling. Which one a given upstream
 // reads is not something the gateway can know, so it refuses to guess.
+//
+// A body that spells either key twice is refused for the same reason. Decoded
+// into a map, the last value wins, but the body is forwarded verbatim and some
+// parsers keep the first: "max_output_tokens": 100000 followed by
+// "max_output_tokens": 10 was approved on 10 and generated against 100000 by
+// such an upstream.
 //
 // A max_output_tokens the gateway cannot read as an integer is refused for the
 // same reason. Read as absent, 100000.0, 1e5 or "100000" reached the max-token
@@ -331,15 +342,49 @@ func peekResponsesFields(r *http.Request, limit int64) (model string, maxOutputT
 		return "", 0, "", nil
 	}
 	for key := range fields {
-		for _, governed := range [...]string{"model", "max_output_tokens"} {
+		for _, governed := range responsesGovernedKeys {
 			if key != governed && strings.EqualFold(key, governed) {
 				return "", 0, "model and max_output_tokens must be spelled exactly as named; the body carries another spelling of one", nil
 			}
 		}
+	}
+	if repeatsTopLevelKey(buf, responsesGovernedKeys[:]...) {
+		return "", 0, "model and max_output_tokens must each appear at most once; the body repeats one", nil
 	}
 	_ = json.Unmarshal(fields["model"], &model)
 	if ceiling, present := fields["max_output_tokens"]; present && json.Unmarshal(ceiling, &maxOutputTokens) != nil {
 		return "", 0, "max_output_tokens must be an integer", nil
 	}
 	return model, maxOutputTokens, "", nil
+}
+
+// repeatsTopLevelKey reports whether the JSON object doc names any of keys more
+// than once at its top level. Keys are compared as decoded, so an escaped
+// spelling of a key repeats it. doc is expected to be a valid JSON object; for
+// anything else it reports false.
+func repeatsTopLevelKey(doc []byte, keys ...string) bool {
+	dec := json.NewDecoder(bytes.NewReader(doc))
+	if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {
+		return false
+	}
+	seen := make(map[string]bool, len(keys))
+	for dec.More() {
+		tok, err := dec.Token()
+		if err != nil {
+			return false
+		}
+		key, _ := tok.(string)
+		var value json.RawMessage
+		if err := dec.Decode(&value); err != nil {
+			return false
+		}
+		if !slices.Contains(keys, key) {
+			continue
+		}
+		if seen[key] {
+			return true
+		}
+		seen[key] = true
+	}
+	return false
 }

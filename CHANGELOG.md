@@ -126,6 +126,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `POST /v1/responses` and `POST /v1/responses/compact` now refuse a body that
+  names `model` or `max_output_tokens` twice with a `400`, before anything is
+  forwarded, as they already refuse one that spells either in another letter
+  case. The two fields were read the way a map decode reads a repeated key —
+  the last value — while the body is forwarded verbatim to an upstream free to
+  read the first: `"max_output_tokens": 100000` followed by
+  `"max_output_tokens": 10` was approved by a `max-token` guardrail on the
+  `10`, and a leading `"model"` could run a different model than the one the
+  request was routed and priced as.
 - An answer that takes more than two minutes to produce now reaches the
   caller. The server's 120-second write timeout started once the request's
   headers were read, so the time spent waiting on the provider — retries,

@@ -23,7 +23,10 @@ func TestPeekResponsesFields_ReadsExactKeys(t *testing.T) {
 		wantAmbiguous bool
 	}{
 		"plain":                {body: `{"model":"m","max_output_tokens":64}`, wantModel: "m", wantMax: 64},
-		"duplicate keeps last": {body: `{"model":"a","model":"m","max_output_tokens":1,"max_output_tokens":64}`, wantModel: "m", wantMax: 64},
+		"repeated model":       {body: `{"model":"a","model":"m"}`, wantAmbiguous: true},
+		"repeated ceiling":     {body: `{"model":"m","max_output_tokens":100000,"max_output_tokens":64}`, wantAmbiguous: true},
+		"repeated escaped":     {body: `{"model":"m","mod\u0065l":"other"}`, wantAmbiguous: true},
+		"nested repeat":        {body: `{"model":"m","input":[{"model":"x"},{"model":"y"}],"metadata":{"max_output_tokens":1}}`, wantModel: "m"},
 		"folded model after":   {body: `{"model":"m","MODEL":"other"}`, wantAmbiguous: true},
 		"folded model before":  {body: `{"Model":"other","model":"m"}`, wantAmbiguous: true},
 		"folded ceiling after": {body: `{"model":"m","max_output_tokens":100000,"Max_Output_Tokens":10}`, wantAmbiguous: true},
@@ -52,6 +55,8 @@ func TestResponsesCreate_RefusesAmbiguousGovernedFields(t *testing.T) {
 	h := ResponsesCreate(gw)
 
 	for _, body := range []string{
+		`{"model":"stub-model","input":"hi","max_output_tokens":100000,"max_output_tokens":10}`,
+		`{"model":"other-model","input":"hi","model":"stub-model"}`,
 		`{"model":"stub-model","input":"hi","max_output_tokens":100000,"Max_Output_Tokens":10}`,
 		`{"model":"stub-model","input":"hi","MAX_OUTPUT_TOKENS":100000}`,
 		`{"model":"stub-model","input":"hi","Model":"other-model"}`,

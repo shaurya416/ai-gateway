@@ -1280,9 +1280,10 @@ completion ceiling so a max-token guardrail governs Responses — chat's field i
 already reads (`input`/`instructions` land in it). Re-serializing the ~40-event
 Responses schema would be maintenance debt both LiteLLM and Portkey avoid.
 The first two are read by their exact names, and a body that also spells
-either in another letter case is refused `400` before anything is forwarded:
-whether an upstream honours `"Max_Output_Tokens"` depends on its JSON parser,
-so the gateway cannot know which value it would be governing. A
+either in another letter case, or spells either twice, is refused `400` before
+anything is forwarded: whether an upstream honours `"Max_Output_Tokens"`, or
+the first of two `"max_output_tokens"`, depends on its JSON parser, so the
+gateway cannot know which value it would be governing. A
 `max_output_tokens` that is not an integer (`100000.0`, `1e5`, `"100000"`) is
 refused `400` for the same reason, as chat refuses it in `max_tokens`; `null`
 declares no ceiling. The first two are read from the whole body, wherever in it
