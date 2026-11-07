@@ -16,11 +16,14 @@
 //     option.
 //   - user_rpm (float64|int, optional): per-user rate limit in requests/minute.
 //     The user ID is read from pctx.Request.User. Requests with an empty User
-//     field are not individually limited by this option.
+//     field are not individually limited by this option. A user's bucket is
+//     keyed on the SHA-256 digest of the value, so it costs the same whatever
+//     the caller sends.
 package ratelimit
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"math"
 
@@ -55,7 +58,7 @@ func init() {
 // them denies it:
 //  1. Global limiter (requests_per_second / burst)
 //  2. Per-API-key limiter (key_rpm) — keyed on Metadata["api_key"]
-//  3. Per-user limiter (user_rpm) — keyed on Request.User
+//  3. Per-user limiter (user_rpm) — keyed on a digest of Request.User
 type Plugin struct {
 	limiter   *internalrl.Limiter // global
 	keyStore  *internalrl.Store   // per API key (nil when key_rpm unset)
@@ -183,13 +186,27 @@ func (p *Plugin) Execute(_ context.Context, pctx *plugin.Context) error {
 
 	if p.userStore != nil && pctx.Request != nil {
 		if userID := pctx.Request.User; userID != "" {
-			if !p.userStore.Allow(userID) {
+			if !p.userStore.Allow(userBucketKey(userID)) {
 				return reject(pctx, "per-user rate limit exceeded")
 			}
 		}
 	}
 
 	return nil
+}
+
+// userBucketKey is the per-user store's key for userID: its SHA-256 digest.
+//
+// The user is the request body's own `user` field, bounded only by the request
+// size, and the store keeps a bucket's key for as long as the bucket lives.
+// Keyed on the raw value, every bucket held a copy of whatever the caller sent,
+// so defaultMaxKeys bounded how many users were tracked and not the memory
+// behind them: a caller sending a fresh megabyte-long user on each request left
+// a megabyte live per request, up to the cap. A digest is 32 bytes whatever the
+// caller sends, and two users share a bucket only if their digests collide.
+func userBucketKey(userID string) string {
+	sum := sha256.Sum256([]byte(userID))
+	return string(sum[:])
 }
 
 // reject denies the request and counts it.

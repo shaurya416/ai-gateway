@@ -170,6 +170,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the one being revoked. A target only zero-weight variants name is now left
   out of that order as well, so such a request is answered with the live
   variant's own failure. Targets no variant names still follow, as before.
+- The `rate-limit` plugin's `user_rpm` buckets no longer keep a copy of the
+  request's `user` value. A bucket was keyed on the raw `user` field, which is
+  bounded only by the request size, so the 100,000-bucket cap bounded how many
+  users were tracked but not the memory behind them: a caller sending a fresh
+  1 MiB `user` on each request left a megabyte live per request, long after the
+  request had finished. A bucket is now keyed on the SHA-256 digest of the
+  `user`, 32 bytes whatever the caller sends; each user is still held to its
+  own rate.
 - A content guardrail on the `/v1/*` pass-through and `POST /v1/responses`
   now reads every value of a key the body names twice. The body is forwarded
   verbatim, but the text projection guardrails read was built by decoding it
